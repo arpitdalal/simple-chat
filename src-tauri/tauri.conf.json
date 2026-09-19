@@ -15,15 +15,24 @@
       {
         "label": "main",
         "title": "Simple Chat",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 800,
-        "minHeight": 520,
+        "width": 1180,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
         "visible": false,
         "skipTaskbar": true,
         "decorations": true,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "transparent": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": { "x": 16, "y": 20 },
+        "backgroundColor": [0, 0, 0, 0],
+        "windowEffects": {
+          "effects": ["hudWindow", "mica"],
+          "state": "followsWindowActiveState"
+        }
       }
     ],
     "security": {

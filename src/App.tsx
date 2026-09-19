@@ -4,17 +4,29 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Settings } from "./components/Settings";
 import {
+  clearChatMessages,
   createChat,
+  deleteChat,
   getChat,
   getSettings,
   listChats,
+  listMessages,
   openOrCreateChat,
   setSetting,
+  updateChat,
   type AppSettings,
   type Chat,
 } from "./lib/db";
 import type { ProviderId } from "./lib/models";
+import { applyHotkey, hideMainWindow } from "./lib/hotkey";
 import "./App.css";
+
+function isEmptyNewChat(c: Chat) {
+  return (
+    c.title === "New Chat" &&
+    (!c.preview.trim() || c.preview === "Ask AI anything…")
+  );
+}
 
 function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -23,19 +35,74 @@ function App() {
   const [active, setActive] = useState<Chat | null>(null);
   const [query, setQuery] = useState("");
   const [showSettings, setShowSettings] = useState(false);
-  const [webSearch, setWebSearch] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
+  const [composerFocus, setComposerFocus] = useState(0);
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
   }, []);
 
+  const focusComposer = useCallback(() => {
+    setComposerFocus((n) => n + 1);
+  }, []);
+
+  const selectChat = useCallback(
+    async (id: string) => {
+      setShowSettings(false);
+      if (activeId === id) {
+        focusComposer();
+        return;
+      }
+      setActiveId(id);
+      const toDelete = chats.filter(
+        (c) => c.id !== id && isEmptyNewChat(c),
+      );
+      if (toDelete.length) {
+        for (const c of toDelete) await deleteChat(c.id);
+        await refreshChats();
+      }
+      focusComposer();
+    },
+    [activeId, chats, focusComposer, refreshChats],
+  );
+
+  const newChat = useCallback(async () => {
+    if (!settings) return;
+    const existing = chats.find(isEmptyNewChat);
+    if (existing) {
+      setActiveId(existing.id);
+      setActive(existing);
+      setShowSettings(false);
+      focusComposer();
+      return;
+    }
+    if (active && isEmptyNewChat(active)) {
+      focusComposer();
+      return;
+    }
+    const chat = await createChat(
+      settings.default_provider as ProviderId,
+      settings.default_model,
+    );
+    setActiveId(chat.id);
+    setActive(chat);
+    setShowSettings(false);
+    await refreshChats();
+    focusComposer();
+  }, [settings, chats, active, focusComposer, refreshChats]);
+
   useEffect(() => {
     void (async () => {
       const s = await getSettings();
       setSettings(s);
-      setWebSearch(s.web_search);
       await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
+      try {
+        await applyHotkey(s.hotkey);
+      } catch (err) {
+        console.error("hotkey register failed", err);
+      }
 
       const chat = await openOrCreateChat(s);
       await setSetting("last_opened_at", Date.now());
@@ -44,8 +111,9 @@ function App() {
       setActive(chat);
       await refreshChats();
       setReady(true);
+      focusComposer();
     })();
-  }, [refreshChats]);
+  }, [refreshChats, focusComposer]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -55,24 +123,73 @@ function App() {
   }, [activeId]);
 
   useEffect(() => {
+    if (!showSettings) focusComposer();
+  }, [showSettings, focusComposer]);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) focusComposer();
+      })
+      .then((fn) => {
+        un = fn;
+      });
+    return () => un?.();
+  }, [focusComposer]);
+
+  useEffect(() => {
+    function onDown(e: KeyboardEvent) {
+      setShowShortcuts(e.metaKey || e.ctrlKey);
+    }
+    function onUp(e: KeyboardEvent) {
+      setShowShortcuts(e.metaKey || e.ctrlKey);
+    }
+    function onBlur() {
+      setShowShortcuts(false);
+    }
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  useEffect(() => {
     function mod(e: KeyboardEvent) {
       return e.metaKey || e.ctrlKey;
     }
     function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        if (document.querySelector(".model-menu")) return;
+        e.preventDefault();
+        if (showSettings) {
+          setShowSettings(false);
+          return;
+        }
+        void hideMainWindow();
+        return;
+      }
       if (mod(e) && e.key.toLowerCase() === "n") {
         e.preventDefault();
         void newChat();
       }
+      if (mod(e) && e.key === "b") {
+        e.preventDefault();
+        setSidebarOpen((v) => !v);
+      }
       if (mod(e) && e.key >= "1" && e.key <= "9") {
         e.preventDefault();
-        const idx = Number(e.key) - 1;
-        const chat = chats[idx];
-        if (chat) setActiveId(chat.id);
+        const chat = chats[Number(e.key) - 1];
+        if (chat) void selectChat(chat.id);
       }
       if (mod(e) && e.key === "0") {
         e.preventDefault();
         const chat = chats[9];
-        if (chat) setActiveId(chat.id);
+        if (chat) void selectChat(chat.id);
       }
       if (mod(e) && e.key === ",") {
         e.preventDefault();
@@ -81,18 +198,43 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [chats, settings]);
+  }, [chats, showSettings, newChat, selectChat]);
 
-  async function newChat() {
-    if (!settings) return;
-    const chat = await createChat(
-      settings.default_provider as ProviderId,
-      settings.default_model,
-    );
-    setActiveId(chat.id);
-    setActive(chat);
-    setShowSettings(false);
+  async function handleDelete(id: string) {
+    await deleteChat(id);
+    if (activeId === id) {
+      const next = (await listChats())[0];
+      if (next) {
+        setActiveId(next.id);
+        setActive(next);
+      } else if (settings) {
+        await newChat();
+        return;
+      }
+    }
     await refreshChats();
+  }
+
+  async function handleClear(id: string) {
+    await clearChatMessages(id);
+    if (activeId === id) setActive(await getChat(id));
+    await refreshChats();
+    focusComposer();
+  }
+
+  async function handleCopy(id: string) {
+    const msgs = await listMessages(id);
+    const text = msgs.map((m) => `${m.role}:\n${m.content}`).join("\n\n");
+    await navigator.clipboard.writeText(text);
+  }
+
+  function beginDrag(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (t.closest("button, input, textarea, select, a, .action-menu, [data-no-drag]"))
+      return;
+    e.preventDefault();
+    void getCurrentWindow().startDragging();
   }
 
   if (!ready || !settings) {
@@ -100,35 +242,90 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <Sidebar
-        chats={chats}
-        activeId={activeId}
-        query={query}
-        onQuery={setQuery}
-        onSelect={setActiveId}
-        onNew={() => void newChat()}
-        onOpenSettings={() => setShowSettings(true)}
-      />
-      {showSettings ? (
-        <Settings
-          onClose={() => setShowSettings(false)}
-          onSaved={(s) => {
-            setSettings(s);
-            setWebSearch(s.web_search);
-            void refreshChats();
-          }}
-        />
-      ) : (
-        <ChatView
-          chat={active}
-          webSearch={webSearch}
-          onWebSearch={setWebSearch}
-          onChatUpdated={() => void refreshChats()}
-          onNew={() => void newChat()}
-        />
-      )}
+    <div className={`app ${sidebarOpen ? "sidebar-open" : "sidebar-closed"}`}>
+      <div
+        className="top-chrome"
+        data-tauri-drag-region
+        onMouseDown={beginDrag}
+      >
+        <div className="app-title">Simple Chat</div>
+      </div>
+
+      <div className="layout">
+        {!sidebarOpen && (
+          <button
+            type="button"
+            className="sidebar-reopen glass"
+            onClick={() => setSidebarOpen(true)}
+            title="Show sidebar (⌘/Ctrl+B)"
+          >
+            <SidebarToggleIcon />
+          </button>
+        )}
+        {sidebarOpen && (
+          <Sidebar
+            chats={chats}
+            activeId={activeId}
+            query={query}
+            onQuery={setQuery}
+            onSelect={(id) => void selectChat(id)}
+            onNew={() => void newChat()}
+            onToggleSidebar={() => setSidebarOpen(false)}
+            onOpenSettings={() => setShowSettings(true)}
+            settingsActive={showSettings}
+            onRename={(id, title) => {
+              void updateChat(id, { title }).then(refreshChats);
+              if (activeId === id) {
+                setActive((c) => (c ? { ...c, title } : c));
+              }
+            }}
+            onPin={(id, pinned) => {
+              void updateChat(id, { pinned: pinned ? 1 : 0 }).then(refreshChats);
+            }}
+            onClear={(id) => void handleClear(id)}
+            onDelete={(id) => void handleDelete(id)}
+            onCopyChat={(id) => void handleCopy(id)}
+            showShortcuts={showShortcuts}
+          />
+        )}
+        {showSettings ? (
+          <div className="chat-stage settings-stage glass-panel">
+            <Settings
+              onClose={() => setShowSettings(false)}
+              onSaved={(s) => {
+                setSettings(s);
+                void refreshChats();
+              }}
+            />
+          </div>
+        ) : (
+          <ChatView
+            chat={active}
+            onChatUpdated={() => void refreshChats()}
+            onChatMeta={setActive}
+            onNew={() => void newChat()}
+            focusNonce={composerFocus}
+          />
+        )}
+      </div>
     </div>
+  );
+}
+
+function SidebarToggleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="16"
+        rx="2.5"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path d="M9 4v16" stroke="currentColor" strokeWidth="2" />
+    </svg>
   );
 }
 

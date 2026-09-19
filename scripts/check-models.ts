@@ -1,6 +1,6 @@
 /**
  * ponytail: assert-based check for model catalog merge rules.
- * Run: npx tsx scripts/check-models.ts
+ * Run: npm run check
  */
 import { CATALOG, resolveModel } from "../src/lib/models.ts";
 
@@ -8,38 +8,44 @@ function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
 
-const catalogHit = resolveModel("openai", "gpt-4o-mini");
-assert(catalogHit.label === "GPT-4o mini", "catalog label should win");
+const catalogHit = resolveModel("openai", "gpt-5.6-luna");
+assert(catalogHit.label === "GPT-5.6 Luna", "catalog label should win");
 assert(catalogHit.webSearch === true, "catalog capabilities should win");
 
-const custom = resolveModel("openai", "gpt-6-astra", [
+assert(
+  CATALOG.some((m) => m.id === "gpt-6-astra"),
+  "openai latest present",
+);
+assert(
+  CATALOG.some((m) => m.id === "claude-fable-5-1"),
+  "anthropic latest present",
+);
+assert(
+  CATALOG.some((m) => m.id === "gemini-3.8-flash"),
+  "google latest present",
+);
+
+const custom = resolveModel("openai", "gpt-experimental", [
   {
-    id: "gpt-6-astra",
-    label: "my astra",
+    id: "gpt-experimental",
+    label: "my exp",
     provider: "openai",
     vision: true,
     webSearch: false,
   },
 ]);
-assert(custom.label === "my astra", "custom label used when not in catalog");
+assert(custom.label === "my exp", "custom label used when not in catalog");
 
-// Simulate catalog catching up with same id — catalog wins.
-const afterShip = resolveModel(
-  "openai",
-  "gpt-4o-mini",
-  [
-    {
-      id: "gpt-4o-mini",
-      label: "old custom",
-      provider: "openai",
-      vision: false,
-      webSearch: false,
-    },
-  ],
-);
-assert(afterShip.label === "GPT-4o mini", "catalog overrides matching custom id");
+const afterShip = resolveModel("openai", "gpt-5.6-luna", [
+  {
+    id: "gpt-5.6-luna",
+    label: "old custom",
+    provider: "openai",
+    vision: false,
+    webSearch: false,
+  },
+]);
+assert(afterShip.label === "GPT-5.6 Luna", "catalog overrides matching custom id");
 assert(afterShip.vision === true, "catalog vision wins on id match");
-
-assert(CATALOG.length >= 3, "catalog should have models");
 
 console.log("check-models: ok");

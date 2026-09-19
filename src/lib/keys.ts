@@ -5,6 +5,10 @@ export function setApiKey(provider: ProviderId, key: string) {
   return invoke<void>("set_api_key", { provider, key });
 }
 
+export function clearApiKey(provider: ProviderId) {
+  return setApiKey(provider, "");
+}
+
 export function getApiKey(provider: ProviderId) {
   return invoke<string | null>("get_api_key", { provider });
 }

@@ -8,6 +8,7 @@ export type Chat = {
   created_at: number;
   updated_at: number;
   preview: string;
+  pinned: number;
 };
 
 export type Message = {
@@ -27,17 +28,19 @@ export type AppSettings = {
   last_opened_at: number;
   last_chat_id: string | null;
   web_search: boolean;
+  hotkey: string;
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
   resume_minutes: 5,
-  always_on_top: false,
+  always_on_top: true,
   show_tray: true,
   default_provider: "openai",
-  default_model: "gpt-4o-mini",
+  default_model: "gpt-5.6-luna",
   last_opened_at: 0,
   last_chat_id: null,
-  web_search: false,
+  web_search: true,
+  hotkey: "CommandOrControl+Shift+Space",
 };
 
 let dbPromise: Promise<Database> | null = null;
@@ -86,6 +89,14 @@ async function migrate(db: Database) {
   await db.execute(
     `CREATE INDEX IF NOT EXISTS idx_chats_updated ON chats(updated_at DESC);`,
   );
+  // Soft migrate: pinned column
+  try {
+    await db.execute(
+      `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+    );
+  } catch {
+    /* already exists */
+  }
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -120,9 +131,10 @@ export async function setSetting<K extends keyof AppSettings>(
 
 export async function listChats(): Promise<Chat[]> {
   const db = await getDb();
-  return db.select<Chat[]>(
-    "SELECT * FROM chats ORDER BY updated_at DESC LIMIT 200",
+  const rows = await db.select<Chat[]>(
+    "SELECT * FROM chats ORDER BY pinned DESC, updated_at DESC LIMIT 200",
   );
+  return rows.map((c) => ({ ...c, pinned: c.pinned ? 1 : 0 }));
 }
 
 export async function getChat(id: string): Promise<Chat | null> {
@@ -147,10 +159,11 @@ export async function createChat(
     created_at: now,
     updated_at: now,
     preview: "Ask AI anything…",
+    pinned: 0,
   };
   await db.execute(
-    `INSERT INTO chats (id, title, model_id, provider, created_at, updated_at, preview)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO chats (id, title, model_id, provider, created_at, updated_at, preview, pinned)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       chat.id,
       chat.title,
@@ -159,6 +172,7 @@ export async function createChat(
       chat.created_at,
       chat.updated_at,
       chat.preview,
+      chat.pinned,
     ],
   );
   return chat;
@@ -166,20 +180,23 @@ export async function createChat(
 
 export async function updateChat(
   id: string,
-  patch: Partial<Pick<Chat, "title" | "preview" | "model_id" | "provider">>,
+  patch: Partial<
+    Pick<Chat, "title" | "preview" | "model_id" | "provider" | "pinned">
+  >,
 ) {
   const db = await getDb();
   const current = await getChat(id);
   if (!current) return;
   const next = { ...current, ...patch, updated_at: Date.now() };
   await db.execute(
-    `UPDATE chats SET title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5 WHERE id=$6`,
+    `UPDATE chats SET title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5, pinned=$6 WHERE id=$7`,
     [
       next.title,
       next.preview,
       next.model_id,
       next.provider,
       next.updated_at,
+      next.pinned ?? 0,
       id,
     ],
   );
@@ -209,6 +226,35 @@ export async function listMessages(chatId: string): Promise<Message[]> {
   );
 }
 
+/** Latest page (oldest→newest within page). */
+export async function listRecentMessages(
+  chatId: string,
+  limit = 50,
+): Promise<Message[]> {
+  const db = await getDb();
+  const rows = await db.select<Message[]>(
+    `SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [chatId, limit],
+  );
+  return rows.reverse();
+}
+
+/** Older page before a timestamp (oldest→newest within page). */
+export async function listOlderMessages(
+  chatId: string,
+  beforeCreatedAt: number,
+  limit = 40,
+): Promise<Message[]> {
+  const db = await getDb();
+  const rows = await db.select<Message[]>(
+    `SELECT * FROM messages
+     WHERE chat_id = $1 AND created_at < $2
+     ORDER BY created_at DESC LIMIT $3`,
+    [chatId, beforeCreatedAt, limit],
+  );
+  return rows.reverse();
+}
+
 export async function addMessage(
   chatId: string,
   role: Message["role"],
@@ -227,6 +273,12 @@ export async function addMessage(
     [msg.id, msg.chat_id, msg.role, msg.content, msg.created_at],
   );
   return msg;
+}
+
+export async function clearChatMessages(chatId: string) {
+  const db = await getDb();
+  await db.execute("DELETE FROM messages WHERE chat_id = $1", [chatId]);
+  await updateChat(chatId, { preview: "Ask AI anything…", title: "New Chat" });
 }
 
 export async function messageCount(chatId: string): Promise<number> {

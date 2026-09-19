@@ -10,9 +10,31 @@ export type ModelDef = {
 
 /** Curated catalog. Free-text customs stored separately; same id → catalog metadata wins. */
 export const CATALOG: ModelDef[] = [
+  // OpenAI
   {
-    id: "gpt-4o-mini",
-    label: "GPT-4o mini",
+    id: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    provider: "openai",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    provider: "openai",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    provider: "openai",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
     provider: "openai",
     vision: true,
     webSearch: true,
@@ -25,8 +47,30 @@ export const CATALOG: ModelDef[] = [
     webSearch: true,
   },
   {
-    id: "claude-sonnet-4-5",
-    label: "Claude Sonnet 4.5",
+    id: "gpt-4o-mini",
+    label: "GPT-4o mini",
+    provider: "openai",
+    vision: true,
+    webSearch: true,
+  },
+  // Anthropic
+  {
+    id: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
+    provider: "anthropic",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "claude-opus-5",
+    label: "Claude Opus 5",
+    provider: "anthropic",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
     provider: "anthropic",
     vision: true,
     webSearch: true,
@@ -39,8 +83,37 @@ export const CATALOG: ModelDef[] = [
     webSearch: true,
   },
   {
-    id: "gemini-2.0-flash",
-    label: "Gemini 2.0 Flash",
+    id: "claude-sonnet-4-5",
+    label: "Claude Sonnet 4.5",
+    provider: "anthropic",
+    vision: true,
+    webSearch: true,
+  },
+  // Google
+  {
+    id: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    provider: "google",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
+    provider: "google",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "gemini-3.1-pro-preview",
+    label: "Gemini 3.1 Pro",
+    provider: "google",
+    vision: true,
+    webSearch: true,
+  },
+  {
+    id: "gemini-2.5-pro",
+    label: "Gemini 2.5 Pro",
     provider: "google",
     vision: true,
     webSearch: true,
@@ -52,7 +125,18 @@ export const CATALOG: ModelDef[] = [
     vision: true,
     webSearch: true,
   },
+  {
+    id: "gemini-2.5-flash-lite",
+    label: "Gemini 2.5 Flash-Lite",
+    provider: "google",
+    vision: true,
+    webSearch: true,
+  },
 ];
+
+export function modelsForProvider(provider: string): ModelDef[] {
+  return CATALOG.filter((m) => m.provider === provider);
+}
 
 export function resolveModel(
   provider: string,
@@ -81,3 +165,5 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
   anthropic: "Anthropic",
   google: "Google",
 };
+
+export const PROVIDERS: ProviderId[] = ["openai", "anthropic", "google"];

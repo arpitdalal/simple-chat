@@ -5,16 +5,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     ActivationPolicy, AppHandle, Manager, RunEvent, WindowEvent,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-
-fn default_hotkey() -> Shortcut {
-    // macOS: ⌘⇧Space · Windows/Linux: Ctrl+Shift+Space
-    #[cfg(target_os = "macos")]
-    let mods = Modifiers::SUPER.union(Modifiers::SHIFT);
-    #[cfg(not(target_os = "macos"))]
-    let mods = Modifiers::CONTROL.union(Modifiers::SHIFT);
-    Shortcut::new(Some(mods), Code::Space)
-}
 
 fn toggle_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -42,21 +32,15 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, shortcut, event| {
-                    if event.state == ShortcutState::Pressed && *shortcut == default_hotkey() {
-                        toggle_main_window(app);
-                    }
-                })
-                .build(),
-        )
+        // Hotkey registered from the frontend so users can rebind it in Settings.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             keys::set_api_key,
             keys::get_api_key,
             keys::has_api_key,
         ])
         .setup(|app| {
+            // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
@@ -86,15 +70,15 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            app.global_shortcut().register(default_hotkey())?;
-
-            // First launch: show window so setup isn't invisible.
             show_main_window(app.handle());
+
+            // Re-assert accessory after showing (dev builds sometimes bounce to regular).
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(ActivationPolicy::Accessory);
 
             Ok(())
         });
 
-    // Windows tray needs skipTaskbar; macOS uses Accessory policy above.
     let app = builder
         .build(tauri::generate_context!())
         .expect("error while building Simple Chat");
@@ -111,6 +95,8 @@ pub fn run() {
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.hide();
                 }
+                #[cfg(target_os = "macos")]
+                let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
             }
         }
     });

@@ -1,12 +1,25 @@
-import { useEffect, useState } from "react";
-import { getSettings, setSetting, deleteChatsOlderThan, type AppSettings } from "../lib/db";
-import { hasApiKey, setApiKey } from "../lib/keys";
-import { CATALOG, PROVIDER_LABELS, type ProviderId } from "../lib/models";
+import { useEffect, useRef, useState } from "react";
+import {
+  getSettings,
+  setSetting,
+  deleteChatsOlderThan,
+  type AppSettings,
+} from "../lib/db";
+import { hasApiKey, setApiKey, clearApiKey } from "../lib/keys";
+import { PROVIDER_LABELS, PROVIDERS, type ProviderId } from "../lib/models";
+import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  applyHotkey,
+  DEFAULT_HOTKEY,
+  eventToAccelerator,
+  formatHotkey,
+} from "../lib/hotkey";
 
-type Props = { onClose: () => void; onSaved: (s: AppSettings) => void };
-
-const PROVIDERS: ProviderId[] = ["openai", "anthropic", "google"];
+type Props = {
+  onClose: () => void;
+  onSaved: (s: AppSettings) => void;
+};
 
 export function Settings({ onClose, onSaved }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -21,11 +34,17 @@ export function Settings({ onClose, onSaved }: Props) {
     google: false,
   });
   const [status, setStatus] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [hotkeyError, setHotkeyError] = useState("");
+  const [keyEpoch, setKeyEpoch] = useState(0);
+  const saveTimer = useRef<number | null>(null);
+  const settingsRef = useRef<AppSettings | null>(null);
 
   useEffect(() => {
     void (async () => {
       const s = await getSettings();
       setSettings(s);
+      settingsRef.current = s;
       const hk: Record<ProviderId, boolean> = {
         openai: false,
         anthropic: false,
@@ -36,27 +55,81 @@ export function Settings({ onClose, onSaved }: Props) {
     })();
   }, []);
 
-  if (!settings) return <div className="settings-panel">Loading…</div>;
-
-  const modelsForProvider = CATALOG.filter(
-    (m) => m.provider === settings.default_provider,
-  );
-
-  async function save() {
-    if (!settings) return;
-    for (const p of PROVIDERS) {
-      if (keys[p].trim()) await setApiKey(p, keys[p].trim());
+  useEffect(() => {
+    if (!recording) return;
+    function onKeyDown(e: KeyboardEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(false);
+        return;
+      }
+      const accel = eventToAccelerator(e);
+      if (!accel || !settings) return;
+      patch({ hotkey: accel });
+      setRecording(false);
+      setHotkeyError("");
     }
-    await setSetting("resume_minutes", settings.resume_minutes);
-    await setSetting("always_on_top", settings.always_on_top);
-    await setSetting("show_tray", settings.show_tray);
-    await setSetting("default_provider", settings.default_provider);
-    await setSetting("default_model", settings.default_model);
-    await setSetting("web_search", settings.web_search);
-    await getCurrentWindow().setAlwaysOnTop(settings.always_on_top);
-    onSaved(settings);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [recording, settings]);
+
+  function patch(partial: Partial<AppSettings>) {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...partial };
+      settingsRef.current = next;
+      queueSave(next);
+      return next;
+    });
+  }
+
+  function queueSave(next: AppSettings) {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void persist(next);
+    }, 250);
+  }
+
+  async function persist(s: AppSettings) {
+    const hotkey = s.hotkey.trim() || DEFAULT_HOTKEY;
+    try {
+      await applyHotkey(hotkey);
+      setHotkeyError("");
+    } catch (err) {
+      setHotkeyError((err as Error).message || String(err));
+    }
+    await setSetting("resume_minutes", s.resume_minutes);
+    await setSetting("always_on_top", s.always_on_top);
+    await setSetting("show_tray", s.show_tray);
+    await setSetting("default_provider", s.default_provider);
+    await setSetting("default_model", s.default_model);
+    await setSetting("web_search", true);
+    await setSetting("hotkey", hotkey);
+    await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
+    onSaved({ ...s, hotkey });
     setStatus("Saved");
   }
+
+  async function saveKey(provider: ProviderId) {
+    const value = keys[provider].trim();
+    if (!value) return;
+    await setApiKey(provider, value);
+    setKeys((k) => ({ ...k, [provider]: "" }));
+    setHasKey((h) => ({ ...h, [provider]: true }));
+    setKeyEpoch((n) => n + 1);
+    setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+  }
+
+  async function clearKey(provider: ProviderId) {
+    await clearApiKey(provider);
+    setKeys((k) => ({ ...k, [provider]: "" }));
+    setHasKey((h) => ({ ...h, [provider]: false }));
+    setKeyEpoch((n) => n + 1);
+    setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+  }
+
+  if (!settings) return <div className="settings-panel">Loading…</div>;
 
   return (
     <div className="settings-panel">
@@ -66,90 +139,61 @@ export function Settings({ onClose, onSaved }: Props) {
           Close
         </button>
       </div>
+      <p className="hint">Changes save automatically</p>
 
       <section>
         <h3>API keys (BYOK)</h3>
         {PROVIDERS.map((p) => (
-          <label key={p} className="field">
+          <div key={p} className="field">
             <span>
               {PROVIDER_LABELS[p]}
               {hasKey[p] ? " · saved" : ""}
             </span>
-            <input
-              type="password"
-              placeholder={hasKey[p] ? "•••••••• (leave blank to keep)" : "Paste key"}
-              value={keys[p]}
-              onChange={(e) => setKeys({ ...keys, [p]: e.target.value })}
-            />
-          </label>
+            <div className="key-row">
+              <input
+                type="password"
+                placeholder={
+                  hasKey[p] ? "•••••••• (paste new to replace)" : "Paste key"
+                }
+                value={keys[p]}
+                onChange={(e) => setKeys({ ...keys, [p]: e.target.value })}
+                onBlur={() => void saveKey(p)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveKey(p);
+                }}
+              />
+              {hasKey[p] && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void clearKey(p)}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
         ))}
       </section>
 
       <section>
         <h3>Defaults</h3>
-        <label className="field">
-          <span>Provider</span>
-          <select
-            value={settings.default_provider}
-            onChange={(e) => {
-              const provider = e.target.value;
-              const first = CATALOG.find((m) => m.provider === provider);
-              setSettings({
-                ...settings,
-                default_provider: provider,
-                default_model: first?.id ?? settings.default_model,
-              });
-            }}
-          >
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {PROVIDER_LABELS[p]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Model</span>
-          <select
-            value={
-              modelsForProvider.some((m) => m.id === settings.default_model)
-                ? settings.default_model
-                : "__custom__"
-            }
-            onChange={(e) => {
-              if (e.target.value === "__custom__") return;
-              setSettings({ ...settings, default_model: e.target.value });
-            }}
-          >
-            {modelsForProvider.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-            <option value="__custom__">Custom model ID…</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>Model ID (catalog or free-text)</span>
-          <input
-            value={settings.default_model}
-            onChange={(e) =>
-              setSettings({ ...settings, default_model: e.target.value.trim() })
-            }
-            placeholder="e.g. gpt-4o-mini"
-          />
-        </label>
-        <label className="field">
+        <ModelPicker
+          provider={settings.default_provider}
+          modelId={settings.default_model}
+          refreshKey={keyEpoch}
+          onChange={(provider, modelId) =>
+            patch({ default_provider: provider, default_model: modelId })
+          }
+        />
+        <label className="field" style={{ marginTop: 12 }}>
           <span>Resume last chat within (minutes)</span>
           <input
             type="number"
             min={0}
             value={settings.resume_minutes}
             onChange={(e) =>
-              setSettings({
-                ...settings,
-                resume_minutes: Number(e.target.value) || 0,
-              })
+              patch({ resume_minutes: Number(e.target.value) || 0 })
             }
           />
         </label>
@@ -157,27 +201,39 @@ export function Settings({ onClose, onSaved }: Props) {
 
       <section>
         <h3>Window</h3>
+        <label className="field">
+          <span>Global hotkey</span>
+          <div className="hotkey-row">
+            <code className="hotkey-display">
+              {recording
+                ? "Press keys… (Esc cancel)"
+                : formatHotkey(settings.hotkey || DEFAULT_HOTKEY)}
+            </code>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setRecording(true)}
+            >
+              Record
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => patch({ hotkey: DEFAULT_HOTKEY })}
+            >
+              Reset
+            </button>
+          </div>
+          {hotkeyError && <p className="hint error-text">{hotkeyError}</p>}
+        </label>
         <label className="check">
           <input
             type="checkbox"
             checked={settings.always_on_top}
-            onChange={(e) =>
-              setSettings({ ...settings, always_on_top: e.target.checked })
-            }
+            onChange={(e) => patch({ always_on_top: e.target.checked })}
           />
           Always on top
         </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={settings.web_search}
-            onChange={(e) =>
-              setSettings({ ...settings, web_search: e.target.checked })
-            }
-          />
-          Web search on by default (provider-native)
-        </label>
-        <p className="hint">Hotkey: ⌘⇧Space (mac) / Ctrl+Shift+Space (win) · Close hides</p>
       </section>
 
       <section>
@@ -194,12 +250,7 @@ export function Settings({ onClose, onSaved }: Props) {
         </button>
       </section>
 
-      <div className="settings-footer">
-        <button type="button" className="primary" onClick={() => void save()}>
-          Save
-        </button>
-        {status && <span className="hint">{status}</span>}
-      </div>
+      {status && <p className="hint settings-status">{status}</p>}
     </div>
   );
 }

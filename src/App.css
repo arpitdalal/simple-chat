@@ -1,0 +1,394 @@
+:root {
+  color-scheme: dark;
+  --bg: #1c1c1e;
+  --bg-side: #161618;
+  --bg-elev: #2a2a2d;
+  --bg-hover: #<PRIVATE_ADDRESS>;
+  --border: #2e2e32;
+  --text: #f2f2f3;
+  --muted: #8e8e93;
+  --accent: #0a84ff;
+  --danger: #ff453a;
+  --radius: 10px;
+  font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+.boot {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: 100%;
+}
+
+.sidebar {
+  background: var(--bg-side);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-top {
+  padding: 12px;
+}
+
+.search {
+  width: 100%;
+  border: none;
+  background: var(--bg-elev);
+  border-radius: 8px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+
+.chat-list {
+  overflow: auto;
+  padding: 0 8px 12px;
+  flex: 1;
+}
+
+.chat-group-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 10px 8px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chat-item {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+  display: block;
+}
+
+.chat-item:hover {
+  background: var(--bg-hover);
+}
+
+.chat-item.active {
+  background: var(--bg-elev);
+}
+
+.chat-item-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-item-preview {
+  color: var(--muted);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.empty-side {
+  color: var(--muted);
+  padding: 16px 8px;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.topbar {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+
+.pill {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.toggles {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle.on {
+  color: var(--text);
+}
+
+.toggle input {
+  accent-color: var(--accent);
+}
+
+.messages {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 28px 24px;
+}
+
+.empty-state {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+}
+
+.empty-state h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.empty-state p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.msg {
+  max-width: 720px;
+  margin: 0 auto 18px;
+}
+
+.msg-role {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.msg-body {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.composer-wrap {
+  padding: 0 20px 16px;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.composer textarea {
+  flex: 1;
+  border: none;
+  background: transparent;
+  resize: none;
+  outline: none;
+  min-height: 24px;
+  max-height: 160px;
+}
+
+.composer-meta {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.attach-row {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.thumb {
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.thumb img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.ghost {
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.ghost:hover {
+  background: var(--bg-hover);
+}
+
+.ghost.tiny {
+  margin-top: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.primary {
+  border: none;
+  background: var(--accent);
+  color: white;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.danger {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.error-banner {
+  margin: 0 20px 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  color: #ff8a84;
+}
+
+.settings-panel {
+  padding: 24px 32px;
+  overflow: auto;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings-panel h2 {
+  margin: 0;
+}
+
+.settings-panel section {
+  margin-top: 24px;
+  max-width: 480px;
+}
+
+.settings-panel h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.field input,
+.field select {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-footer {
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

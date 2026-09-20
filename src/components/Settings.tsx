@@ -95,13 +95,15 @@ export function Settings({ onClose, onSaved }: Props) {
   async function persist(s: AppSettings) {
     const requested = s.hotkey.trim() || DEFAULT_HOTKEY;
     let hotkey = requested;
+    let hotkeyOk = true;
     try {
       await applyHotkey(requested);
       setHotkeyError("");
     } catch (err) {
+      hotkeyOk = false;
       setHotkeyError((err as Error).message || String(err));
       // Keep last working binding in settings + UI when OS rejects the new one.
-      hotkey = getActiveHotkey() || DEFAULT_HOTKEY;
+      hotkey = getActiveHotkey() || s.hotkey.trim() || DEFAULT_HOTKEY;
       if (hotkey !== requested) {
         setSettings((prev) => {
           if (!prev) return prev;
@@ -120,7 +122,7 @@ export function Settings({ onClose, onSaved }: Props) {
     await setSetting("hotkey", hotkey);
     await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
     onSaved({ ...s, hotkey });
-    setStatus("Saved");
+    setStatus(hotkeyOk ? "Saved" : "Saved (hotkey unchanged)");
   }
 
   async function saveKey(provider: ProviderId) {

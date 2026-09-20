@@ -1,7 +1,6 @@
 import {
   register,
   unregister,
-  unregisterAll,
 } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -10,6 +9,9 @@ export const DEFAULT_HOTKEY = "CommandOrControl+Shift+Space";
 /** Currently registered accelerator, or null if none. */
 let activeHotkey: string | null = null;
 
+/** Serialize rebinds so OS map and activeHotkey stay aligned. */
+let applyChain: Promise<void> = Promise.resolve();
+
 export function getActiveHotkey(): string | null {
   return activeHotkey;
 }
@@ -17,6 +19,7 @@ export function getActiveHotkey(): string | null {
 /** Reset module state (tests only). */
 export function resetActiveHotkeyForTests() {
   activeHotkey = null;
+  applyChain = Promise.resolve();
 }
 
 export async function toggleMainWindow() {
@@ -37,7 +40,7 @@ function onHotkey(event: { state: string }) {
   if (event.state === "Pressed") void toggleMainWindow();
 }
 
-export function hotkeyConflictMessage(accelerator: string, err: unknown): string {
+function conflictMessage(accelerator: string, err: unknown): string {
   const detail = err instanceof Error ? err.message : String(err);
   return (
     `Could not register ${formatHotkey(accelerator)}` +
@@ -48,33 +51,47 @@ export function hotkeyConflictMessage(accelerator: string, err: unknown): string
 
 /**
  * Register global hotkey; replaces any previous.
- * On failure, restores the previous binding when possible.
+ * Registers the new binding first so a conflict never leaves the app unbound.
  */
 export async function applyHotkey(accelerator: string) {
-  const next = accelerator.trim() || DEFAULT_HOTKEY;
-  const prev = activeHotkey;
+  const run = async () => {
+    const next = accelerator.trim() || DEFAULT_HOTKEY;
+    const prev = activeHotkey;
+    if (prev === next) return;
 
-  if (prev) {
-    await unregister(prev);
-    activeHotkey = null;
-  } else {
-    await unregisterAll();
-  }
+    try {
+      await register(next, onHotkey);
+    } catch (err) {
+      throw new Error(conflictMessage(next, err));
+    }
 
-  try {
-    await register(next, onHotkey);
-    activeHotkey = next;
-  } catch (err) {
     if (prev) {
       try {
-        await register(prev, onHotkey);
-        activeHotkey = prev;
+        await unregister(prev);
       } catch {
-        activeHotkey = null;
+        // New is live; drop it so the previous OS binding remains the only one.
+        try {
+          await unregister(next);
+        } catch {
+          /* both may be live — prefer tracking the one we just registered */
+          activeHotkey = next;
+          return;
+        }
+        throw new Error(
+          `Registered ${formatHotkey(next)} but could not release ${formatHotkey(prev)}. Rebind or restart.`,
+        );
       }
     }
-    throw new Error(hotkeyConflictMessage(next, err));
-  }
+
+    activeHotkey = next;
+  };
+
+  const queued = applyChain.then(run, run);
+  applyChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
 }
 
 /** Map a KeyboardEvent to a global-shortcut accelerator, or null if incomplete. */

@@ -130,6 +130,36 @@ describe("Settings behaviors", () => {
     expect(applyHotkey).not.toHaveBeenCalledWith("A");
   });
 
+  it("commits typed hotkey on Escape before panel can close", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Alt+Z");
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Alt+Z",
+      ),
+    );
+  });
+
+  it("restores last-good when Record clear fails", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockRejectedValue(new Error("Could not release hotkeys"));
+    applyHotkey.mockClear();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByText(/Could not release hotkeys/i)).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Space"),
+    );
+  });
+
   it("flushes settings changed during Record after Escape", async () => {
     const user = userEvent.setup();
     clearHotkey.mockResolvedValue(undefined);

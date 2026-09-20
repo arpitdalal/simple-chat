@@ -58,12 +58,14 @@ function conflictMessage(accelerator: string, err: unknown): string {
   );
 }
 
-async function stillRegistered(accel: string): Promise<boolean> {
+/** yes = ours, no = not ours, unknown = probe failed */
+type RegProbe = "yes" | "no" | "unknown";
+
+async function probeRegistered(accel: string): Promise<RegProbe> {
   try {
-    return await isRegistered(accel);
+    return (await isRegistered(accel)) ? "yes" : "no";
   } catch {
-    // Probe failure = unknown; assume still live so we keep tracking.
-    return true;
+    return "unknown";
   }
 }
 
@@ -78,10 +80,10 @@ async function sweepOrphans(keep: Set<string>) {
     try {
       await unregister(accel);
     } catch {
-      if (await stillRegistered(accel)) {
-        remaining.push(accel);
-        failed.push(accel);
-      }
+      const probe = await probeRegistered(accel);
+      if (probe === "no") continue; // confirmed gone
+      remaining.push(accel);
+      failed.push(accel);
     }
   }
   orphanHotkeys = remaining;
@@ -107,10 +109,24 @@ export async function applyHotkey(accelerator: string) {
 
     if (prev === next) return;
 
-    if (nextWasOrphan && (await stillRegistered(next))) {
-      orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
+    if (nextWasOrphan) {
+      const probe = await probeRegistered(next);
+      if (probe === "unknown") {
+        throw new Error(
+          `Could not verify ${formatHotkey(next)} is still registered. Rebind or restart.`,
+        );
+      }
+      if (probe === "yes") {
+        orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
+      } else {
+        orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
+        try {
+          await register(next, onHotkey);
+        } catch (err) {
+          throw new Error(conflictMessage(next, err));
+        }
+      }
     } else {
-      orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
       try {
         await register(next, onHotkey);
       } catch (err) {
@@ -122,14 +138,14 @@ export async function applyHotkey(accelerator: string) {
       try {
         await unregister(prev);
       } catch {
-        if (await stillRegistered(prev)) {
+        const prevProbe = await probeRegistered(prev);
+        if (prevProbe !== "no") {
           // New is live; try to drop it so previous remains the only binding.
           try {
             await unregister(next);
           } catch {
-            if (await stillRegistered(next)) {
-              orphanHotkeys.push(next);
-            }
+            const nextProbe = await probeRegistered(next);
+            if (nextProbe !== "no") orphanHotkeys.push(next);
             activeHotkey = prev;
             throw new Error(
               `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,
@@ -140,7 +156,7 @@ export async function applyHotkey(accelerator: string) {
             `Registered ${formatHotkey(next)} but could not release ${formatHotkey(prev)}. Rebind or restart.`,
           );
         }
-        // prev already gone from OS — treat as success
+        // prev confirmed gone from OS — treat as success
       }
     }
 

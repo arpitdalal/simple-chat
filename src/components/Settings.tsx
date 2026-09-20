@@ -52,6 +52,7 @@ export function Settings({ onClose, onSaved }: Props) {
   const recordGenRef = useRef(0);
   /** Settings snapshot deferred while recording; flushed when recording ends. */
   const deferredPersistRef = useRef<AppSettings | null>(null);
+  const hotkeyDraftRef = useRef<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -127,9 +128,19 @@ export function Settings({ onClose, onSaved }: Props) {
     return () => {
       recordGenRef.current += 1;
       recordingRef.current = false;
+      const draft = hotkeyDraftRef.current;
+      hotkeyDraftRef.current = null;
       const deferred = deferredPersistRef.current;
       deferredPersistRef.current = null;
       restorePausedHotkey();
+      const base = settingsRef.current;
+      if (draft != null && base) {
+        const raw = draft.trim() || DEFAULT_HOTKEY;
+        if (isValidAccelerator(raw)) {
+          void persist({ ...base, hotkey: raw });
+          return;
+        }
+      }
       if (deferred) {
         void persist({
           ...deferred,
@@ -143,6 +154,7 @@ export function Settings({ onClose, onSaved }: Props) {
     if (hotkeyDraft == null || !settings) return;
     const raw = hotkeyDraft.trim() || DEFAULT_HOTKEY;
     setHotkeyDraft(null);
+    hotkeyDraftRef.current = null;
     if (!isValidAccelerator(raw)) {
       setHotkeyError(
         "Need at least one modifier (e.g. CommandOrControl+Shift+K).",
@@ -158,6 +170,7 @@ export function Settings({ onClose, onSaved }: Props) {
     // Arm restore before any await so Close mid-flush still restores.
     pausedForRecordRef.current = true;
     setHotkeyDraft(null);
+    hotkeyDraftRef.current = null;
     setHotkeyError("");
     // Flush pending debounce first so unrelated edits are not dropped.
     if (saveTimer.current && settingsRef.current) {
@@ -170,8 +183,8 @@ export function Settings({ onClose, onSaved }: Props) {
       await clearHotkey();
     } catch (err) {
       if (gen !== recordGenRef.current) return;
-      pausedForRecordRef.current = false;
       setHotkeyError((err as Error).message || String(err));
+      restorePausedHotkey();
       return;
     }
     if (gen !== recordGenRef.current) {
@@ -359,13 +372,23 @@ export function Settings({ onClose, onSaved }: Props) {
                   : (hotkeyDraft ?? (settings.hotkey || DEFAULT_HOTKEY))
               }
               onChange={(e) => {
-                if (!recording) setHotkeyDraft(e.target.value);
+                if (!recording) {
+                  setHotkeyDraft(e.target.value);
+                  hotkeyDraftRef.current = e.target.value;
+                }
               }}
               onBlur={() => commitHotkeyDraft()}
               onKeyDown={(e) => {
                 if (recording) return;
                 if (e.key === "Enter") {
                   e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                }
+                if (e.key === "Escape") {
+                  // Commit before App's Escape handler closes Settings.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  commitHotkeyDraft();
                   (e.target as HTMLInputElement).blur();
                 }
               }}

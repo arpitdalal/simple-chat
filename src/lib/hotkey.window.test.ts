@@ -211,6 +211,27 @@ describe("hotkey window actions", () => {
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
   });
 
+  it("applyHotkey aborts promote when ownership probe is unknown", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValue(new Error("busy"));
+    isRegistered.mockResolvedValue(true);
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+
+    unregister.mockClear();
+    register.mockClear();
+    isRegistered.mockRejectedValue(new Error("ipc"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not verify/i,
+    );
+    expect(register).not.toHaveBeenCalled();
+    expect(unregister).not.toHaveBeenCalled();
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
   it("clearHotkey uses unregisterAll", async () => {
     register.mockResolvedValue(undefined);
     unregisterAll.mockResolvedValue(undefined);

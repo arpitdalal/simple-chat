@@ -148,10 +148,8 @@ export function Settings({ onClose, onSaved }: Props) {
         }
       }
       if (deferred) {
-        void persist({
-          ...deferred,
-          hotkey: lastGoodHotkeyRef.current,
-        });
+        // Keep deferred.hotkey (e.g. Reset-to-default during Record).
+        void persist(deferred);
       }
     };
   }, []);
@@ -184,7 +182,15 @@ export function Settings({ onClose, onSaved }: Props) {
     if (saveTimer.current && settingsRef.current) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
-      await persist(settingsRef.current, { allowDuringPause: true });
+      try {
+        await persist(settingsRef.current, { allowDuringPause: true });
+      } catch (err) {
+        if (gen !== recordGenRef.current) return;
+        setHotkeyError((err as Error).message || String(err));
+        restorePausedHotkey();
+        flushDeferredPersist();
+        return;
+      }
       if (gen !== recordGenRef.current) return;
     }
     try {

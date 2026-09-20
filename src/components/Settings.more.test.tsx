@@ -174,6 +174,47 @@ describe("Settings behaviors", () => {
     expect(screen.getByText("Record").closest("button")).toBeDisabled();
   });
 
+  it("disarms Record pause when pre-clear flush rejects", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Shift+Z");
+    setSetting.mockRejectedValueOnce(new Error("db locked"));
+    applyHotkey.mockClear();
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByText(/db locked/i)).toBeInTheDocument(),
+    );
+    expect(clearHotkey).not.toHaveBeenCalled();
+    // Pause disarmed — typed edits work again.
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Alt+Y");
+    expect(input).toHaveValue("CommandOrControl+Alt+Y");
+  });
+
+  it("keeps Reset-to-default when closing during Record", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    const { unmount } = render(
+      <Settings onClose={vi.fn()} onSaved={onSaved} />,
+    );
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    setSetting.mockClear();
+    applyHotkey.mockClear();
+    await user.click(screen.getByText("Reset"));
+    unmount();
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+Space",
+      ),
+    );
+  });
+
   it("flushes settings changed during Record after Escape", async () => {
     const user = userEvent.setup();
     clearHotkey.mockResolvedValue(undefined);

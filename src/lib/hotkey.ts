@@ -62,7 +62,8 @@ async function stillRegistered(accel: string): Promise<boolean> {
   try {
     return await isRegistered(accel);
   } catch {
-    return false;
+    // Probe failure = unknown; assume still live so we keep tracking.
+    return true;
   }
 }
 

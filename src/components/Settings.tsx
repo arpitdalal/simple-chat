@@ -46,8 +46,10 @@ export function Settings({ onClose, onSaved }: Props) {
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
   const recordingRef = useRef(false);
-  /** True once Record intends to clear — including while clearHotkey is in flight. */
+  /** True once Record intends to clear — including while flush/clear are in flight. */
   const pausedForRecordRef = useRef(false);
+  /** Bumped on unmount / new Record to cancel in-flight startRecording. */
+  const recordGenRef = useRef(0);
   /** Settings snapshot deferred while recording; flushed when recording ends. */
   const deferredPersistRef = useRef<AppSettings | null>(null);
 
@@ -120,9 +122,10 @@ export function Settings({ onClose, onSaved }: Props) {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [recording, settings]);
 
-  // Close/unmount while paused (incl. clear in flight) — restore + flush deferred.
+  // Close/unmount while paused (incl. flush/clear in flight) — restore + flush deferred.
   useEffect(() => {
     return () => {
+      recordGenRef.current += 1;
       recordingRef.current = false;
       const deferred = deferredPersistRef.current;
       deferredPersistRef.current = null;
@@ -151,22 +154,29 @@ export function Settings({ onClose, onSaved }: Props) {
   }
 
   async function startRecording() {
+    const gen = ++recordGenRef.current;
+    // Arm restore before any await so Close mid-flush still restores.
+    pausedForRecordRef.current = true;
+    setHotkeyDraft(null);
+    setHotkeyError("");
     // Flush pending debounce first so unrelated edits are not dropped.
     if (saveTimer.current && settingsRef.current) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
       await persist(settingsRef.current);
+      if (gen !== recordGenRef.current) return;
     }
-    setHotkeyDraft(null);
-    setHotkeyError("");
-    // Mark paused before await so unmount during clear still restores.
-    // Arm the key listener only after clear succeeds.
-    pausedForRecordRef.current = true;
     try {
       await clearHotkey();
     } catch (err) {
+      if (gen !== recordGenRef.current) return;
       pausedForRecordRef.current = false;
       setHotkeyError((err as Error).message || String(err));
+      return;
+    }
+    if (gen !== recordGenRef.current) {
+      // Unmounted (or superseded) after clear — put last-good back.
+      void applyHotkey(lastGoodHotkeyRef.current).catch(() => {});
       return;
     }
     setRecording(true);

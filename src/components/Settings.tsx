@@ -109,9 +109,13 @@ export function Settings({ onClose, onSaved }: Props) {
       setHotkeyError((err as Error).message || String(err));
       // Never persist a rejected combo — keep last known-good.
       hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;
-      if (hotkey !== requested) {
+      // Only roll UI back if this request is still showing and not superseded.
+      if (
+        hotkey !== requested &&
+        gen === persistGenRef.current
+      ) {
         setSettings((prev) => {
-          if (!prev) return prev;
+          if (!prev || prev.hotkey !== requested) return prev;
           const next = { ...prev, hotkey };
           settingsRef.current = next;
           return next;

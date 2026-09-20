@@ -6,8 +6,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export const DEFAULT_HOTKEY = "CommandOrControl+Shift+Space";
 
-/** Currently registered accelerator, or null if none. */
+/** Currently preferred registered accelerator, or null if none. */
 let activeHotkey: string | null = null;
+
+/**
+ * Accelerators that may still be live with the OS after a failed cleanup.
+ * Swept on the next apply so orphans cannot keep toggling the window.
+ */
+let orphanHotkeys: string[] = [];
 
 /** Serialize rebinds so OS map and activeHotkey stay aligned. */
 let applyChain: Promise<void> = Promise.resolve();
@@ -19,6 +25,7 @@ export function getActiveHotkey(): string | null {
 /** Reset module state (tests only). */
 export function resetActiveHotkeyForTests() {
   activeHotkey = null;
+  orphanHotkeys = [];
   applyChain = Promise.resolve();
 }
 
@@ -49,6 +56,22 @@ function conflictMessage(accelerator: string, err: unknown): string {
   );
 }
 
+async function sweepOrphans(keep: Set<string>) {
+  const remaining: string[] = [];
+  for (const accel of orphanHotkeys) {
+    if (keep.has(accel)) {
+      remaining.push(accel);
+      continue;
+    }
+    try {
+      await unregister(accel);
+    } catch {
+      remaining.push(accel);
+    }
+  }
+  orphanHotkeys = remaining;
+}
+
 /**
  * Register global hotkey; replaces any previous.
  * Registers the new binding first so a conflict never leaves the app unbound.
@@ -57,6 +80,10 @@ export async function applyHotkey(accelerator: string) {
   const run = async () => {
     const next = accelerator.trim() || DEFAULT_HOTKEY;
     const prev = activeHotkey;
+    if (prev === next && orphanHotkeys.length === 0) return;
+
+    await sweepOrphans(new Set([next, prev].filter(Boolean) as string[]));
+
     if (prev === next) return;
 
     try {
@@ -73,7 +100,8 @@ export async function applyHotkey(accelerator: string) {
         try {
           await unregister(next);
         } catch {
-          // ponytail: both may stay live if OS rejects both unregisters; throw so UI warns
+          // ponytail: both may stay live; remember next so later applies can sweep it
+          orphanHotkeys.push(next);
           activeHotkey = prev;
           throw new Error(
             `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,

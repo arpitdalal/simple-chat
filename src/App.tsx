@@ -126,7 +126,9 @@ function App() {
       await refreshChats();
       setReady(true);
       focusComposer();
-      void checkForAppUpdate().then(setPendingUpdate);
+      void checkForAppUpdate().then((result) => {
+        if (result.status === "available") setPendingUpdate(result.update);
+      });
     })();
   }, [refreshChats, focusComposer, notify]);
 
@@ -373,7 +375,10 @@ function App() {
                 <button
                   type="button"
                   className="ghost"
-                  onClick={() => setPendingUpdate(null)}
+                  onClick={() => {
+                    pendingUpdate.dismiss();
+                    setPendingUpdate(null);
+                  }}
                 >
                   Later
                 </button>

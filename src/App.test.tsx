@@ -56,7 +56,7 @@ vi.mock("./lib/hotkey", () => ({
 }));
 
 vi.mock("./lib/updater", () => ({
-  checkForAppUpdate: vi.fn(async () => null),
+  checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
 }));
 
 vi.mock("./lib/keys", () => ({

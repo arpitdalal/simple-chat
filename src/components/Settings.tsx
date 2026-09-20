@@ -531,13 +531,18 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
               setUpdateBusy(true);
               setStatus("Checking for updates…");
               try {
-                const available = await checkForAppUpdate();
-                if (!available) {
+                const result = await checkForAppUpdate();
+                if (result.status === "none") {
                   setStatus("Up to date");
                   return;
                 }
-                setStatus(`Installing ${available.version}…`);
-                await available.install();
+                if (result.status === "error") {
+                  setStatus(result.message);
+                  onNotifyRef.current?.(result.message, "err");
+                  return;
+                }
+                setStatus(`Installing ${result.update.version}…`);
+                await result.update.install();
               } catch (e) {
                 const msg = (e as Error).message || "Update check failed";
                 setStatus(msg);
@@ -548,7 +553,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
             })();
           }}
         >
-          {updateBusy ? "Checking…" : "Check for updates"}
+          {updateBusy ? "Working…" : "Check for updates"}
         </button>
       </section>
 

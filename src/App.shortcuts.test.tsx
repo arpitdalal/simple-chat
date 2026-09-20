@@ -69,6 +69,10 @@ vi.mock("./lib/hotkey", () => ({
   eventToAccelerator: vi.fn(() => null),
 }));
 
+vi.mock("./lib/updater", () => ({
+  checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
+}));
+
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
   setApiKey: vi.fn(),

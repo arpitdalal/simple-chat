@@ -27,10 +27,21 @@
         "transparent": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 16, "y": 20 },
-        "backgroundColor": [0, 0, 0, 0],
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 20
+        },
+        "backgroundColor": [
+          0,
+          0,
+          0,
+          0
+        ],
         "windowEffects": {
-          "effects": ["hudWindow", "mica"],
+          "effects": [
+            "hudWindow",
+            "mica"
+          ],
           "state": "followsWindowActiveState"
         }
       }
@@ -41,7 +52,15 @@
   },
   "plugins": {
     "sql": {
-      "preload": ["sqlite:simple-chat.db"]
+      "preload": [
+        "sqlite:simple-chat.db"
+      ]
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFDNjhDRjIwMTU3MDkzNDAKUldSQWszQVZJTTlvckQ1SkZQYzJXMEw0aUxqRVRwLzV1N0Q5bUJyVE5YcXBVTVQycXF3Y1BHRU0K",
+      "endpoints": [
+        "https://github.com/arpitdalal/simple-chat/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {
@@ -53,6 +72,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
   }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
@@ -22,6 +22,11 @@ import {
 import type { ProviderId } from "./lib/models";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { isEmptyNewChat } from "./lib/chats";
+import {
+  checkForAppUpdate,
+  isRestartRequiredError,
+  type AvailableUpdate,
+} from "./lib/updater";
 import "./App.css";
 
 function App() {
@@ -36,6 +41,18 @@ function App() {
   const [ready, setReady] = useState(false);
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<AvailableUpdate | null>(
+    null,
+  );
+  const [updating, setUpdating] = useState(false);
+  /** Install succeeded; only quit/reopen left — do not re-offer Install. */
+  const [restartRequired, setRestartRequired] = useState(false);
+
+  /** Currently offered update; dismiss before replace. */
+  const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
+  const updateCheckGenRef = useRef(0);
+  const updatingRef = useRef(false);
+  const restartRequiredRef = useRef(false);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -95,6 +112,28 @@ function App() {
   }, [settings, chats, active, focusComposer, refreshChats]);
 
   useEffect(() => {
+    pendingUpdateRef.current = pendingUpdate;
+  }, [pendingUpdate]);
+  useEffect(() => {
+    updatingRef.current = updating;
+  }, [updating]);
+  useEffect(() => {
+    restartRequiredRef.current = restartRequired;
+  }, [restartRequired]);
+
+  function adoptUpdate(update: AvailableUpdate) {
+    // Don't replace or dismiss the in-flight installer / restart-required banner.
+    if (updatingRef.current || restartRequiredRef.current) {
+      update.dismiss();
+      return;
+    }
+    setPendingUpdate((prev) => {
+      if (prev && prev !== update) prev.dismiss();
+      return update;
+    });
+  }
+
+  useEffect(() => {
     void (async () => {
       const s = await getSettings();
       setSettings(s);
@@ -118,7 +157,20 @@ function App() {
       await refreshChats();
       setReady(true);
       focusComposer();
+      const gen = ++updateCheckGenRef.current;
+      void checkForAppUpdate().then((result) => {
+        if (gen !== updateCheckGenRef.current) {
+          if (result.status === "available") result.update.dismiss();
+          return;
+        }
+        if (result.status === "available") adoptUpdate(result.update);
+      });
     })();
+    return () => {
+      updateCheckGenRef.current += 1;
+      pendingUpdateRef.current?.dismiss();
+      pendingUpdateRef.current = null;
+    };
   }, [refreshChats, focusComposer, notify]);
 
   useEffect(() => {
@@ -250,6 +302,27 @@ function App() {
     }
   }
 
+  async function installPendingUpdate() {
+    if (!pendingUpdate || updating || restartRequired) return;
+    setUpdating(true);
+    try {
+      await pendingUpdate.install();
+    } catch (e) {
+      setUpdating(false);
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "string"
+            ? e
+            : "Update failed";
+      if (isRestartRequiredError(e)) {
+        setRestartRequired(true);
+        pendingUpdate.dismiss();
+      }
+      notify(msg, "err");
+    }
+  }
+
   function beginDrag(e: React.MouseEvent) {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
@@ -319,6 +392,8 @@ function App() {
                 void refreshChats();
               }}
               onNotify={notify}
+              onUpdateFound={adoptUpdate}
+              updateLocked={updating || restartRequired}
             />
           </div>
         ) : (
@@ -333,6 +408,40 @@ function App() {
           />
         )}
       </div>
+      {pendingUpdate && (
+        <div className="update-banner" role="status">
+          <span>
+            {restartRequired
+              ? `Update ${pendingUpdate.version} installed — quit and reopen`
+              : updating
+                ? `Installing ${pendingUpdate.version}…`
+                : `Update ${pendingUpdate.version} available`}
+          </span>
+          <div className="update-banner-actions">
+            {!updating && !restartRequired && (
+              <>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void installPendingUpdate()}
+                >
+                  Install &amp; restart
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    pendingUpdate.dismiss();
+                    setPendingUpdate(null);
+                  }}
+                >
+                  Later
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );

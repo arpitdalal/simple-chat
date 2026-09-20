@@ -18,14 +18,25 @@ import {
   getActiveHotkey,
   isValidAccelerator,
 } from "../lib/hotkey";
+import { checkForAppUpdate, type AvailableUpdate } from "../lib/updater";
 
 type Props = {
   onClose: () => void;
   onSaved: (s: AppSettings) => void;
   onNotify?: (text: string, kind?: "ok" | "err") => void;
+  /** Hand discovered updates to App so one banner owns install/restart. */
+  onUpdateFound?: (update: AvailableUpdate) => void;
+  /** True while App is installing or needs manual restart. */
+  updateLocked?: boolean;
 };
 
-export function Settings({ onClose, onSaved, onNotify }: Props) {
+export function Settings({
+  onClose,
+  onSaved,
+  onNotify,
+  onUpdateFound,
+  updateLocked = false,
+}: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
     openai: "",
@@ -43,6 +54,8 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   const [hotkeyDraft, setHotkeyDraft] = useState<string | null>(null);
   const [hotkeyError, setHotkeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const updateCheckGenRef = useRef(0);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
@@ -57,6 +70,12 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+
+  useEffect(() => {
+    return () => {
+      updateCheckGenRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -516,6 +535,54 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
           />
           Always on top
         </label>
+      </section>
+
+      <section>
+        <h3>Updates</h3>
+        <button
+          type="button"
+          className="ghost"
+          disabled={updateBusy || updateLocked}
+          onClick={() => {
+            void (async () => {
+              const gen = ++updateCheckGenRef.current;
+              setUpdateBusy(true);
+              setStatus("Checking for updates…");
+              try {
+                const result = await checkForAppUpdate();
+                if (gen !== updateCheckGenRef.current) {
+                  if (result.status === "available") result.update.dismiss();
+                  return;
+                }
+                if (result.status === "none") {
+                  setStatus("Up to date");
+                  return;
+                }
+                if (result.status === "error") {
+                  setStatus(result.message);
+                  onNotifyRef.current?.(result.message, "err");
+                  return;
+                }
+                setStatus(`Update ${result.update.version} available`);
+                onUpdateFound?.(result.update);
+              } catch (e) {
+                if (gen !== updateCheckGenRef.current) return;
+                const msg =
+                  e instanceof Error
+                    ? e.message
+                    : typeof e === "string"
+                      ? e
+                      : "Update check failed";
+                setStatus(msg);
+                onNotifyRef.current?.(msg, "err");
+              } finally {
+                if (gen === updateCheckGenRef.current) setUpdateBusy(false);
+              }
+            })();
+          }}
+        >
+          {updateBusy ? "Checking…" : "Check for updates"}
+        </button>
       </section>
 
       <section>

@@ -151,8 +151,9 @@ export function Settings({ onClose, onSaved }: Props) {
   }, []);
 
   function commitHotkeyDraft() {
-    if (hotkeyDraft == null || !settings) return;
-    const raw = hotkeyDraft.trim() || DEFAULT_HOTKEY;
+    const draft = hotkeyDraft ?? hotkeyDraftRef.current;
+    if (draft == null || !settings) return;
+    const raw = draft.trim() || DEFAULT_HOTKEY;
     setHotkeyDraft(null);
     hotkeyDraftRef.current = null;
     if (!isValidAccelerator(raw)) {
@@ -385,11 +386,8 @@ export function Settings({ onClose, onSaved }: Props) {
                   (e.target as HTMLInputElement).blur();
                 }
                 if (e.key === "Escape") {
-                  // Commit before App's Escape handler closes Settings.
-                  e.preventDefault();
-                  e.stopPropagation();
+                  // Commit so App's Escape can close Settings without losing the draft.
                   commitHotkeyDraft();
-                  (e.target as HTMLInputElement).blur();
                 }
               }}
             />

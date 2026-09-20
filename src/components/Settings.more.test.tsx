@@ -131,11 +131,13 @@ describe("Settings behaviors", () => {
   });
 
   it("commits typed hotkey on Escape before panel can close", async () => {
+    const onClose = vi.fn();
     const user = userEvent.setup();
-    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    render(<Settings onClose={onClose} onSaved={onSaved} />);
     const input = await screen.findByLabelText(/Global hotkey accelerator/i);
     await user.clear(input);
     await user.type(input, "CommandOrControl+Alt+Z");
+    // Mimic App: Escape on focused input must commit; parent closes Settings.
     await user.keyboard("{Escape}");
     await waitFor(() =>
       expect(setSetting).toHaveBeenCalledWith(

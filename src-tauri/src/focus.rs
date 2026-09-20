@@ -4,6 +4,8 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// PID of the app that was frontmost before we took focus. 0 = none.
+/// ponytail: PID identity can race with process recycle; upgrade to retained
+/// NSRunningApplication / bundle id if wrong-target reports appear.
 static PREV_PID: AtomicI32 = AtomicI32::new(0);
 
 /// True while hide+restore runs — blur must not clobber PREV_PID mid-restore.

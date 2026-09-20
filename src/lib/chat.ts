@@ -121,6 +121,7 @@ export async function streamChat(opts: {
       opts.onRetry?.(attempt);
       await sleep(STREAM_BACKOFF_MS * 2 ** (attempt - 1), opts.abortSignal);
     }
+    let emitted = false;
     try {
       // maxRetries: 0 — we own the backoff loop so mid-stream failures can reset tokens
       const result = streamText({
@@ -134,14 +135,17 @@ export async function streamChat(opts: {
       });
 
       for await (const delta of result.textStream) {
+        emitted = true;
         opts.onToken(delta);
       }
 
       return result;
     } catch (e) {
       lastError = e;
+      const canReset = !emitted || opts.onRetry != null;
       if (
         !isRetryableStreamError(e) ||
+        !canReset ||
         attempt === STREAM_MAX_ATTEMPTS - 1
       ) {
         throw e;

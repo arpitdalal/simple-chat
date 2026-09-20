@@ -289,11 +289,17 @@ export function ChatView({
         if (wouldTrim) setHasMore(true);
         setStreaming("");
       }
-      await updateChat(chatId, { preview: full.slice(0, 120) });
+      // Preview update is best-effort — don't re-enter append on metadata failure
+      try {
+        await updateChat(chatId, { preview: full.slice(0, 120) });
+      } catch {
+        /* ignore */
+      }
       onChatUpdated();
     };
 
     let full = "";
+    let assistantSaved = false;
     try {
       await streamChat({
         provider: chatSnap.provider as ProviderId,
@@ -314,17 +320,19 @@ export function ChatView({
       });
 
       await appendAssistant(full);
+      assistantSaved = true;
     } catch (e) {
       const aborted = (e as Error).name === "AbortError";
       const partial = full || streamTextRef.current;
       // Keep partial reply instead of wiping it on API failure
-      if (!aborted && partial) {
+      if (!aborted && !assistantSaved && partial) {
         try {
           await appendAssistant(partial);
+          assistantSaved = true;
         } catch {
           if (viewingIdRef.current === chatId) setStreaming("");
         }
-      } else if (viewingIdRef.current === chatId) {
+      } else if (viewingIdRef.current === chatId && !assistantSaved) {
         setStreaming("");
       }
       if (!aborted) {

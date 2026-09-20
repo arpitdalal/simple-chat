@@ -249,4 +249,26 @@ describe("streamChat", () => {
     ).rejects.toThrow(/No API key/);
     expect(streamText).toHaveBeenCalledTimes(1);
   });
+
+  it("does not retry mid-stream without onRetry (would duplicate tokens)", async () => {
+    getApiKey.mockResolvedValue("sk");
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "partial";
+        throw new Error("Failed to fetch");
+      })(),
+    });
+    const onToken = vi.fn();
+    await expect(
+      streamChat({
+        provider: "openai",
+        modelId: "gpt-4o",
+        messages: [],
+        webSearch: false,
+        onToken,
+      }),
+    ).rejects.toThrow(/Failed to fetch/);
+    expect(onToken).toHaveBeenCalledWith("partial");
+    expect(streamText).toHaveBeenCalledTimes(1);
+  });
 });

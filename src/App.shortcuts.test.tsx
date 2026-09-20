@@ -111,6 +111,7 @@ vi.mock("./lib/db", () => ({
   listOlderMessages: vi.fn(async () => []),
   clearChatMessages: vi.fn(),
   addMessage: vi.fn(),
+  branchChat: vi.fn(),
 }));
 
 import App from "./App";

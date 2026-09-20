@@ -8,6 +8,8 @@ const generateChatTitle = vi.fn();
 const addMessage = vi.fn();
 const listRecentMessages = vi.fn();
 const listOlderMessages = vi.fn();
+const listMessages = vi.fn();
+const deleteMessagesAfter = vi.fn();
 const updateChat = vi.fn();
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -27,6 +29,8 @@ vi.mock("../lib/db", () => ({
   addMessage: (...a: unknown[]) => addMessage(...a),
   listRecentMessages: (...a: unknown[]) => listRecentMessages(...a),
   listOlderMessages: (...a: unknown[]) => listOlderMessages(...a),
+  listMessages: (...a: unknown[]) => listMessages(...a),
+  deleteMessagesAfter: (...a: unknown[]) => deleteMessagesAfter(...a),
   updateChat: (...a: unknown[]) => updateChat(...a),
 }));
 
@@ -58,6 +62,8 @@ describe("ChatView", () => {
     vi.clearAllMocks();
     listRecentMessages.mockResolvedValue([]);
     listOlderMessages.mockResolvedValue([]);
+    listMessages.mockResolvedValue([]);
+    deleteMessagesAfter.mockResolvedValue(undefined);
     updateChat.mockResolvedValue(undefined);
     generateChatTitle.mockResolvedValue("Auto Title");
     addMessage.mockImplementation(async (_id, role, content) =>
@@ -86,6 +92,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -118,6 +126,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={onChatMeta}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -159,6 +169,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -175,8 +187,9 @@ describe("ChatView", () => {
     expect(screen.queryByText(/aborted/i)).toBeNull();
   });
 
-  it("shows error banner on stream failure", async () => {
+  it("notifies on stream failure", async () => {
     const user = userEvent.setup();
+    const onNotify = vi.fn();
     streamChat.mockRejectedValue(new Error("No API key for google"));
     render(
       <ChatView
@@ -184,6 +197,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={onNotify}
         focusNonce={1}
       />,
     );
@@ -192,7 +207,9 @@ describe("ChatView", () => {
     );
     await user.type(screen.getByPlaceholderText("Ask AI anything…"), "fail");
     await user.keyboard("{Enter}");
-    expect(await screen.findByText("No API key for google")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith("No API key for google", "err"),
+    );
   });
 
   it("loads older messages when scrolled near top", async () => {
@@ -216,6 +233,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -244,6 +263,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -283,6 +304,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -306,6 +329,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -326,6 +351,8 @@ describe("ChatView", () => {
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
         onNew={onNew}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -344,6 +371,8 @@ describe("ChatView", () => {
         onChatUpdated={onChatUpdated}
         onChatMeta={onChatMeta}
         onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
         focusNonce={1}
       />,
     );
@@ -366,5 +395,199 @@ describe("ChatView", () => {
       expect.objectContaining({ provider: "openai", model_id: "gpt-4o" }),
     );
     expect(onChatUpdated).toHaveBeenCalled();
+  });
+
+  it("user messages have icon Copy and Branch with feedback", async () => {
+    const user = userEvent.setup();
+    const onBranch = vi.fn(async () => {});
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    listRecentMessages.mockResolvedValue([
+      msg({ id: "u1", role: "user", content: "hello user" }),
+      msg({ id: "a1", role: "assistant", content: "hi back" }),
+    ]);
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={onBranch}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("hello user")).toBeInTheDocument());
+    const copies = screen.getAllByRole("button", { name: "Copy" });
+    expect(copies.length).toBeGreaterThanOrEqual(2);
+    await user.click(copies[0]);
+    expect(writeText).toHaveBeenCalledWith("hello user");
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+    const branches = screen.getAllByRole("button", { name: "Branch" });
+    await user.click(branches[0]);
+    expect(onBranch).toHaveBeenCalledWith("u1");
+    expect(await screen.findByRole("button", { name: "Branched" })).toBeInTheDocument();
+  });
+
+  it("does not show Thinking on another chat while one streams", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      opts.onToken("partial-A");
+      await gate;
+    });
+
+    const other: Chat = {
+      ...chat,
+      id: "c2",
+      title: "Other",
+      preview: "old reply",
+    };
+    listRecentMessages.mockImplementation(async (id: string) => {
+      if (id === "c2") {
+        return [msg({ id: "old", chat_id: "c2", role: "assistant", content: "old reply" })];
+      }
+      return [];
+    });
+
+    const { rerender } = render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await user.type(await screen.findByPlaceholderText("Ask AI anything…"), "hi");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Thinking…")).toBeInTheDocument();
+    expect(screen.getByText("partial-A")).toBeInTheDocument();
+
+    rerender(
+      <ChatView
+        chat={other}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={2}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("old reply")).toBeInTheDocument());
+    expect(screen.queryByText("Thinking…")).toBeNull();
+    expect(screen.queryByText("partial-A")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+
+    await act(async () => {
+      release();
+    });
+    // still on other chat — stream finish must not append into this thread
+    await waitFor(() => expect(addMessage).toHaveBeenCalled());
+    expect(screen.queryByText("partial-A")).toBeNull();
+    expect(screen.getByText("old reply")).toBeInTheDocument();
+  });
+
+  it("regenerate drops later messages and streams a new reply", async () => {
+    const user = userEvent.setup();
+    const u1 = msg({ id: "u1", role: "user", content: "prompt" });
+    const a1 = msg({ id: "a1", role: "assistant", content: "old answer" });
+    const u2 = msg({ id: "u2", role: "user", content: "follow-up" });
+    listRecentMessages.mockResolvedValue([u1, a1, u2]);
+    listMessages.mockResolvedValue([u1, a1, u2]);
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      opts.onToken("fresh");
+      await gate;
+    });
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("old answer")).toBeInTheDocument());
+    await user.click(screen.getAllByRole("button", { name: "Regenerate" })[0]);
+
+    await waitFor(() => expect(deleteMessagesAfter).toHaveBeenCalledWith("c1", "u1"));
+    await waitFor(() => expect(screen.queryByText("old answer")).toBeNull());
+    expect(screen.queryByText("follow-up")).toBeNull();
+    expect(await screen.findByText("Thinking…")).toBeInTheDocument();
+    expect(screen.getByText("fresh")).toBeInTheDocument();
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
+    expect(screen.getByText("fresh")).toBeInTheDocument();
+    expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "fresh");
+  });
+
+  it("shows scroll-to-bottom when scrolled up and jumps on click", async () => {
+    const user = userEvent.setup();
+    listRecentMessages.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) =>
+        msg({
+          id: `m${i}`,
+          role: i % 2 ? "assistant" : "user",
+          content: `line-${i}`,
+        }),
+      ),
+    );
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("line-0")).toBeInTheDocument());
+
+    const scroller = document.querySelector(".messages") as HTMLDivElement;
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => 2000,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => 400,
+    });
+    scroller.scrollTop = 10;
+    scroller.dispatchEvent(new Event("scroll"));
+
+    expect(
+      await screen.findByRole("button", { name: "Scroll to bottom" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Scroll to bottom" }));
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
+    expect(
+      screen.queryByRole("button", { name: "Scroll to bottom" }),
+    ).toBeNull();
   });
 });

@@ -534,6 +534,29 @@ select {
   background: rgba(255, 255, 255, 0.16);
 }
 
+.jump-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 148px;
+  z-index: 6;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.jump-bottom:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
 /* Floating composer — glass over scrolling content */
 .float-composer {
   position: absolute;
@@ -729,9 +752,75 @@ select {
   background: var(--elev);
 }
 .ghost.tiny {
-  margin-top: 6px;
+  margin-top: 0;
   font-size: 11px;
   padding: 2px 8px;
+}
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.icon-action:hover {
+  color: var(--text);
+  background: var(--elev);
+  border-color: var(--border);
+}
+.icon-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.icon-action:disabled:hover {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 40;
+  transform: translateX(-50%);
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  animation: toast-in 160ms ease-out;
+}
+.toast-ok {
+  background: color-mix(in srgb, var(--accent) 22%, #1c1c1e);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.toast-err {
+  background: color-mix(in srgb, var(--danger) 22%, #1c1c1e);
+  color: #ff8a84;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 .primary {
   border: none;

@@ -1,7 +1,13 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText, streamText, type ModelMessage } from "ai";
+import {
+  generateText,
+  stepCountIs,
+  streamText,
+  type ModelMessage,
+  type ToolSet,
+} from "ai";
 import { getApiKey } from "./keys";
 import type { ProviderId } from "./models";
 
@@ -12,49 +18,47 @@ export const TITLE_MODELS: Record<ProviderId, string> = {
   google: "gemini-3.8-flash",
 };
 
-function makeModel(provider: ProviderId, modelId: string, apiKey: string) {
-  if (provider === "openai") return createOpenAI({ apiKey })(modelId);
-  if (provider === "anthropic") return createAnthropic({ apiKey })(modelId);
-  return createGoogleGenerativeAI({ apiKey })(modelId);
+type AnyProvider =
+  | ReturnType<typeof createOpenAI>
+  | ReturnType<typeof createAnthropic>
+  | ReturnType<typeof createGoogleGenerativeAI>;
+
+function makeProvider(provider: ProviderId, apiKey: string): AnyProvider {
+  if (provider === "openai") return createOpenAI({ apiKey });
+  if (provider === "anthropic") return createAnthropic({ apiKey });
+  return createGoogleGenerativeAI({ apiKey });
 }
 
-function withWebSearch(
-  provider: ProviderId,
-  modelId: string,
-  enabled: boolean,
-): { modelId: string; providerOptions?: Record<string, unknown> } {
-  if (!enabled) return { modelId };
+/** Provider-defined search/fetch tools (AI SDK 5+). Models cannot browse without these. */
+function webSearchTools(provider: ProviderId, client: AnyProvider): ToolSet {
   if (provider === "openai") {
+    const openai = client as ReturnType<typeof createOpenAI>;
     return {
-      modelId,
-      providerOptions: {
-        openai: { tools: [{ type: "web_search" }] },
-      },
+      web_search: openai.tools.webSearch({ externalWebAccess: true }),
     };
   }
   if (provider === "google") {
+    const google = client as ReturnType<typeof createGoogleGenerativeAI>;
     return {
-      modelId,
-      providerOptions: {
-        google: { useSearchGrounding: true },
-      },
+      google_search: google.tools.googleSearch({}),
+      // Fetch URLs mentioned in the prompt (e.g. GitHub links)
+      url_context: google.tools.urlContext({}),
     };
   }
-  if (provider === "anthropic") {
-    return {
-      modelId,
-      providerOptions: {
-        anthropic: {
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        },
-      },
-    };
-  }
-  return { modelId };
+  const anthropic = client as ReturnType<typeof createAnthropic>;
+  return {
+    web_search: anthropic.tools.webSearch_20260318({ maxUses: 5 }),
+    web_fetch: anthropic.tools.webFetch_20260318({}),
+  };
 }
 
-/** Exported for unit tests — provider-native web search wiring. */
-export { withWebSearch };
+/** Exported for unit tests — which tools each provider gets when search is on. */
+export function withWebSearch(provider: ProviderId, enabled: boolean) {
+  if (!enabled) return { tools: undefined as ToolSet | undefined };
+  // Use a dummy key — only the tool descriptors matter for tests / shape checks
+  const client = makeProvider(provider, "test-key");
+  return { tools: webSearchTools(provider, client) };
+}
 
 export async function streamChat(opts: {
   provider: ProviderId;
@@ -67,17 +71,16 @@ export async function streamChat(opts: {
   const key = await getApiKey(opts.provider);
   if (!key) throw new Error(`No API key for ${opts.provider}. Add one in Settings.`);
 
-  const { modelId, providerOptions } = withWebSearch(
-    opts.provider,
-    opts.modelId,
-    opts.webSearch,
-  );
+  const client = makeProvider(opts.provider, key);
+  const tools = opts.webSearch ? webSearchTools(opts.provider, client) : undefined;
 
   const result = streamText({
-    model: makeModel(opts.provider, modelId, key),
+    model: client(opts.modelId),
     messages: opts.messages,
     abortSignal: opts.abortSignal,
-    providerOptions: providerOptions as never,
+    tools,
+    // Allow search/fetch tool round-trips before the final answer
+    ...(tools ? { stopWhen: stepCountIs(5) } : {}),
   });
 
   for await (const delta of result.textStream) {
@@ -97,8 +100,9 @@ export async function generateChatTitle(
     return userMessage.slice(0, 48) + (userMessage.length > 48 ? "…" : "");
   }
   try {
+    const client = makeProvider(provider, key);
     const { text } = await generateText({
-      model: makeModel(provider, TITLE_MODELS[provider], key),
+      model: client(TITLE_MODELS[provider]),
       prompt: `Write a short chat title (3–6 words, no quotes, no punctuation at end) for this user message:\n\n${userMessage.slice(0, 500)}`,
     });
     const cleaned = text

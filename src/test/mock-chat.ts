@@ -7,11 +7,10 @@ export const TITLE_MODELS: Record<ProviderId, string> = {
 };
 
 export function withWebSearch(
-  _provider: ProviderId,
-  modelId: string,
+  _provider: string,
   _enabled: boolean,
 ) {
-  return { modelId };
+  return { tools: undefined };
 }
 
 export async function streamChat(opts: {

@@ -5,6 +5,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ModelMessage } from "ai";
 import {
   addMessage,
+  deleteMessagesAfter,
+  listMessages,
   listOlderMessages,
   listRecentMessages,
   updateChat,
@@ -15,7 +17,15 @@ import { generateChatTitle, streamChat } from "../lib/chat";
 import { resolveModel, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
-import { AiIcon, UserIcon } from "./Icons";
+import {
+  AiIcon,
+  BranchIcon,
+  CheckIcon,
+  CopyIcon,
+  RegenerateIcon,
+  UserIcon,
+} from "./Icons";
+import type { ToastKind } from "./Toast";
 
 const LINE_H = 22;
 const MAX_LINES = 15;
@@ -27,6 +37,8 @@ type Props = {
   onChatUpdated: () => void;
   onChatMeta: (chat: Chat) => void;
   onNew: () => void;
+  onBranch: (throughMessageId: string) => Promise<void>;
+  onNotify: (text: string, kind?: ToastKind) => void;
   focusNonce: number;
 };
 
@@ -35,13 +47,14 @@ export function ChatView({
   onChatUpdated,
   onChatMeta,
   onNew,
+  onBranch,
+  onNotify,
   focusNonce,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -50,8 +63,15 @@ export function ChatView({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<string[]>([]);
   const stickBottom = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+  const viewingIdRef = useRef<string | null>(chat?.id ?? null);
+  const streamOwnerRef = useRef<string | null>(null);
+  const streamTextRef = useRef("");
 
-  const rowCount = messages.length + (busy ? 1 : 0);
+  viewingIdRef.current = chat?.id ?? null;
+  const showStream = busy && streamOwnerRef.current === chat?.id;
+
+  const rowCount = messages.length + (showStream ? 1 : 0);
 
   const virtualizer = useVirtualizer({
     count: rowCount,
@@ -70,9 +90,18 @@ export function ChatView({
     if (!chat) {
       setMessages([]);
       setHasMore(false);
+      setStreaming("");
+      setShowJump(false);
       return;
     }
     let cancelled = false;
+    setShowJump(false);
+    // Restore in-flight stream text when returning to the owning chat
+    if (streamOwnerRef.current === chat.id && busy) {
+      setStreaming(streamTextRef.current);
+    } else {
+      setStreaming("");
+    }
     void (async () => {
       const page = await listRecentMessages(chat.id, PAGE);
       if (cancelled) return;
@@ -93,7 +122,7 @@ export function ChatView({
 
   useLayoutEffect(() => {
     if (stickBottom.current) scrollToBottom();
-  }, [messages, streaming, busy, scrollToBottom]);
+  }, [messages, streaming, showStream, scrollToBottom]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -160,8 +189,16 @@ export function ChatView({
     const el = parentRef.current;
     if (!el) return;
     const distBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickBottom.current = distBottom < 80;
+    const nearBottom = distBottom < 80;
+    stickBottom.current = nearBottom;
+    setShowJump(!nearBottom && (messages.length > 0 || showStream));
     if (el.scrollTop < 80) void loadOlder();
+  }
+
+  function jumpToBottom() {
+    stickBottom.current = true;
+    setShowJump(false);
+    scrollToBottom();
   }
 
   async function changeModel(provider: ProviderId, modelId: string) {
@@ -171,8 +208,81 @@ export function ChatView({
     onChatUpdated();
   }
 
+  /** Stream an assistant reply for `history` (last must be the user turn). */
+  async function streamReply(
+    chatSnap: Chat,
+    history: Message[],
+    lastUserContent?: ModelMessage["content"],
+  ) {
+    const chatId = chatSnap.id;
+    streamOwnerRef.current = chatId;
+    streamTextRef.current = "";
+    flushSync(() => {
+      setBusy(true);
+      setStreaming("");
+    });
+    stickBottom.current = true;
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    const modelMessages: ModelMessage[] = history.map((m) => ({
+      role: m.role as "user" | "assistant" | "system",
+      content: m.content,
+    }));
+    if (lastUserContent !== undefined && modelMessages.length > 0) {
+      modelMessages[modelMessages.length - 1] = {
+        role: "user",
+        content: lastUserContent as never,
+      };
+    }
+
+    try {
+      let full = "";
+      await streamChat({
+        provider: chatSnap.provider as ProviderId,
+        modelId: chatSnap.model_id,
+        messages: modelMessages,
+        webSearch: true,
+        abortSignal: ac.signal,
+        onToken: (t) => {
+          full += t;
+          streamTextRef.current = full;
+          if (viewingIdRef.current === chatId) setStreaming(full);
+        },
+      });
+
+      const assistant = await addMessage(chatId, "assistant", full);
+      if (viewingIdRef.current === chatId) {
+        setMessages((m) => [...m, assistant]);
+        setStreaming("");
+      }
+      await updateChat(chatId, { preview: full.slice(0, 120) });
+      onChatUpdated();
+    } catch (e) {
+      if (viewingIdRef.current === chatId) setStreaming("");
+      if ((e as Error).name !== "AbortError") {
+        onNotify((e as Error).message || String(e), "err");
+      }
+      throw e;
+    } finally {
+      if (streamOwnerRef.current === chatId) {
+        streamOwnerRef.current = null;
+        streamTextRef.current = "";
+        setBusy(false);
+      }
+      abortRef.current = null;
+      if (viewingIdRef.current === chatId) {
+        inputRef.current?.focus();
+        requestAnimationFrame(resizeComposer);
+      }
+    }
+  }
+
   async function send() {
     if (!chat || busy) return;
+    const chatId = chat.id;
+    const chatSnap = chat;
     const text = input.trim();
     if (!text && images.length === 0) return;
     const imageParts = [...images];
@@ -182,16 +292,17 @@ export function ChatView({
 
     // Paint user + Thinking before any await
     flushSync(() => {
-      setError(null);
       setBusy(true);
       setStreaming("");
       setInput("");
       setImages([]);
+      streamOwnerRef.current = chatId;
+      streamTextRef.current = "";
       setMessages((m) => [
         ...m,
         {
           id: tempId,
-          chat_id: chat.id,
+          chat_id: chatId,
           role: "user",
           content: displayText,
           created_at: Date.now(),
@@ -212,76 +323,81 @@ export function ChatView({
           ];
 
     try {
-      const userMsg = await addMessage(chat.id, "user", displayText);
-      setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
+      const userMsg = await addMessage(chatId, "user", displayText);
+      if (viewingIdRef.current === chatId) {
+        setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
+      }
 
-      if (chat.title === "New Chat" && text) {
+      if (chatSnap.title === "New Chat" && text) {
         const provisional =
           text.slice(0, 48) + (text.length > 48 ? "…" : "");
-        await updateChat(chat.id, {
+        await updateChat(chatId, {
           title: provisional,
           preview: text.slice(0, 120),
         });
         onChatMeta({
-          ...chat,
+          ...chatSnap,
           title: provisional,
           preview: text.slice(0, 120),
         });
         onChatUpdated();
-        void generateChatTitle(chat.provider as ProviderId, text).then(
+        void generateChatTitle(chatSnap.provider as ProviderId, text).then(
           async (title) => {
-            await updateChat(chat.id, { title });
-            onChatMeta({ ...chat, title, preview: text.slice(0, 120) });
+            await updateChat(chatId, { title });
+            if (viewingIdRef.current === chatId) {
+              onChatMeta({ ...chatSnap, title, preview: text.slice(0, 120) });
+            }
             onChatUpdated();
           },
         );
       }
 
-      const ac = new AbortController();
-      abortRef.current = ac;
-
       const history = [...messages, userMsg];
-      const modelMessages: ModelMessage[] = history.map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
-      }));
-      // Fix last user content for multimodal
-      modelMessages[modelMessages.length - 1] = {
-        role: "user",
-        content: userContent as never,
-      };
-
-      let full = "";
-      await streamChat({
-        provider: chat.provider as ProviderId,
-        modelId: chat.model_id,
-        messages: modelMessages,
-        webSearch: true,
-        abortSignal: ac.signal,
-        onToken: (t) => {
-          full += t;
-          setStreaming(full);
-        },
-      });
-
-      const assistant = await addMessage(chat.id, "assistant", full);
-      setMessages((m) => [...m, assistant]);
-      setStreaming("");
-      await updateChat(chat.id, { preview: full.slice(0, 120) });
-      onChatUpdated();
+      await streamReply(chatSnap, history, userContent as never);
     } catch (e) {
-      setMessages((m) =>
-        m.some((x) => x.id === tempId) ? m.filter((x) => x.id !== tempId) : m,
-      );
-      if ((e as Error).name !== "AbortError") {
-        setError((e as Error).message || String(e));
+      if (viewingIdRef.current === chatId) {
+        setMessages((m) =>
+          m.some((x) => x.id === tempId) ? m.filter((x) => x.id !== tempId) : m,
+        );
+        setStreaming("");
       }
+      if ((e as Error).name !== "AbortError") {
+        // streamReply already notified for stream errors; only notify if we never got there
+        if (streamOwnerRef.current === chatId) {
+          onNotify((e as Error).message || String(e), "err");
+        }
+      }
+      if (streamOwnerRef.current === chatId) {
+        streamOwnerRef.current = null;
+        streamTextRef.current = "";
+        setBusy(false);
+      }
+    }
+  }
+
+  async function regenerate(userMessageId: string) {
+    if (!chat || busy) return;
+    const chatId = chat.id;
+    const chatSnap = chat;
+    const all = await listMessages(chatId);
+    const idx = all.findIndex((m) => m.id === userMessageId);
+    if (idx < 0 || all[idx].role !== "user") return;
+
+    await deleteMessagesAfter(chatId, userMessageId);
+    const keep = all.slice(0, idx + 1);
+    flushSync(() => {
+      setMessages(keep);
+      setBusy(true);
       setStreaming("");
-    } finally {
-      setBusy(false);
-      abortRef.current = null;
-      inputRef.current?.focus();
-      requestAnimationFrame(resizeComposer);
+      streamOwnerRef.current = chatId;
+      streamTextRef.current = "";
+    });
+    stickBottom.current = true;
+
+    try {
+      await streamReply(chatSnap, keep);
+    } catch {
+      /* notified in streamReply */
     }
   }
 
@@ -332,7 +448,7 @@ export function ChatView({
         {loadingOlder && (
           <div className="load-older">Loading earlier messages…</div>
         )}
-        {!chat || (messages.length === 0 && !busy) ? (
+        {!chat || (messages.length === 0 && !showStream) ? (
           <div className="empty-state">
             <h1>Ask Anything</h1>
             <p>BYOK · local history · hotkey to summon</p>
@@ -343,7 +459,7 @@ export function ChatView({
             style={{ height: virtualizer.getTotalSize(), position: "relative" }}
           >
             {items.map((row) => {
-              const isStream = busy && row.index === messages.length;
+              const isStream = showStream && row.index === messages.length;
               const m = isStream ? null : messages[row.index];
               return (
                 <div
@@ -372,21 +488,23 @@ export function ChatView({
                         <div className="thinking-pill">Thinking…</div>
                         {streaming && <Markdown content={streaming} />}
                       </>
-                    ) : m!.role === "assistant" ? (
-                      <>
-                        <Markdown content={m!.content} />
-                        <button
-                          type="button"
-                          className="ghost tiny"
-                          onClick={() =>
-                            void navigator.clipboard.writeText(m!.content)
-                          }
-                        >
-                          Copy
-                        </button>
-                      </>
                     ) : (
-                      <div className="msg-user">{m!.content}</div>
+                      <>
+                        {m!.role === "assistant" ? (
+                          <Markdown content={m!.content} />
+                        ) : (
+                          <div className="msg-user">{m!.content}</div>
+                        )}
+                        <MsgActions
+                          content={m!.content}
+                          messageId={m!.id}
+                          role={m!.role}
+                          canRegenerate={!busy}
+                          onBranch={onBranch}
+                          onRegenerate={(id) => void regenerate(id)}
+                          onNotify={onNotify}
+                        />
+                      </>
                     )}
                   </div>
                 </div>
@@ -396,7 +514,26 @@ export function ChatView({
         )}
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      {showJump && (
+        <button
+          type="button"
+          className="jump-bottom glass"
+          title="Scroll to bottom"
+          aria-label="Scroll to bottom"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={jumpToBottom}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M6 9l6 6 6-6"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      )}
 
       <div
         className="float-top"
@@ -475,7 +612,7 @@ export function ChatView({
               <ModelPicker
                 provider={chat.provider}
                 modelId={chat.model_id}
-                disabled={busy}
+                disabled={showStream}
                 onChange={(p, m) => void changeModel(p, m)}
               />
             ) : (
@@ -483,7 +620,7 @@ export function ChatView({
             )}
           </div>
           <div className="composer-bar-right">
-            {busy ? (
+            {showStream ? (
               <button
                 type="button"
                 className="ghost"
@@ -497,6 +634,80 @@ export function ChatView({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function MsgActions({
+  content,
+  messageId,
+  role,
+  canRegenerate,
+  onBranch,
+  onRegenerate,
+  onNotify,
+}: {
+  content: string;
+  messageId: string;
+  role: Message["role"];
+  canRegenerate: boolean;
+  onBranch: (id: string) => Promise<void>;
+  onRegenerate: (id: string) => void;
+  onNotify: (text: string, kind?: ToastKind) => void;
+}) {
+  const [flash, setFlash] = useState<"copy" | "branch" | null>(null);
+
+  useEffect(() => {
+    if (!flash) return;
+    const id = window.setTimeout(() => setFlash(null), 1400);
+    return () => window.clearTimeout(id);
+  }, [flash]);
+
+  return (
+    <div className="msg-actions">
+      <button
+        type="button"
+        className={`icon-action${flash === "copy" ? " done" : ""}`}
+        title={flash === "copy" ? "Copied" : "Copy"}
+        aria-label={flash === "copy" ? "Copied" : "Copy"}
+        onClick={() => {
+          void navigator.clipboard.writeText(content).then(() => {
+            setFlash("copy");
+          });
+        }}
+      >
+        {flash === "copy" ? <CheckIcon /> : <CopyIcon />}
+      </button>
+      {role === "user" && (
+        <button
+          type="button"
+          className="icon-action"
+          title="Regenerate"
+          aria-label="Regenerate"
+          disabled={!canRegenerate}
+          onClick={() => onRegenerate(messageId)}
+        >
+          <RegenerateIcon />
+        </button>
+      )}
+      <button
+        type="button"
+        className={`icon-action${flash === "branch" ? " done" : ""}`}
+        title={flash === "branch" ? "Branched" : "Branch chat"}
+        aria-label={flash === "branch" ? "Branched" : "Branch"}
+        onClick={() => {
+          void (async () => {
+            try {
+              await onBranch(messageId);
+              setFlash("branch");
+            } catch (e) {
+              onNotify((e as Error).message || String(e), "err");
+            }
+          })();
+        }}
+      >
+        {flash === "branch" ? <CheckIcon /> : <BranchIcon />}
+      </button>
     </div>
   );
 }

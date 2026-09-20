@@ -85,6 +85,13 @@ class MemoryDatabase {
       return { rowsAffected: 0 };
     }
 
+    if (q.includes("DELETE FROM messages WHERE id =")) {
+      const id = String(args[0]);
+      const before = messages.length;
+      messages = messages.filter((m) => m.id !== id);
+      return { rowsAffected: before - messages.length };
+    }
+
     if (q.includes("DELETE FROM messages WHERE chat_id =")) {
       const id = String(args[0]);
       const before = messages.length;

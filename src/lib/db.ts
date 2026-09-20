@@ -187,7 +187,9 @@ export async function updateChat(
   const db = await getDb();
   const current = await getChat(id);
   if (!current) return;
-  const next = { ...current, ...patch, updated_at: Date.now() };
+  // Only message activity (preview) reorders the sidebar — pin/rename/model keep place.
+  const updated_at = "preview" in patch ? Date.now() : current.updated_at;
+  const next = { ...current, ...patch, updated_at };
   await db.execute(
     `UPDATE chats SET title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5, pinned=$6 WHERE id=$7`,
     [
@@ -259,6 +261,7 @@ export async function addMessage(
   chatId: string,
   role: Message["role"],
   content: string,
+  createdAt = Date.now(),
 ): Promise<Message> {
   const db = await getDb();
   const msg: Message = {
@@ -266,13 +269,53 @@ export async function addMessage(
     chat_id: chatId,
     role,
     content,
-    created_at: Date.now(),
+    created_at: createdAt,
   };
   await db.execute(
     `INSERT INTO messages (id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)`,
     [msg.id, msg.chat_id, msg.role, msg.content, msg.created_at],
   );
   return msg;
+}
+
+/** New chat with messages up through `throughMessageId` (inclusive). */
+export async function branchChat(
+  sourceChatId: string,
+  throughMessageId: string,
+): Promise<Chat> {
+  const source = await getChat(sourceChatId);
+  if (!source) throw new Error("Chat not found");
+  const all = await listMessages(sourceChatId);
+  const idx = all.findIndex((m) => m.id === throughMessageId);
+  if (idx < 0) throw new Error("Message not found");
+  const keep = all.slice(0, idx + 1);
+
+  const branched = await createChat(source.provider, source.model_id);
+  const base =
+    source.title && source.title !== "New Chat" ? source.title : "Chat";
+  const title = `Branch · ${base}`.slice(0, 60);
+  const last = keep[keep.length - 1];
+  const preview = last?.content.slice(0, 120) || "Ask AI anything…";
+  await updateChat(branched.id, { title, preview });
+
+  for (const m of keep) {
+    await addMessage(branched.id, m.role, m.content, m.created_at);
+  }
+  return (await getChat(branched.id)) ?? branched;
+}
+
+/** Delete every message after `afterMessageId` in that chat (keeps the message itself). */
+export async function deleteMessagesAfter(
+  chatId: string,
+  afterMessageId: string,
+): Promise<void> {
+  const all = await listMessages(chatId);
+  const idx = all.findIndex((m) => m.id === afterMessageId);
+  if (idx < 0) return;
+  const db = await getDb();
+  for (const m of all.slice(idx + 1)) {
+    await db.execute("DELETE FROM messages WHERE id = $1", [m.id]);
+  }
 }
 
 export async function clearChatMessages(chatId: string) {

@@ -3,7 +3,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Settings } from "./components/Settings";
+import { Toast, type ToastState } from "./components/Toast";
 import {
+  branchChat,
   clearChatMessages,
   createChat,
   deleteChat,
@@ -28,6 +30,7 @@ function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [active, setActive] = useState<Chat | null>(null);
   const [query, setQuery] = useState("");
+  const [toast, setToast] = useState<ToastState>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
@@ -40,6 +43,10 @@ function App() {
 
   const focusComposer = useCallback(() => {
     setComposerFocus((n) => n + 1);
+  }, []);
+
+  const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
+    setToast({ text, kind });
   }, []);
 
   const selectChat = useCallback(
@@ -222,6 +229,22 @@ function App() {
     await navigator.clipboard.writeText(text);
   }
 
+  async function handleBranch(throughMessageId: string) {
+    if (!activeId) return;
+    try {
+      const branched = await branchChat(activeId, throughMessageId);
+      setShowSettings(false);
+      setActiveId(branched.id);
+      setActive(branched);
+      await refreshChats();
+      focusComposer();
+      notify("Branched chat", "ok");
+    } catch (e) {
+      notify((e as Error).message || String(e), "err");
+      throw e;
+    }
+  }
+
   function beginDrag(e: React.MouseEvent) {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
@@ -298,10 +321,13 @@ function App() {
             onChatUpdated={() => void refreshChats()}
             onChatMeta={setActive}
             onNew={() => void newChat()}
+            onBranch={handleBranch}
+            onNotify={notify}
             focusNonce={composerFocus}
           />
         )}
       </div>
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

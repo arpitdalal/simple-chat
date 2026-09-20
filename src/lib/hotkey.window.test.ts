@@ -211,6 +211,27 @@ describe("hotkey window actions", () => {
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
   });
 
+  it("applyHotkey keeps next and orphans prev when prev probe is unknown", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    isRegistered.mockRejectedValueOnce(new Error("ipc"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /could not verify release/i,
+    );
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
+
+    // Later apply of prev must not no-op; re-register/sweep path runs.
+    unregister.mockReset();
+    unregister.mockResolvedValue(undefined);
+    isRegistered.mockResolvedValue(false);
+    register.mockClear();
+    await applyHotkey("CommandOrControl+Shift+A");
+    expect(register).toHaveBeenCalled();
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
   it("applyHotkey aborts promote when ownership probe is unknown", async () => {
     register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");

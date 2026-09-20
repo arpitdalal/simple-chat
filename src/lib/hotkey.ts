@@ -139,7 +139,15 @@ export async function applyHotkey(accelerator: string) {
         await unregister(prev);
       } catch {
         const prevProbe = await probeRegistered(prev);
-        if (prevProbe !== "no") {
+        if (prevProbe === "unknown") {
+          // Uncertain whether prev is still live — keep tracking it; leave next active.
+          orphanHotkeys.push(prev);
+          activeHotkey = next;
+          throw new Error(
+            `Registered ${formatHotkey(next)} but could not verify release of ${formatHotkey(prev)}. Rebind or restart.`,
+          );
+        }
+        if (prevProbe === "yes") {
           // New is live; try to drop it so previous remains the only binding.
           try {
             await unregister(next);

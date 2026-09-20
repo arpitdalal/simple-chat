@@ -233,6 +233,7 @@ export function Settings({ onClose, onSaved }: Props) {
   function queueSave(next: AppSettings) {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null;
       void persist(next);
     }, 250);
   }
@@ -265,8 +266,11 @@ export function Settings({ onClose, onSaved }: Props) {
       if (!getActiveHotkey()) {
         try {
           await applyHotkey(hotkey);
-        } catch {
-          /* still unbound */
+        } catch (restoreErr) {
+          setHotkeyError(
+            (restoreErr as Error).message ||
+              `Could not restore ${formatHotkey(hotkey)}. Rebind or restart.`,
+          );
         }
       } else {
         hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;

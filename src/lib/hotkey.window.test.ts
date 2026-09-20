@@ -4,13 +4,41 @@ const hide = vi.fn();
 const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
+const outerSize = vi.fn();
+const setPosition = vi.fn();
+const center = vi.fn();
+const cursorPosition = vi.fn();
+const monitorFromPoint = vi.fn();
+const primaryMonitor = vi.fn();
 const register = vi.fn();
 const unregister = vi.fn();
 const unregisterAll = vi.fn();
 const isRegistered = vi.fn();
 
+vi.mock("@tauri-apps/api/dpi", () => ({
+  PhysicalPosition: class {
+    x: number;
+    y: number;
+    constructor(x: number, y: number) {
+      this.x = x;
+      this.y = y;
+    }
+  },
+}));
+
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ hide, show, setFocus, isVisible }),
+  getCurrentWindow: () => ({
+    hide,
+    show,
+    setFocus,
+    isVisible,
+    outerSize,
+    setPosition,
+    center,
+  }),
+  cursorPosition: (...a: unknown[]) => cursorPosition(...a),
+  monitorFromPoint: (...a: unknown[]) => monitorFromPoint(...a),
+  primaryMonitor: (...a: unknown[]) => primaryMonitor(...a),
 }));
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
@@ -22,6 +50,7 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
 
 import {
   applyHotkey,
+  centerOnCursorMonitor,
   clearHotkey,
   getActiveHotkey,
   hideMainWindow,
@@ -29,11 +58,24 @@ import {
   toggleMainWindow,
 } from "./hotkey";
 
+const secondaryMonitor = {
+  workArea: {
+    position: { x: 1920, y: 0 },
+    size: { width: 1920, height: 1080 },
+  },
+};
+
 describe("hotkey window actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetActiveHotkeyForTests();
     isRegistered.mockResolvedValue(false);
+    outerSize.mockResolvedValue({ width: 800, height: 600 });
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    monitorFromPoint.mockResolvedValue(secondaryMonitor);
+    primaryMonitor.mockResolvedValue(null);
+    setPosition.mockResolvedValue(undefined);
+    center.mockResolvedValue(undefined);
   });
 
   it("hideMainWindow hides current window", async () => {
@@ -46,13 +88,40 @@ describe("hotkey window actions", () => {
     await toggleMainWindow();
     expect(hide).toHaveBeenCalled();
     expect(show).not.toHaveBeenCalled();
+    expect(setPosition).not.toHaveBeenCalled();
   });
 
-  it("toggleMainWindow shows and focuses when hidden", async () => {
+  it("toggleMainWindow centers on cursor monitor then shows when hidden", async () => {
     isVisible.mockResolvedValue(false);
     await toggleMainWindow();
+    expect(monitorFromPoint).toHaveBeenCalledWith(2000, 100);
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        x: 1920 + (1920 - 800) / 2,
+        y: (1080 - 600) / 2,
+      }),
+    );
     expect(show).toHaveBeenCalled();
     expect(setFocus).toHaveBeenCalled();
+    expect(setPosition.mock.invocationCallOrder[0]).toBeLessThan(
+      show.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("centerOnCursorMonitor falls back to primary when point has no monitor", async () => {
+    monitorFromPoint.mockResolvedValue(null);
+    primaryMonitor.mockResolvedValue(secondaryMonitor);
+    await centerOnCursorMonitor();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 2480, y: 240 }),
+    );
+  });
+
+  it("centerOnCursorMonitor falls back to center() when monitors unavailable", async () => {
+    cursorPosition.mockRejectedValue(new Error("no cursor"));
+    await centerOnCursorMonitor();
+    expect(center).toHaveBeenCalled();
+    expect(setPosition).not.toHaveBeenCalled();
   });
 
   it("applyHotkey registers accelerator", async () => {

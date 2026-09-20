@@ -4,7 +4,14 @@ import {
   unregister,
   unregisterAll,
 } from "@tauri-apps/plugin-global-shortcut";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import {
+  cursorPosition,
+  getCurrentWindow,
+  monitorFromPoint,
+  primaryMonitor,
+  type Window,
+} from "@tauri-apps/api/window";
 
 export const DEFAULT_HOTKEY = "CommandOrControl+Shift+Space";
 
@@ -31,11 +38,39 @@ export function resetActiveHotkeyForTests() {
   applyChain = Promise.resolve();
 }
 
+/** Center on the monitor under the cursor; fall back to primary / window.center(). */
+export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
+  try {
+    const cursor = await cursorPosition();
+    const monitor =
+      (await monitorFromPoint(cursor.x, cursor.y)) ?? (await primaryMonitor());
+    if (!monitor) {
+      await win.center();
+      return;
+    }
+    const size = await win.outerSize();
+    const { position, size: area } = monitor.workArea;
+    await win.setPosition(
+      new PhysicalPosition(
+        Math.round(position.x + (area.width - size.width) / 2),
+        Math.round(position.y + (area.height - size.height) / 2),
+      ),
+    );
+  } catch {
+    try {
+      await win.center();
+    } catch {
+      // still show/focus even if positioning fails
+    }
+  }
+}
+
 export async function toggleMainWindow() {
   const win = getCurrentWindow();
   if (await win.isVisible()) {
     await win.hide();
   } else {
+    await centerOnCursorMonitor(win);
     await win.show();
     await win.setFocus();
   }

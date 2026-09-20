@@ -46,6 +46,8 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   const [keyEpoch, setKeyEpoch] = useState(0);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [foundUpdate, setFoundUpdate] = useState<AvailableUpdate | null>(null);
+  const foundUpdateRef = useRef<AvailableUpdate | null>(null);
+  const updateCheckGenRef = useRef(0);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
@@ -60,6 +62,15 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+  foundUpdateRef.current = foundUpdate;
+
+  useEffect(() => {
+    return () => {
+      updateCheckGenRef.current += 1;
+      foundUpdateRef.current?.dismiss();
+      foundUpdateRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -530,12 +541,18 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
             disabled={updateBusy}
             onClick={() => {
               void (async () => {
+                const gen = ++updateCheckGenRef.current;
                 setUpdateBusy(true);
                 setStatus("Checking for updates…");
-                foundUpdate?.dismiss();
+                foundUpdateRef.current?.dismiss();
+                foundUpdateRef.current = null;
                 setFoundUpdate(null);
                 try {
                   const result = await checkForAppUpdate();
+                  if (gen !== updateCheckGenRef.current) {
+                    if (result.status === "available") result.update.dismiss();
+                    return;
+                  }
                   if (result.status === "none") {
                     setStatus("Up to date");
                     return;
@@ -545,9 +562,11 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
                     onNotifyRef.current?.(result.message, "err");
                     return;
                   }
+                  foundUpdateRef.current = result.update;
                   setFoundUpdate(result.update);
                   setStatus(`Update ${result.update.version} available`);
                 } catch (e) {
+                  if (gen !== updateCheckGenRef.current) return;
                   const msg =
                     e instanceof Error
                       ? e.message
@@ -557,7 +576,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
                   setStatus(msg);
                   onNotifyRef.current?.(msg, "err");
                 } finally {
-                  setUpdateBusy(false);
+                  if (gen === updateCheckGenRef.current) setUpdateBusy(false);
                 }
               })();
             }}

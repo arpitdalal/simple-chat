@@ -52,6 +52,7 @@ vi.mock("./lib/hotkey", () => ({
   applyHotkey: vi.fn(),
   hideMainWindow: vi.fn(),
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
+  formatHotkey: (s: string) => s,
 }));
 
 vi.mock("./lib/keys", () => ({
@@ -113,10 +114,13 @@ vi.mock("./lib/db", () => ({
 }));
 
 import App from "./App";
+import { applyHotkey } from "./lib/hotkey";
 
 describe("App UX", () => {
   beforeEach(() => {
     chatsStore.reset();
+    vi.mocked(applyHotkey).mockReset();
+    vi.mocked(applyHotkey).mockResolvedValue(undefined);
     openOrCreateChat.mockClear();
     openOrCreateChat.mockImplementation(async () => {
       if (chatsStore.get().length === 0) {
@@ -135,6 +139,19 @@ describe("App UX", () => {
       }
       return chatsStore.get()[0];
     });
+  });
+
+  it("warns when global hotkey registration fails on boot", async () => {
+    vi.mocked(applyHotkey).mockRejectedValue(
+      new Error("Could not register ⌘/Ctrl + ⇧ + Space — already taken"),
+    );
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not register/i),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
   it("boots into empty Ask Anything state with composer", async () => {

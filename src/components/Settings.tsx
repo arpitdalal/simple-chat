@@ -14,6 +14,7 @@ import {
   DEFAULT_HOTKEY,
   eventToAccelerator,
   formatHotkey,
+  getActiveHotkey,
 } from "../lib/hotkey";
 
 type Props = {
@@ -92,12 +93,23 @@ export function Settings({ onClose, onSaved }: Props) {
   }
 
   async function persist(s: AppSettings) {
-    const hotkey = s.hotkey.trim() || DEFAULT_HOTKEY;
+    const requested = s.hotkey.trim() || DEFAULT_HOTKEY;
+    let hotkey = requested;
     try {
-      await applyHotkey(hotkey);
+      await applyHotkey(requested);
       setHotkeyError("");
     } catch (err) {
       setHotkeyError((err as Error).message || String(err));
+      // Keep last working binding in settings + UI when OS rejects the new one.
+      hotkey = getActiveHotkey() || DEFAULT_HOTKEY;
+      if (hotkey !== requested) {
+        setSettings((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, hotkey };
+          settingsRef.current = next;
+          return next;
+        });
+      }
     }
     await setSetting("resume_minutes", s.resume_minutes);
     await setSetting("always_on_top", s.always_on_top);

@@ -28,6 +28,7 @@ vi.mock("../lib/hotkey", () => ({
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
   eventToAccelerator: vi.fn(),
   formatHotkey: (s: string) => s,
+  getActiveHotkey: () => "CommandOrControl+Shift+Space",
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({

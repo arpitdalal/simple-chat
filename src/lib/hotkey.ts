@@ -1,10 +1,23 @@
 import {
   register,
+  unregister,
   unregisterAll,
 } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export const DEFAULT_HOTKEY = "CommandOrControl+Shift+Space";
+
+/** Currently registered accelerator, or null if none. */
+let activeHotkey: string | null = null;
+
+export function getActiveHotkey(): string | null {
+  return activeHotkey;
+}
+
+/** Reset module state (tests only). */
+export function resetActiveHotkeyForTests() {
+  activeHotkey = null;
+}
 
 export async function toggleMainWindow() {
   const win = getCurrentWindow();
@@ -20,12 +33,48 @@ export async function hideMainWindow() {
   await getCurrentWindow().hide();
 }
 
-/** Register global hotkey; replaces any previous. */
+function onHotkey(event: { state: string }) {
+  if (event.state === "Pressed") void toggleMainWindow();
+}
+
+export function hotkeyConflictMessage(accelerator: string, err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  return (
+    `Could not register ${formatHotkey(accelerator)}` +
+    (detail ? ` — ${detail}` : "") +
+    ". It may conflict with another app; try a different combo."
+  );
+}
+
+/**
+ * Register global hotkey; replaces any previous.
+ * On failure, restores the previous binding when possible.
+ */
 export async function applyHotkey(accelerator: string) {
-  await unregisterAll();
-  await register(accelerator, async (event) => {
-    if (event.state === "Pressed") await toggleMainWindow();
-  });
+  const next = accelerator.trim() || DEFAULT_HOTKEY;
+  const prev = activeHotkey;
+
+  if (prev) {
+    await unregister(prev);
+    activeHotkey = null;
+  } else {
+    await unregisterAll();
+  }
+
+  try {
+    await register(next, onHotkey);
+    activeHotkey = next;
+  } catch (err) {
+    if (prev) {
+      try {
+        await register(prev, onHotkey);
+        activeHotkey = prev;
+      } catch {
+        activeHotkey = null;
+      }
+    }
+    throw new Error(hotkeyConflictMessage(next, err));
+  }
 }
 
 /** Map a KeyboardEvent to a global-shortcut accelerator, or null if incomplete. */

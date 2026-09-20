@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Simple Chat">
+  <!-- Top chat pill (lighter) -->
+  <path
+    fill="#5BADFF"
+    d="M24 40c0-13.255 10.745-24 24-24h48c13.255 0 24 10.745 24 24s-10.745 24-24 24H64c-6.627 0-12 5.373-12 12v4H48c-13.255 0-24-10.745-24-24V40z"
+  />
+  <!-- Bottom chat pill with tail (accent) -->
+  <path
+    fill="#0A84FF"
+    d="M104 88c0 13.255-10.745 24-24 24H32c-13.255 0-24-10.745-24-24s10.745-24 24-24h32c6.627 0 12-5.373 12-12v-4h4c13.255 0 24 10.745 24 24v28zm-8 12l-12-12h12v12z"
+  />
+</svg>

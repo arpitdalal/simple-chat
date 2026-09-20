@@ -134,14 +134,18 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
     }
     return;
   }
+  let size = { width: 0, height: 0 };
   try {
-    const size = await win.outerSize();
+    size = await win.outerSize();
+  } catch {
+    // clampedCenter treats non-positive as workArea origin
+  }
+  try {
     await win.setPosition(
       clampedCenter(monitor.workArea.position, monitor.workArea.size, size),
     );
   } catch {
-    // Known monitor but size/setPosition failed — center() may still land
-    // on the wrong display; best effort only.
+    // setPosition failed — center() may land on the wrong display.
     try {
       await win.center();
     } catch {

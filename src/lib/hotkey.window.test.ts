@@ -160,6 +160,15 @@ describe("hotkey window actions", () => {
     expect(setFocus).toHaveBeenCalled();
   });
 
+  it("centerOnCursorMonitor still setPositions when outerSize fails", async () => {
+    outerSize.mockRejectedValue(new Error("hidden size"));
+    await centerOnCursorMonitor();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 1920, y: 0 }),
+    );
+    expect(center).not.toHaveBeenCalled();
+  });
+
   it("toggleMainWindow serializes overlapping presses", async () => {
     let releaseHide: () => void = () => {};
     const hideGate = new Promise<void>((r) => {

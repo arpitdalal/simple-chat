@@ -14,6 +14,12 @@ import {
   type Message,
 } from "../lib/db";
 import { generateChatTitle, streamChat } from "../lib/chat";
+import {
+  MAX_CACHED_MESSAGES,
+  MESSAGE_PAGE,
+  onMainWindowHidden,
+  trimRecentMessages,
+} from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
@@ -30,7 +36,6 @@ import type { ToastKind } from "./Toast";
 const LINE_H = 22;
 const MAX_LINES = 15;
 const MIN_LINES = 1;
-const PAGE = 50;
 
 type Props = {
   chat: Chat | null;
@@ -67,8 +72,12 @@ export function ChatView({
   const viewingIdRef = useRef<string | null>(chat?.id ?? null);
   const streamOwnerRef = useRef<string | null>(null);
   const streamTextRef = useRef("");
+  const messagesRef = useRef<Message[]>([]);
+  /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
+  const releaseGenRef = useRef(0);
 
   viewingIdRef.current = chat?.id ?? null;
+  messagesRef.current = messages;
   const showStream = busy && streamOwnerRef.current === chat?.id;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
@@ -103,10 +112,10 @@ export function ChatView({
       setStreaming("");
     }
     void (async () => {
-      const page = await listRecentMessages(chat.id, PAGE);
+      const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
       if (cancelled) return;
       setMessages(page);
-      setHasMore(page.length >= PAGE);
+      setHasMore(page.length >= MESSAGE_PAGE);
       stickBottom.current = true;
       requestAnimationFrame(() => {
         virtualizer.scrollToIndex(Math.max(page.length - 1, 0), {
@@ -119,6 +128,29 @@ export function ChatView({
       cancelled = true;
     };
   }, [chat?.id]);
+
+  // Tray-resident: drop scrolled-up history + draft image data URLs on hide.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onMainWindowHidden(() => {
+      releaseGenRef.current += 1;
+      setImages([]);
+      if (fileRef.current) fileRef.current.value = "";
+      const cur = messagesRef.current;
+      if (cur.length <= MESSAGE_PAGE) return;
+      setMessages(trimRecentMessages(cur, MESSAGE_PAGE));
+      setHasMore(true);
+      stickBottom.current = true;
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (stickBottom.current) scrollToBottom();
@@ -158,25 +190,32 @@ export function ChatView({
 
   async function loadOlder() {
     if (!chat || loadingOlder || !hasMore || messages.length === 0) return;
+    if (messages.length >= MAX_CACHED_MESSAGES) return;
     const el = parentRef.current;
     const prevHeight = el?.scrollHeight ?? 0;
     const prevTop = el?.scrollTop ?? 0;
+    const gen = releaseGenRef.current;
     setLoadingOlder(true);
     try {
+      const room = MAX_CACHED_MESSAGES - messages.length;
       const older = await listOlderMessages(
         chat.id,
         messages[0].created_at,
-        PAGE,
+        Math.min(MESSAGE_PAGE, room),
       );
+      if (gen !== releaseGenRef.current) return;
       if (older.length === 0) {
         setHasMore(false);
         return;
       }
-      setHasMore(older.length >= PAGE);
+      setHasMore(
+        older.length >= Math.min(MESSAGE_PAGE, room) &&
+          messages.length + older.length < MAX_CACHED_MESSAGES,
+      );
       stickBottom.current = false;
       setMessages((m) => [...older, ...m]);
       requestAnimationFrame(() => {
-        if (!el) return;
+        if (!el || gen !== releaseGenRef.current) return;
         const delta = el.scrollHeight - prevHeight;
         el.scrollTop = prevTop + delta;
       });
@@ -215,6 +254,7 @@ export function ChatView({
     lastUserContent?: ModelMessage["content"],
   ) {
     const chatId = chatSnap.id;
+    const startGen = releaseGenRef.current;
     streamOwnerRef.current = chatId;
     streamTextRef.current = "";
     flushSync(() => {
@@ -254,7 +294,13 @@ export function ChatView({
 
       const assistant = await addMessage(chatId, "assistant", full);
       if (viewingIdRef.current === chatId) {
-        setMessages((m) => [...m, assistant]);
+        const limit =
+          startGen !== releaseGenRef.current
+            ? MESSAGE_PAGE
+            : MAX_CACHED_MESSAGES;
+        const wouldTrim = messagesRef.current.length >= limit;
+        setMessages((m) => trimRecentMessages([...m, assistant], limit));
+        if (wouldTrim) setHasMore(true);
         setStreaming("");
       }
       await updateChat(chatId, { preview: full.slice(0, 120) });
@@ -379,14 +425,19 @@ export function ChatView({
     if (!chat || busy) return;
     const chatId = chat.id;
     const chatSnap = chat;
+    const startGen = releaseGenRef.current;
     const all = await listMessages(chatId);
     const idx = all.findIndex((m) => m.id === userMessageId);
     if (idx < 0 || all[idx].role !== "user") return;
 
     await deleteMessagesAfter(chatId, userMessageId);
     const keep = all.slice(0, idx + 1);
+    const limit =
+      startGen !== releaseGenRef.current ? MESSAGE_PAGE : MAX_CACHED_MESSAGES;
+    const visible = trimRecentMessages(keep, limit);
     flushSync(() => {
-      setMessages(keep);
+      setMessages(visible);
+      if (visible.length < keep.length) setHasMore(true);
       setBusy(true);
       setStreaming("");
       streamOwnerRef.current = chatId;
@@ -409,8 +460,10 @@ export function ChatView({
       e.preventDefault();
       const file = item.getAsFile();
       if (!file) continue;
+      const gen = releaseGenRef.current;
       const reader = new FileReader();
       reader.onload = () => {
+        if (gen !== releaseGenRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }
@@ -423,8 +476,10 @@ export function ChatView({
     if (!files) return;
     for (const file of files) {
       if (!file.type.startsWith("image/")) continue;
+      const gen = releaseGenRef.current;
       const reader = new FileReader();
       reader.onload = () => {
+        if (gen !== releaseGenRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }

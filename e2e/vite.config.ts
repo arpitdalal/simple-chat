@@ -54,6 +54,10 @@ export default defineConfig({
         replacement: path.resolve(projectRoot, "src/test/mock-core.ts"),
       },
       {
+        find: "@tauri-apps/api/event",
+        replacement: path.resolve(projectRoot, "src/test/mock-event.ts"),
+      },
+      {
         find: "@tauri-apps/plugin-global-shortcut",
         replacement: path.resolve(projectRoot, "src/test/mock-shortcut.ts"),
       },

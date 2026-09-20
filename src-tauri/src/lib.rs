@@ -4,7 +4,7 @@ mod keys;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    ActivationPolicy, AppHandle, Manager, RunEvent, WindowEvent,
+    ActivationPolicy, AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
 
 fn hide_main_window(app: &AppHandle) {
@@ -13,6 +13,8 @@ fn hide_main_window(app: &AppHandle) {
     focus::begin_restore();
     focus::restore_previous_app();
     if let Some(window) = app.get_webview_window("main") {
+        // Tell the webview to drop heavy React state before we go tray-resident.
+        let _ = window.emit("main-window-hidden", ());
         let _ = window.hide();
     }
     focus::end_restore();

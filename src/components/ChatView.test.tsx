@@ -12,9 +12,22 @@ const listMessages = vi.fn();
 const deleteMessagesAfter = vi.fn();
 const updateChat = vi.fn();
 
+const hiddenListeners = vi.hoisted(() => new Set<() => void>());
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ startDragging: vi.fn() }),
 }));
+
+vi.mock("../lib/memory", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/memory")>();
+  return {
+    ...actual,
+    onMainWindowHidden: vi.fn(async (handler: () => void) => {
+      hiddenListeners.add(handler);
+      return () => hiddenListeners.delete(handler);
+    }),
+  };
+});
 
 vi.mock("../lib/chat", () => ({
   streamChat: (...a: unknown[]) => streamChat(...a),
@@ -60,6 +73,7 @@ function msg(
 describe("ChatView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    hiddenListeners.clear();
     listRecentMessages.mockResolvedValue([]);
     listOlderMessages.mockResolvedValue([]);
     listMessages.mockResolvedValue([]);
@@ -254,6 +268,94 @@ describe("ChatView", () => {
 
     await waitFor(() => expect(listOlderMessages).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText("older")).toBeInTheDocument());
+  });
+
+  it("trims scrolled-up history and draft images on window hide", async () => {
+    const existing = Array.from({ length: 50 }, (_, i) =>
+      msg({
+        id: `m${i}`,
+        role: i % 2 ? "assistant" : "user",
+        content: `msg-${i}`,
+        created_at: 1000 + i,
+      }),
+    );
+    listRecentMessages.mockResolvedValue(existing);
+    listOlderMessages.mockResolvedValue([
+      msg({ id: "old", role: "user", content: "older", created_at: 1 }),
+    ]);
+
+    const readAsDataURL = vi.fn(function (this: FileReader) {
+      Object.defineProperty(this, "result", {
+        value: "data:image/png;base64,aaa",
+      });
+      this.onload?.(new ProgressEvent("load") as unknown as ProgressEvent<FileReader>);
+    });
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: ((ev: ProgressEvent<FileReader>) => void) | null = null;
+        readAsDataURL = readAsDataURL;
+      },
+    );
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("msg-0")).toBeInTheDocument());
+
+    const scroller = document.querySelector(".messages") as HTMLDivElement;
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => 2000,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => 400,
+    });
+    scroller.scrollTop = 10;
+    scroller.dispatchEvent(new Event("scroll"));
+    await waitFor(() => expect(screen.getByText("older")).toBeInTheDocument());
+
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    await act(async () => {
+      ta.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          clipboardData: {
+            items: [
+              {
+                type: "image/png",
+                getAsFile: () =>
+                  new File([new Uint8Array([1])], "pic.png", {
+                    type: "image/png",
+                  }),
+              },
+            ],
+          } as unknown as DataTransfer,
+        }),
+      );
+    });
+    await waitFor(() => expect(document.querySelector(".thumb img")).toBeTruthy());
+
+    await act(async () => {
+      for (const fn of hiddenListeners) fn();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("older")).toBeNull();
+      expect(document.querySelector(".thumb img")).toBeNull();
+    });
+    expect(screen.getByText("msg-0")).toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 
   it("attaches pasted images", async () => {

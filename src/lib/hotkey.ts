@@ -285,9 +285,9 @@ export async function toggleMainWindow() {
     if (await win.isVisible()) {
       await hideMainWindow();
     } else {
-      // Capture frontmost app before we steal focus (macOS accessory restore).
-      await invoke("capture_previous_app");
       await centerOnCursorMonitor(win);
+      // Recapture immediately before steal — frontmost may have changed while centering.
+      await invoke("capture_previous_app");
       await win.show();
       await win.setFocus();
     }

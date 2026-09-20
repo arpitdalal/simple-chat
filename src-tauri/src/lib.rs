@@ -8,10 +8,14 @@ use tauri::{
 };
 
 fn hide_main_window(app: &AppHandle) {
+    // Restore while still active (cooperative yield), then hide. Guard blur
+    // so Focused(false) from hide cannot clobber PREV_PID mid-restore.
+    focus::begin_restore();
+    focus::restore_previous_app();
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
-    focus::restore_previous_app();
+    focus::end_restore();
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(ActivationPolicy::Accessory);
 }

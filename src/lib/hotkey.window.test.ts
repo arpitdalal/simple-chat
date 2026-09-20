@@ -162,12 +162,13 @@ describe("hotkey window actions", () => {
     );
     expect(show).toHaveBeenCalled();
     expect(setFocus).toHaveBeenCalled();
-    expect(invoke.mock.invocationCallOrder[0]).toBeLessThan(
-      setPosition.mock.invocationCallOrder[0],
-    );
     expect(setPosition.mock.invocationCallOrder[0]).toBeLessThan(
+      invoke.mock.invocationCallOrder[0],
+    );
+    expect(invoke.mock.invocationCallOrder[0]).toBeLessThan(
       show.mock.invocationCallOrder[0],
     );
+    expect(invoke).toHaveBeenCalledWith("capture_previous_app");
   });
 
   it("monitorForCursor picks monitor containing physical cursor", async () => {

@@ -17,5 +17,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, string>): Pro
     else keys.set(provider, key.trim());
     return undefined as T;
   }
+  if (cmd === "capture_previous_app" || cmd === "hide_main_window_cmd") {
+    return undefined as T;
+  }
   return undefined as T;
 }

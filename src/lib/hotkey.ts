@@ -84,9 +84,8 @@ function distanceSqToFrame(
 }
 
 /**
- * Monitor under the cursor. Prefer logical frames (scale-aware) so mixed-DPI
- * macOS layouts — where independently physicalized rects can overlap — still
- * resolve to the display that actually contains the cursor.
+ * Monitor under the cursor. Unique physical AABB first; if ambiguous/empty
+ * (mixed-DPI macOS independently physicalized overlap), use logical frames.
  *
  * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
  * reliable cursor-display summon until the runtime supports both.

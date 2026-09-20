@@ -188,6 +188,32 @@ describe("hotkey window actions", () => {
     await expect(monitorForCursor()).resolves.toBe(left2x);
   });
 
+  it("monitorForCursor uses logical when overlap layout hides cursor from right AABB", async () => {
+    // 2× left [0,3024) and 1.5× right origin 1512*1.5=2268 — overlap layout;
+    // desktop-point cursor 1800 is on the right, but only left's physical AABB contains it.
+    const left2x = {
+      scaleFactor: 2,
+      position: { x: 0, y: 0 },
+      size: { width: 3024, height: 1964 },
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { width: 3024, height: 1964 },
+      },
+    };
+    const right15x = {
+      scaleFactor: 1.5,
+      position: { x: 2268, y: 0 },
+      size: { width: 2880, height: 1620 },
+      workArea: {
+        position: { x: 2268, y: 0 },
+        size: { width: 2880, height: 1620 },
+      },
+    };
+    availableMonitors.mockResolvedValue([left2x, right15x]);
+    cursorPosition.mockResolvedValue({ x: 1800, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(right15x);
+  });
+
   it("centerOnCursorMonitor scales outerSize into destination monitor DPI", async () => {
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });

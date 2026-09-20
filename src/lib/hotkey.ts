@@ -53,6 +53,28 @@ function containsPoint(
   return x >= left && x < left + width && y >= top && y < top + height;
 }
 
+function physicalRectsOverlap(a: Monitor, b: Monitor): boolean {
+  const ax2 = a.position.x + a.size.width;
+  const ay2 = a.position.y + a.size.height;
+  const bx2 = b.position.x + b.size.width;
+  const by2 = b.position.y + b.size.height;
+  return (
+    a.position.x < bx2 &&
+    ax2 > b.position.x &&
+    a.position.y < by2 &&
+    ay2 > b.position.y
+  );
+}
+
+function layoutHasPhysicalOverlap(monitors: Monitor[]): boolean {
+  for (let i = 0; i < monitors.length; i++) {
+    for (let j = i + 1; j < monitors.length; j++) {
+      if (physicalRectsOverlap(monitors[i], monitors[j])) return true;
+    }
+  }
+  return false;
+}
+
 /** Desktop-point frame — undoes per-monitor physicalization that can overlap on macOS. */
 function logicalFrame(mon: Monitor) {
   const s = mon.scaleFactor || 1;
@@ -84,8 +106,10 @@ function distanceSqToFrame(
 }
 
 /**
- * Monitor under the cursor. Unique physical AABB first; if ambiguous/empty
- * (mixed-DPI macOS independently physicalized overlap), use logical frames.
+ * Monitor under the cursor.
+ * - Non-overlapping physical layout → unique physical AABB (true physical coords).
+ * - Overlapping physical layout (macOS independently physicalized mixed-DPI) →
+ *   unique logical frame (desktop points).
  *
  * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
  * reliable cursor-display summon until the runtime supports both.
@@ -96,18 +120,21 @@ export async function monitorForCursor(): Promise<Monitor | null> {
   if (!monitors.length) return primaryMonitor();
 
   const frames = monitors.map(logicalFrame);
-  // Prefer a unique physical hit when rects don't overlap (true physical space).
   const physicalHits = monitors.filter((m) =>
     containsPoint(m, cursor.x, cursor.y),
   );
-  if (physicalHits.length === 1) return physicalHits[0];
-
-  // Overlapping / independently physicalized layouts (mixed-DPI macOS): logical
-  // frames undo per-monitor scale so the cursor's display wins.
   const logicalHits = frames.filter((f) =>
     frameContains(f, cursor.x, cursor.y),
   );
-  if (logicalHits.length === 1) return logicalHits[0].mon;
+  const overlapLayout = layoutHasPhysicalOverlap(monitors);
+
+  if (overlapLayout) {
+    if (logicalHits.length === 1) return logicalHits[0].mon;
+    if (physicalHits.length === 1) return physicalHits[0];
+  } else {
+    if (physicalHits.length === 1) return physicalHits[0];
+    if (logicalHits.length === 1) return logicalHits[0].mon;
+  }
 
   const pool =
     logicalHits.length > 0

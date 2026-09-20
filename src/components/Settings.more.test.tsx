@@ -77,8 +77,48 @@ describe("Settings behaviors", () => {
     expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+K");
   });
 
+  it("re-registers last-good when a recorded hotkey is rejected", async () => {
+    const user = userEvent.setup();
+    eventToAccelerator.mockReturnValue("CommandOrControl+Shift+K");
+    getActiveHotkey.mockReturnValue(null);
+    applyHotkey.mockImplementation(async (accel: unknown) => {
+      if (String(accel).includes("Shift+K")) {
+        throw new Error("Could not register");
+      }
+    });
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+K"),
+    );
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Space"),
+    );
+  });
+
+  it("cancels pending save before Record clears the grab", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Shift+Z");
+    applyHotkey.mockClear();
+    setSetting.mockClear();
+    // Clicking Record blurs the input (queues save) then cancels that timer.
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(applyHotkey).not.toHaveBeenCalledWith("CommandOrControl+Shift+Z");
+  });
+
   it("clears the live grab when Record starts", async () => {
     const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
     render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
     await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
     await user.click(screen.getByText("Record"));

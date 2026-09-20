@@ -44,6 +44,9 @@ export function Settings({ onClose, onSaved }: Props) {
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
+  const recordingRef = useRef(false);
+  /** True after clearHotkey for Record until restore or a new apply owns the grab. */
+  const pausedForRecordRef = useRef(false);
 
   useEffect(() => {
     void (async () => {
@@ -61,6 +64,18 @@ export function Settings({ onClose, onSaved }: Props) {
     })();
   }, []);
 
+  function restorePausedHotkey() {
+    if (!pausedForRecordRef.current) return;
+    pausedForRecordRef.current = false;
+    void applyHotkey(lastGoodHotkeyRef.current).catch(() => {
+      /* leave unbound; user still sees last-good in settings */
+    });
+  }
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
+
   useEffect(() => {
     if (!recording) return;
     function onKeyDown(e: KeyboardEvent) {
@@ -68,12 +83,14 @@ export function Settings({ onClose, onSaved }: Props) {
       e.stopPropagation();
       if (e.key === "Escape") {
         setRecording(false);
-        void applyHotkey(lastGoodHotkeyRef.current);
+        restorePausedHotkey();
         return;
       }
       const accel = eventToAccelerator(e);
       if (!accel || !settings) return;
       setHotkeyDraft(null);
+      // persist will register; do not restore last-good over the new choice
+      pausedForRecordRef.current = false;
       patch({ hotkey: accel });
       setRecording(false);
       setHotkeyError("");
@@ -82,6 +99,13 @@ export function Settings({ onClose, onSaved }: Props) {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [recording, settings]);
 
+  // Close/unmount while recording left the grab cleared — put last-good back.
+  useEffect(() => {
+    return () => {
+      restorePausedHotkey();
+    };
+  }, []);
+
   function commitHotkeyDraft() {
     if (hotkeyDraft == null || !settings) return;
     const next = hotkeyDraft.trim() || DEFAULT_HOTKEY;
@@ -89,15 +113,26 @@ export function Settings({ onClose, onSaved }: Props) {
     if (next !== settings.hotkey) patch({ hotkey: next });
   }
 
+  function cancelPendingSave() {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    persistGenRef.current += 1;
+  }
+
   async function startRecording() {
+    cancelPendingSave();
     setHotkeyDraft(null);
     setRecording(true);
     setHotkeyError("");
     // Free our own grab so Record can hear it; other apps may still steal.
     try {
       await clearHotkey();
-    } catch {
-      /* ignore */
+      pausedForRecordRef.current = true;
+    } catch (err) {
+      setRecording(false);
+      setHotkeyError((err as Error).message || String(err));
     }
   }
 
@@ -123,15 +158,26 @@ export function Settings({ onClose, onSaved }: Props) {
     const requested = s.hotkey.trim() || DEFAULT_HOTKEY;
     let hotkey = requested;
     let hotkeyOk = true;
+    if (recordingRef.current) return;
     try {
       await applyHotkey(requested);
       setHotkeyError("");
       lastGoodHotkeyRef.current = requested;
+      pausedForRecordRef.current = false;
     } catch (err) {
       hotkeyOk = false;
       setHotkeyError((err as Error).message || String(err));
-      // Never persist a rejected combo — keep last known-good.
-      hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;
+      // Never persist a rejected combo — keep last known-good and re-bind if cleared.
+      hotkey = lastGoodHotkeyRef.current;
+      if (!getActiveHotkey()) {
+        try {
+          await applyHotkey(hotkey);
+        } catch {
+          /* still unbound */
+        }
+      } else {
+        hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;
+      }
       // Only roll UI back if this request is still showing and not superseded.
       if (
         hotkey !== requested &&

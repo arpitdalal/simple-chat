@@ -151,12 +151,17 @@ export async function clearHotkey() {
   const run = async () => {
     await sweepOrphans(new Set());
     if (!activeHotkey) return;
+    const prev = activeHotkey;
     try {
-      await unregister(activeHotkey);
+      await unregister(prev);
+      activeHotkey = null;
     } catch {
-      /* leave orphan tracking empty — next applyHotkey will rebind */
+      // OS may still hold it — keep tracking so a later apply can sweep.
+      if (!orphanHotkeys.includes(prev)) orphanHotkeys.push(prev);
+      throw new Error(
+        `Could not release ${formatHotkey(prev)} for recording. Rebind or restart.`,
+      );
     }
-    activeHotkey = null;
   };
   const queued = applyChain.then(run, run);
   applyChain = queued.then(

@@ -210,4 +210,13 @@ describe("hotkey window actions", () => {
     expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
     expect(getActiveHotkey()).toBeNull();
   });
+
+  it("clearHotkey keeps tracking when unregister fails", async () => {
+    register.mockResolvedValue(undefined);
+    unregister.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    await expect(clearHotkey()).rejects.toThrow(/Could not release/i);
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
 });

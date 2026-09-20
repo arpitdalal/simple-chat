@@ -4,13 +4,53 @@ const hide = vi.fn();
 const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
+const outerSize = vi.fn();
+const setPosition = vi.fn();
+const center = vi.fn();
+const scaleFactor = vi.fn();
+const cursorPosition = vi.fn();
+const availableMonitors = vi.fn();
+const primaryMonitor = vi.fn();
 const register = vi.fn();
 const unregister = vi.fn();
 const unregisterAll = vi.fn();
 const isRegistered = vi.fn();
 
+vi.mock("@tauri-apps/api/dpi", () => ({
+  PhysicalPosition: class {
+    x: number;
+    y: number;
+    type = "Physical";
+    constructor(x: number, y: number) {
+      this.x = x;
+      this.y = y;
+    }
+  },
+  LogicalPosition: class {
+    x: number;
+    y: number;
+    type = "Logical";
+    constructor(x: number, y: number) {
+      this.x = x;
+      this.y = y;
+    }
+  },
+}));
+
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ hide, show, setFocus, isVisible }),
+  getCurrentWindow: () => ({
+    hide,
+    show,
+    setFocus,
+    isVisible,
+    outerSize,
+    setPosition,
+    center,
+    scaleFactor,
+  }),
+  cursorPosition: (...a: unknown[]) => cursorPosition(...a),
+  availableMonitors: (...a: unknown[]) => availableMonitors(...a),
+  primaryMonitor: (...a: unknown[]) => primaryMonitor(...a),
 }));
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
@@ -22,18 +62,70 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
 
 import {
   applyHotkey,
+  centerOnCursorMonitor,
   clearHotkey,
   getActiveHotkey,
   hideMainWindow,
+  monitorForCursor,
   resetActiveHotkeyForTests,
+  setPreferLogicalMonitorFramesForTests,
   toggleMainWindow,
 } from "./hotkey";
+
+const primary = {
+  scaleFactor: 1,
+  position: { x: 0, y: 0 },
+  size: { width: 1920, height: 1080 },
+  workArea: {
+    position: { x: 0, y: 0 },
+    size: { width: 1920, height: 1080 },
+  },
+};
+
+const secondary = {
+  scaleFactor: 1,
+  position: { x: 1920, y: 0 },
+  size: { width: 1920, height: 1080 },
+  workArea: {
+    position: { x: 1920, y: 0 },
+    size: { width: 1920, height: 1080 },
+  },
+};
+
+/** Independently physicalized mixed-DPI layout (Codex overlap case). */
+const retinaPrimary = {
+  scaleFactor: 2,
+  position: { x: 0, y: 0 },
+  size: { width: 3024, height: 1964 },
+  workArea: {
+    position: { x: 0, y: 0 },
+    size: { width: 3024, height: 1964 },
+  },
+};
+
+const external1x = {
+  scaleFactor: 1,
+  // Logical origin 1512 → stored as 1512*1, which sits inside retinaPrimary's physical width.
+  position: { x: 1512, y: 0 },
+  size: { width: 1920, height: 1080 },
+  workArea: {
+    position: { x: 1512, y: 0 },
+    size: { width: 1920, height: 1080 },
+  },
+};
 
 describe("hotkey window actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetActiveHotkeyForTests();
     isRegistered.mockResolvedValue(false);
+    outerSize.mockResolvedValue({ width: 800, height: 600 });
+    scaleFactor.mockResolvedValue(1);
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    availableMonitors.mockResolvedValue([primary, secondary]);
+    primaryMonitor.mockResolvedValue(primary);
+    setPosition.mockResolvedValue(undefined);
+    center.mockResolvedValue(undefined);
   });
 
   it("hideMainWindow hides current window", async () => {
@@ -46,13 +138,220 @@ describe("hotkey window actions", () => {
     await toggleMainWindow();
     expect(hide).toHaveBeenCalled();
     expect(show).not.toHaveBeenCalled();
+    expect(setPosition).not.toHaveBeenCalled();
   });
 
-  it("toggleMainWindow shows and focuses when hidden", async () => {
+  it("toggleMainWindow centers on cursor monitor then shows when hidden", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     isVisible.mockResolvedValue(false);
+    await toggleMainWindow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "Physical",
+        x: 1920 + (1920 - 800) / 2,
+        y: (1080 - 600) / 2,
+      }),
+    );
+    expect(show).toHaveBeenCalled();
+    expect(setFocus).toHaveBeenCalled();
+    expect(setPosition.mock.invocationCallOrder[0]).toBeLessThan(
+      show.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("monitorForCursor picks monitor containing physical cursor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    await expect(monitorForCursor()).resolves.toBe(secondary);
+  });
+
+  it("monitorForCursor picks nearest when cursor is in a gap", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    cursorPosition.mockResolvedValue({ x: 1910, y: -50 });
+    await expect(monitorForCursor()).resolves.toBe(primary);
+  });
+
+  it("monitorForCursor uses logical frames when physical AABBs overlap", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    // Desktop points on the external; raw physical AABB would also hit retinaPrimary.
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(external1x);
+  });
+
+  it("monitorForCursor prefers unique physical hit over misleading logical frame", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    // Non-overlapping physical rects, different scales — cursor on first monitor
+    // but x=3000 sits inside the second monitor's logical frame [2560,4480).
+    const left2x = {
+      scaleFactor: 2,
+      position: { x: 0, y: 0 },
+      size: { width: 3840, height: 2160 },
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { width: 3840, height: 2160 },
+      },
+    };
+    const right15x = {
+      scaleFactor: 1.5,
+      position: { x: 3840, y: 0 },
+      size: { width: 2880, height: 1620 },
+      workArea: {
+        position: { x: 3840, y: 0 },
+        size: { width: 2880, height: 1620 },
+      },
+    };
+    availableMonitors.mockResolvedValue([left2x, right15x]);
+    cursorPosition.mockResolvedValue({ x: 3000, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(left2x);
+  });
+
+  it("monitorForCursor uses logical when overlap layout hides cursor from right AABB", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    // 2× left [0,3024) and 1.5× right origin 1512*1.5=2268 — overlap layout;
+    // desktop-point cursor 1800 is on the right, but only left's physical AABB contains it.
+    const left2x = {
+      scaleFactor: 2,
+      position: { x: 0, y: 0 },
+      size: { width: 3024, height: 1964 },
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { width: 3024, height: 1964 },
+      },
+    };
+    const right15x = {
+      scaleFactor: 1.5,
+      position: { x: 2268, y: 0 },
+      size: { width: 2880, height: 1620 },
+      workArea: {
+        position: { x: 2268, y: 0 },
+        size: { width: 2880, height: 1620 },
+      },
+    };
+    availableMonitors.mockResolvedValue([left2x, right15x]);
+    cursorPosition.mockResolvedValue({ x: 1800, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(right15x);
+  });
+
+  it("monitorForCursor on macOS prefers logical for adjacent same-scale Retinas", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    // Independently physicalized [0,3024) | [3024,6048) — no overlap, but cursor is points.
+    const left = {
+      scaleFactor: 2,
+      position: { x: 0, y: 0 },
+      size: { width: 3024, height: 1964 },
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { width: 3024, height: 1964 },
+      },
+    };
+    const right = {
+      scaleFactor: 2,
+      position: { x: 3024, y: 0 },
+      size: { width: 3024, height: 1964 },
+      workArea: {
+        position: { x: 3024, y: 0 },
+        size: { width: 3024, height: 1964 },
+      },
+    };
+    availableMonitors.mockResolvedValue([left, right]);
+    cursorPosition.mockResolvedValue({ x: 1800, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(right);
+  });
+
+  it("centerOnCursorMonitor scales outerSize into destination monitor DPI", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    scaleFactor.mockResolvedValue(2); // window last on retina
+    outerSize.mockResolvedValue({ width: 1600, height: 1200 }); // physical @2x
+    await centerOnCursorMonitor();
+    // Destination is 1x → logical 800x600 → physical 800x600 on external
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "Physical",
+        x: 1512 + Math.round((1920 - 800) / 2),
+        y: Math.round((1080 - 600) / 2),
+      }),
+    );
+  });
+
+  it("centerOnCursorMonitor on macOS uses LogicalPosition in desktop points", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    scaleFactor.mockResolvedValue(2);
+    outerSize.mockResolvedValue({ width: 1600, height: 1200 });
+    await centerOnCursorMonitor();
+    // external scale 1 → work area already points; win logical 800x600
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "Logical",
+        x: 1512 + Math.round((1920 - 800) / 2),
+        y: Math.round((1080 - 600) / 2),
+      }),
+    );
+  });
+
+  it("centerOnCursorMonitor clamps oversized window into workArea", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    outerSize.mockResolvedValue({ width: 3000, height: 2000 });
+    await centerOnCursorMonitor();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 1920, y: 0 }),
+    );
+  });
+
+  it("centerOnCursorMonitor falls back to center() when no monitors", async () => {
+    availableMonitors.mockResolvedValue([]);
+    primaryMonitor.mockResolvedValue(null);
+    await centerOnCursorMonitor();
+    expect(center).toHaveBeenCalled();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("centerOnCursorMonitor falls back to center() when cursor fails", async () => {
+    cursorPosition.mockRejectedValue(new Error("no cursor"));
+    await centerOnCursorMonitor();
+    expect(center).toHaveBeenCalled();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("toggleMainWindow still shows when positioning fails", async () => {
+    isVisible.mockResolvedValue(false);
+    cursorPosition.mockRejectedValue(new Error("no cursor"));
+    center.mockRejectedValue(new Error("no center"));
     await toggleMainWindow();
     expect(show).toHaveBeenCalled();
     expect(setFocus).toHaveBeenCalled();
+  });
+
+  it("centerOnCursorMonitor still setPositions when outerSize fails", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    outerSize.mockRejectedValue(new Error("hidden size"));
+    await centerOnCursorMonitor();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 1920, y: 0 }),
+    );
+    expect(center).not.toHaveBeenCalled();
+  });
+
+  it("toggleMainWindow serializes overlapping presses", async () => {
+    let releaseHide: () => void = () => {};
+    const hideGate = new Promise<void>((r) => {
+      releaseHide = r;
+    });
+    isVisible.mockResolvedValueOnce(true).mockResolvedValue(false);
+    hide.mockImplementationOnce(async () => hideGate);
+    show.mockResolvedValue(undefined);
+
+    const first = toggleMainWindow();
+    const second = toggleMainWindow();
+    await vi.waitFor(() => expect(hide).toHaveBeenCalledTimes(1));
+    expect(show).not.toHaveBeenCalled();
+
+    releaseHide();
+    await Promise.all([first, second]);
+    expect(show).toHaveBeenCalled();
   });
 
   it("applyHotkey registers accelerator", async () => {

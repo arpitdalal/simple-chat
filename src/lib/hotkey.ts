@@ -4,7 +4,15 @@ import {
   unregister,
   unregisterAll,
 } from "@tauri-apps/plugin-global-shortcut";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalPosition, PhysicalPosition } from "@tauri-apps/api/dpi";
+import {
+  availableMonitors,
+  cursorPosition,
+  getCurrentWindow,
+  primaryMonitor,
+  type Monitor,
+  type Window,
+} from "@tauri-apps/api/window";
 
 export const DEFAULT_HOTKEY = "CommandOrControl+Shift+Space";
 
@@ -20,6 +28,12 @@ let orphanHotkeys: string[] = [];
 /** Serialize rebinds so OS map and activeHotkey stay aligned. */
 let applyChain: Promise<void> = Promise.resolve();
 
+/** Serialize show/hide so overlapping hotkey presses don't race visibility. */
+let toggleChain: Promise<void> = Promise.resolve();
+
+/** Tests only — force macOS-style logical vs physical hit-test preference. */
+let preferLogicalFramesForTests: boolean | null = null;
+
 export function getActiveHotkey(): string | null {
   return activeHotkey;
 }
@@ -29,16 +43,258 @@ export function resetActiveHotkeyForTests() {
   activeHotkey = null;
   orphanHotkeys = [];
   applyChain = Promise.resolve();
+  toggleChain = Promise.resolve();
+  preferLogicalFramesForTests = null;
+}
+
+/** Tests only. */
+export function setPreferLogicalMonitorFramesForTests(v: boolean | null) {
+  preferLogicalFramesForTests = v;
+}
+
+function containsPoint(
+  mon: Monitor,
+  x: number,
+  y: number,
+): boolean {
+  const { x: left, y: top } = mon.position;
+  const { width, height } = mon.size;
+  return x >= left && x < left + width && y >= top && y < top + height;
+}
+
+/** Desktop-point frame — undoes per-monitor physicalization that can overlap on macOS. */
+function logicalFrame(mon: Monitor) {
+  const s = mon.scaleFactor || 1;
+  return {
+    mon,
+    x: mon.position.x / s,
+    y: mon.position.y / s,
+    w: mon.size.width / s,
+    h: mon.size.height / s,
+  };
+}
+
+function frameContains(
+  f: { x: number; y: number; w: number; h: number },
+  x: number,
+  y: number,
+): boolean {
+  return x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
+}
+
+function distanceSqToFrame(
+  f: { x: number; y: number; w: number; h: number },
+  x: number,
+  y: number,
+): number {
+  const dx = x < f.x ? f.x - x : x >= f.x + f.w ? x - (f.x + f.w - 1) : 0;
+  const dy = y < f.y ? f.y - y : y >= f.y + f.h ? y - (f.y + f.h - 1) : 0;
+  return dx * dx + dy * dy;
+}
+
+/**
+ * macOS reports cursor/monitor positions in desktop points (logical), even when
+ * Monitor fields are typed physical — prefer logical frames there. Elsewhere
+ * prefer physical AABBs.
+ */
+function preferLogicalMonitorFrames(): boolean {
+  if (preferLogicalFramesForTests != null) return preferLogicalFramesForTests;
+  return (
+    /Mac/i.test(navigator.platform) || /Mac OS X/i.test(navigator.userAgent)
+  );
+}
+
+/**
+ * Monitor under the cursor.
+ * macOS (desktop points): unique logical frame first.
+ * Else (physical coords): unique physical AABB first.
+ *
+ * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
+ * reliable cursor-display summon until the runtime supports both.
+ */
+export async function monitorForCursor(): Promise<Monitor | null> {
+  const cursor = await cursorPosition();
+  const monitors = await availableMonitors();
+  if (!monitors.length) return primaryMonitor();
+
+  const frames = monitors.map(logicalFrame);
+  const physicalHits = monitors.filter((m) =>
+    containsPoint(m, cursor.x, cursor.y),
+  );
+  const logicalHits = frames.filter((f) =>
+    frameContains(f, cursor.x, cursor.y),
+  );
+
+  if (preferLogicalMonitorFrames()) {
+    if (logicalHits.length === 1) return logicalHits[0].mon;
+    if (physicalHits.length === 1) return physicalHits[0];
+  } else {
+    if (physicalHits.length === 1) return physicalHits[0];
+    if (logicalHits.length === 1) return logicalHits[0].mon;
+  }
+
+  const pool =
+    logicalHits.length > 0
+      ? logicalHits
+      : physicalHits.length > 0
+        ? physicalHits.map(logicalFrame)
+        : frames;
+  return pool.reduce((best, f) =>
+    distanceSqToFrame(f, cursor.x, cursor.y) <
+    distanceSqToFrame(best, cursor.x, cursor.y)
+      ? f
+      : best,
+  ).mon;
+}
+
+function clampedCenter(
+  workPos: { x: number; y: number },
+  workSize: { width: number; height: number },
+  winSize: { width: number; height: number },
+): { x: number; y: number } {
+  const w = winSize.width > 0 ? winSize.width : 0;
+  const h = winSize.height > 0 ? winSize.height : 0;
+  let x = Math.round(workPos.x + (workSize.width - w) / 2);
+  let y = Math.round(workPos.y + (workSize.height - h) / 2);
+  if (w > 0) {
+    x = Math.min(
+      Math.max(x, workPos.x),
+      workPos.x + Math.max(0, workSize.width - w),
+    );
+  } else {
+    x = workPos.x;
+  }
+  if (h > 0) {
+    y = Math.min(
+      Math.max(y, workPos.y),
+      workPos.y + Math.max(0, workSize.height - h),
+    );
+  } else {
+    y = workPos.y;
+  }
+  return { x, y };
+}
+
+/** Logical outer size (desktop points) — correct input for macOS setPosition. */
+async function outerSizeLogical(
+  win: Window,
+): Promise<{ width: number; height: number }> {
+  const outer = await win.outerSize();
+  let srcScale = 1;
+  try {
+    srcScale = (await win.scaleFactor()) || 1;
+  } catch {
+    srcScale = 1;
+  }
+  return {
+    width: Math.round(outer.width / srcScale),
+    height: Math.round(outer.height / srcScale),
+  };
+}
+
+/** Map outerSize from the window's current scale into the destination monitor's. */
+async function outerSizeForMonitor(
+  win: Window,
+  monitor: Monitor,
+): Promise<{ width: number; height: number }> {
+  const outer = await win.outerSize();
+  let srcScale = 1;
+  try {
+    srcScale = (await win.scaleFactor()) || 1;
+  } catch {
+    srcScale = 1;
+  }
+  const dstScale = monitor.scaleFactor || srcScale;
+  const factor = dstScale / srcScale;
+  return {
+    width: Math.round(outer.width * factor),
+    height: Math.round(outer.height * factor),
+  };
+}
+
+/** Center on the monitor under the cursor; fall back to window.center(). */
+export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
+  let monitor: Monitor | null = null;
+  try {
+    monitor = await monitorForCursor();
+  } catch {
+    try {
+      await win.center();
+    } catch {
+      /* still show/focus even if positioning fails */
+    }
+    return;
+  }
+  if (!monitor) {
+    try {
+      await win.center();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    if (preferLogicalMonitorFrames()) {
+      // macOS: setPosition(PhysicalPosition) rescales via the *source* window
+      // factor — pass LogicalPosition in desktop points instead.
+      const s = monitor.scaleFactor || 1;
+      const workPos = {
+        x: monitor.workArea.position.x / s,
+        y: monitor.workArea.position.y / s,
+      };
+      const workSize = {
+        width: monitor.workArea.size.width / s,
+        height: monitor.workArea.size.height / s,
+      };
+      let size = { width: 0, height: 0 };
+      try {
+        size = await outerSizeLogical(win);
+      } catch {
+        /* origin fallback */
+      }
+      const { x, y } = clampedCenter(workPos, workSize, size);
+      await win.setPosition(new LogicalPosition(x, y));
+    } else {
+      let size = { width: 0, height: 0 };
+      try {
+        size = await outerSizeForMonitor(win, monitor);
+      } catch {
+        /* origin fallback */
+      }
+      const { x, y } = clampedCenter(
+        monitor.workArea.position,
+        monitor.workArea.size,
+        size,
+      );
+      await win.setPosition(new PhysicalPosition(x, y));
+    }
+  } catch {
+    // setPosition failed — center() may land on the wrong display.
+    try {
+      await win.center();
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export async function toggleMainWindow() {
-  const win = getCurrentWindow();
-  if (await win.isVisible()) {
-    await win.hide();
-  } else {
-    await win.show();
-    await win.setFocus();
-  }
+  const run = async () => {
+    const win = getCurrentWindow();
+    if (await win.isVisible()) {
+      await win.hide();
+    } else {
+      await centerOnCursorMonitor(win);
+      await win.show();
+      await win.setFocus();
+    }
+  };
+  const queued = toggleChain.then(run, run);
+  toggleChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
 }
 
 export async function hideMainWindow() {

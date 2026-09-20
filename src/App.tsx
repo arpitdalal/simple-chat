@@ -51,6 +51,8 @@ function App() {
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
   const updateCheckGenRef = useRef(0);
+  const updatingRef = useRef(false);
+  const restartRequiredRef = useRef(false);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -112,14 +114,23 @@ function App() {
   useEffect(() => {
     pendingUpdateRef.current = pendingUpdate;
   }, [pendingUpdate]);
+  useEffect(() => {
+    updatingRef.current = updating;
+  }, [updating]);
+  useEffect(() => {
+    restartRequiredRef.current = restartRequired;
+  }, [restartRequired]);
 
   function adoptUpdate(update: AvailableUpdate) {
+    // Don't replace or dismiss the in-flight installer / restart-required banner.
+    if (updatingRef.current || restartRequiredRef.current) {
+      update.dismiss();
+      return;
+    }
     setPendingUpdate((prev) => {
       if (prev && prev !== update) prev.dismiss();
       return update;
     });
-    setRestartRequired(false);
-    setUpdating(false);
   }
 
   useEffect(() => {
@@ -382,6 +393,7 @@ function App() {
               }}
               onNotify={notify}
               onUpdateFound={adoptUpdate}
+              updateLocked={updating || restartRequired}
             />
           </div>
         ) : (

@@ -26,6 +26,8 @@ type Props = {
   onNotify?: (text: string, kind?: "ok" | "err") => void;
   /** Hand discovered updates to App so one banner owns install/restart. */
   onUpdateFound?: (update: AvailableUpdate) => void;
+  /** True while App is installing or needs manual restart. */
+  updateLocked?: boolean;
 };
 
 export function Settings({
@@ -33,6 +35,7 @@ export function Settings({
   onSaved,
   onNotify,
   onUpdateFound,
+  updateLocked = false,
 }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
@@ -539,7 +542,7 @@ export function Settings({
         <button
           type="button"
           className="ghost"
-          disabled={updateBusy}
+          disabled={updateBusy || updateLocked}
           onClick={() => {
             void (async () => {
               const gen = ++updateCheckGenRef.current;

@@ -82,14 +82,21 @@ export async function applyHotkey(accelerator: string) {
     const prev = activeHotkey;
     if (prev === next && orphanHotkeys.length === 0) return;
 
-    await sweepOrphans(new Set([next, prev].filter(Boolean) as string[]));
+    const nextAlreadyLive = orphanHotkeys.includes(next);
+    await sweepOrphans(
+      new Set([next, ...(prev ? [prev] : [])]),
+    );
 
     if (prev === next) return;
 
-    try {
-      await register(next, onHotkey);
-    } catch (err) {
-      throw new Error(conflictMessage(next, err));
+    if (nextAlreadyLive) {
+      orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
+    } else {
+      try {
+        await register(next, onHotkey);
+      } catch (err) {
+        throw new Error(conflictMessage(next, err));
+      }
     }
 
     if (prev) {
@@ -97,10 +104,17 @@ export async function applyHotkey(accelerator: string) {
         await unregister(prev);
       } catch {
         // New is live; try to drop it so previous remains the only binding.
+        if (nextAlreadyLive) {
+          orphanHotkeys.push(next);
+          activeHotkey = prev;
+          throw new Error(
+            `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,
+          );
+        }
         try {
           await unregister(next);
         } catch {
-          // ponytail: both may stay live; remember next so later applies can sweep it
+          // ponytail: both may stay live; remember next so later applies can sweep/promote it
           orphanHotkeys.push(next);
           activeHotkey = prev;
           throw new Error(

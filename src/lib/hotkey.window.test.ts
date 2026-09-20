@@ -160,4 +160,24 @@ describe("hotkey window actions", () => {
     expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+C");
   });
+
+  it("applyHotkey promotes orphaned target without re-registering", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+
+    unregister.mockReset();
+    unregister.mockResolvedValue(undefined);
+    register.mockClear();
+    await applyHotkey("CommandOrControl+Shift+B");
+
+    expect(register).not.toHaveBeenCalled();
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
+  });
 });

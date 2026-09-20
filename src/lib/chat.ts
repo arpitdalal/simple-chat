@@ -53,6 +53,9 @@ function withWebSearch(
   return { modelId };
 }
 
+/** Exported for unit tests — provider-native web search wiring. */
+export { withWebSearch };
+
 export async function streamChat(opts: {
   provider: ProviderId;
   modelId: string;

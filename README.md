@@ -7,13 +7,13 @@ Local BYOK AI chat. Raycast-style: hotkey summon, close hides, no Dock by defaul
 - Sidebar chat history (SQLite, local-only)
 - BYOK: OpenAI, Anthropic, Google (OS keychain / Credential Manager)
 - Image paste/attach (vision)
-- Provider-native web search toggle
+- Provider-native web search (always on)
 - Recordable global hotkey (default `⌘/Ctrl+⇧+Space`)
-- In-chat model/provider picker
+- Single model picker (filtered by saved API keys)
 - Esc closes settings, then hides window
 - Close = hide; Quit from tray
-- Resume last chat within N minutes (default 5)
-- Shortcuts: `⌘/Ctrl+N`, `⌘/Ctrl+1–0`, `⌘/Ctrl+,`
+- Resume last chat within N minutes (default 5); empty New Chats auto-discarded
+- Shortcuts: `⌘/Ctrl+N`, `⌘/Ctrl+1–0`, `⌘/Ctrl+,`, `⌘/Ctrl+B`
 
 ## Dev
 
@@ -21,6 +21,14 @@ Local BYOK AI chat. Raycast-style: hotkey summon, close hides, no Dock by defaul
 npm install
 npm run check
 npm run tauri:dev
+```
+
+## Tests
+
+```bash
+npm test          # unit + component integration (vitest)
+npm run test:e2e  # browser UX flows (playwright + in-memory Tauri mocks)
+npm run test:all
 ```
 
 **Note:** `tauri:dev` may briefly show a Dock icon / wrong menu name. Release builds use `LSUIElement` + accessory policy (no Dock; menu name “Simple Chat”).

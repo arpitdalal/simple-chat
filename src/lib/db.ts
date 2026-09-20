@@ -290,14 +290,13 @@ export async function messageCount(chatId: string): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
+import { isEmptyNewChat, resolveStartupMode } from "./chats";
+
 /** Resume last chat if opened within resume_minutes; else new chat. */
 export async function resolveStartupChat(
   settings: AppSettings,
 ): Promise<"resume" | "new"> {
-  if (!settings.last_chat_id) return "new";
-  const ageMs = Date.now() - settings.last_opened_at;
-  if (ageMs <= settings.resume_minutes * 60 * 1000) return "resume";
-  return "new";
+  return resolveStartupMode(settings);
 }
 
 /**
@@ -314,7 +313,7 @@ export async function openOrCreateChat(
 
   if (settings.last_chat_id) {
     const last = await getChat(settings.last_chat_id);
-    if (last && last.title === "New Chat" && (await messageCount(last.id)) === 0) {
+    if (last && isEmptyNewChat(last) && (await messageCount(last.id)) === 0) {
       return last;
     }
   }

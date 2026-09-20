@@ -19,14 +19,8 @@ import {
 } from "./lib/db";
 import type { ProviderId } from "./lib/models";
 import { applyHotkey, hideMainWindow } from "./lib/hotkey";
+import { isEmptyNewChat } from "./lib/chats";
 import "./App.css";
-
-function isEmptyNewChat(c: Chat) {
-  return (
-    c.title === "New Chat" &&
-    (!c.preview.trim() || c.preview === "Ask AI anything…")
-  );
-}
 
 function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);

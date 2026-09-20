@@ -6,10 +6,11 @@ import {
 } from "@tauri-apps/plugin-global-shortcut";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
+  availableMonitors,
   cursorPosition,
   getCurrentWindow,
-  monitorFromPoint,
   primaryMonitor,
+  type Monitor,
   type Window,
 } from "@tauri-apps/api/window";
 
@@ -27,6 +28,9 @@ let orphanHotkeys: string[] = [];
 /** Serialize rebinds so OS map and activeHotkey stay aligned. */
 let applyChain: Promise<void> = Promise.resolve();
 
+/** Serialize show/hide so overlapping hotkey presses don't race visibility. */
+let toggleChain: Promise<void> = Promise.resolve();
+
 export function getActiveHotkey(): string | null {
   return activeHotkey;
 }
@@ -36,44 +40,133 @@ export function resetActiveHotkeyForTests() {
   activeHotkey = null;
   orphanHotkeys = [];
   applyChain = Promise.resolve();
+  toggleChain = Promise.resolve();
 }
 
-/** Center on the monitor under the cursor; fall back to primary / window.center(). */
-export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
-  try {
-    const cursor = await cursorPosition();
-    const monitor =
-      (await monitorFromPoint(cursor.x, cursor.y)) ?? (await primaryMonitor());
-    if (!monitor) {
-      await win.center();
-      return;
-    }
-    const size = await win.outerSize();
-    const { position, size: area } = monitor.workArea;
-    await win.setPosition(
-      new PhysicalPosition(
-        Math.round(position.x + (area.width - size.width) / 2),
-        Math.round(position.y + (area.height - size.height) / 2),
-      ),
+function containsPoint(
+  mon: Monitor,
+  x: number,
+  y: number,
+): boolean {
+  const { x: left, y: top } = mon.position;
+  const { width, height } = mon.size;
+  return x >= left && x < left + width && y >= top && y < top + height;
+}
+
+function distanceSqToMonitor(mon: Monitor, x: number, y: number): number {
+  const { x: left, y: top } = mon.position;
+  const { width, height } = mon.size;
+  const dx = x < left ? left - x : x >= left + width ? x - (left + width - 1) : 0;
+  const dy = y < top ? top - y : y >= top + height ? y - (top + height - 1) : 0;
+  return dx * dx + dy * dy;
+}
+
+/**
+ * Monitor under the cursor via physical AABB (cursorPosition + Monitor bounds
+ * are both physical). Avoids monitorFromPoint's undocumented logical/physical
+ * mismatch on macOS HiDPI (tauri#13338 / #12676).
+ *
+ * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
+ * reliable cursor-display summon until the runtime supports both.
+ */
+export async function monitorForCursor(): Promise<Monitor | null> {
+  const cursor = await cursorPosition();
+  const monitors = await availableMonitors();
+  const hit = monitors.find((m) => containsPoint(m, cursor.x, cursor.y));
+  if (hit) return hit;
+  if (monitors.length) {
+    return monitors.reduce((best, m) =>
+      distanceSqToMonitor(m, cursor.x, cursor.y) <
+      distanceSqToMonitor(best, cursor.x, cursor.y)
+        ? m
+        : best,
     );
+  }
+  return primaryMonitor();
+}
+
+function clampedCenter(
+  workPos: { x: number; y: number },
+  workSize: { width: number; height: number },
+  winSize: { width: number; height: number },
+): PhysicalPosition {
+  const w = winSize.width > 0 ? winSize.width : 0;
+  const h = winSize.height > 0 ? winSize.height : 0;
+  let x = Math.round(workPos.x + (workSize.width - w) / 2);
+  let y = Math.round(workPos.y + (workSize.height - h) / 2);
+  if (w > 0) {
+    x = Math.min(
+      Math.max(x, workPos.x),
+      workPos.x + Math.max(0, workSize.width - w),
+    );
+  } else {
+    x = workPos.x;
+  }
+  if (h > 0) {
+    y = Math.min(
+      Math.max(y, workPos.y),
+      workPos.y + Math.max(0, workSize.height - h),
+    );
+  } else {
+    y = workPos.y;
+  }
+  return new PhysicalPosition(x, y);
+}
+
+/** Center on the monitor under the cursor; fall back to window.center(). */
+export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
+  let monitor: Monitor | null = null;
+  try {
+    monitor = await monitorForCursor();
   } catch {
     try {
       await win.center();
     } catch {
-      // still show/focus even if positioning fails
+      /* still show/focus even if positioning fails */
+    }
+    return;
+  }
+  if (!monitor) {
+    try {
+      await win.center();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    const size = await win.outerSize();
+    await win.setPosition(
+      clampedCenter(monitor.workArea.position, monitor.workArea.size, size),
+    );
+  } catch {
+    // Known monitor but size/setPosition failed — center() may still land
+    // on the wrong display; best effort only.
+    try {
+      await win.center();
+    } catch {
+      /* ignore */
     }
   }
 }
 
 export async function toggleMainWindow() {
-  const win = getCurrentWindow();
-  if (await win.isVisible()) {
-    await win.hide();
-  } else {
-    await centerOnCursorMonitor(win);
-    await win.show();
-    await win.setFocus();
-  }
+  const run = async () => {
+    const win = getCurrentWindow();
+    if (await win.isVisible()) {
+      await win.hide();
+    } else {
+      await centerOnCursorMonitor(win);
+      await win.show();
+      await win.setFocus();
+    }
+  };
+  const queued = toggleChain.then(run, run);
+  toggleChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
 }
 
 export async function hideMainWindow() {

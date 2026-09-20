@@ -8,7 +8,7 @@ const outerSize = vi.fn();
 const setPosition = vi.fn();
 const center = vi.fn();
 const cursorPosition = vi.fn();
-const monitorFromPoint = vi.fn();
+const availableMonitors = vi.fn();
 const primaryMonitor = vi.fn();
 const register = vi.fn();
 const unregister = vi.fn();
@@ -37,7 +37,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     center,
   }),
   cursorPosition: (...a: unknown[]) => cursorPosition(...a),
-  monitorFromPoint: (...a: unknown[]) => monitorFromPoint(...a),
+  availableMonitors: (...a: unknown[]) => availableMonitors(...a),
   primaryMonitor: (...a: unknown[]) => primaryMonitor(...a),
 }));
 
@@ -54,11 +54,23 @@ import {
   clearHotkey,
   getActiveHotkey,
   hideMainWindow,
+  monitorForCursor,
   resetActiveHotkeyForTests,
   toggleMainWindow,
 } from "./hotkey";
 
-const secondaryMonitor = {
+const primary = {
+  position: { x: 0, y: 0 },
+  size: { width: 1920, height: 1080 },
+  workArea: {
+    position: { x: 0, y: 0 },
+    size: { width: 1920, height: 1080 },
+  },
+};
+
+const secondary = {
+  position: { x: 1920, y: 0 },
+  size: { width: 1920, height: 1080 },
   workArea: {
     position: { x: 1920, y: 0 },
     size: { width: 1920, height: 1080 },
@@ -72,8 +84,8 @@ describe("hotkey window actions", () => {
     isRegistered.mockResolvedValue(false);
     outerSize.mockResolvedValue({ width: 800, height: 600 });
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
-    monitorFromPoint.mockResolvedValue(secondaryMonitor);
-    primaryMonitor.mockResolvedValue(null);
+    availableMonitors.mockResolvedValue([primary, secondary]);
+    primaryMonitor.mockResolvedValue(primary);
     setPosition.mockResolvedValue(undefined);
     center.mockResolvedValue(undefined);
   });
@@ -94,7 +106,6 @@ describe("hotkey window actions", () => {
   it("toggleMainWindow centers on cursor monitor then shows when hidden", async () => {
     isVisible.mockResolvedValue(false);
     await toggleMainWindow();
-    expect(monitorFromPoint).toHaveBeenCalledWith(2000, 100);
     expect(setPosition).toHaveBeenCalledWith(
       expect.objectContaining({
         x: 1920 + (1920 - 800) / 2,
@@ -108,20 +119,64 @@ describe("hotkey window actions", () => {
     );
   });
 
-  it("centerOnCursorMonitor falls back to primary when point has no monitor", async () => {
-    monitorFromPoint.mockResolvedValue(null);
-    primaryMonitor.mockResolvedValue(secondaryMonitor);
+  it("monitorForCursor picks monitor containing physical cursor", async () => {
+    await expect(monitorForCursor()).resolves.toBe(secondary);
+  });
+
+  it("monitorForCursor picks nearest when cursor is in a gap", async () => {
+    cursorPosition.mockResolvedValue({ x: 1910, y: -50 });
+    await expect(monitorForCursor()).resolves.toBe(primary);
+  });
+
+  it("centerOnCursorMonitor clamps oversized window into workArea", async () => {
+    outerSize.mockResolvedValue({ width: 3000, height: 2000 });
     await centerOnCursorMonitor();
     expect(setPosition).toHaveBeenCalledWith(
-      expect.objectContaining({ x: 2480, y: 240 }),
+      expect.objectContaining({ x: 1920, y: 0 }),
     );
   });
 
-  it("centerOnCursorMonitor falls back to center() when monitors unavailable", async () => {
+  it("centerOnCursorMonitor falls back to center() when no monitors", async () => {
+    availableMonitors.mockResolvedValue([]);
+    primaryMonitor.mockResolvedValue(null);
+    await centerOnCursorMonitor();
+    expect(center).toHaveBeenCalled();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("centerOnCursorMonitor falls back to center() when cursor fails", async () => {
     cursorPosition.mockRejectedValue(new Error("no cursor"));
     await centerOnCursorMonitor();
     expect(center).toHaveBeenCalled();
     expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("toggleMainWindow still shows when positioning fails", async () => {
+    isVisible.mockResolvedValue(false);
+    cursorPosition.mockRejectedValue(new Error("no cursor"));
+    center.mockRejectedValue(new Error("no center"));
+    await toggleMainWindow();
+    expect(show).toHaveBeenCalled();
+    expect(setFocus).toHaveBeenCalled();
+  });
+
+  it("toggleMainWindow serializes overlapping presses", async () => {
+    let releaseHide: () => void = () => {};
+    const hideGate = new Promise<void>((r) => {
+      releaseHide = r;
+    });
+    isVisible.mockResolvedValueOnce(true).mockResolvedValue(false);
+    hide.mockImplementationOnce(async () => hideGate);
+    show.mockResolvedValue(undefined);
+
+    const first = toggleMainWindow();
+    const second = toggleMainWindow();
+    await vi.waitFor(() => expect(hide).toHaveBeenCalledTimes(1));
+    expect(show).not.toHaveBeenCalled();
+
+    releaseHide();
+    await Promise.all([first, second]);
+    expect(show).toHaveBeenCalled();
   });
 
   it("applyHotkey registers accelerator", async () => {

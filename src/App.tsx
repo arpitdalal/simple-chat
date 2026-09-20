@@ -48,6 +48,10 @@ function App() {
   /** Install succeeded; only quit/reopen left — do not re-offer Install. */
   const [restartRequired, setRestartRequired] = useState(false);
 
+  /** Currently offered update; dismiss before replace. */
+  const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
+  const updateCheckGenRef = useRef(0);
+
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
   }, []);
@@ -106,6 +110,19 @@ function App() {
   }, [settings, chats, active, focusComposer, refreshChats]);
 
   useEffect(() => {
+    pendingUpdateRef.current = pendingUpdate;
+  }, [pendingUpdate]);
+
+  function adoptUpdate(update: AvailableUpdate) {
+    setPendingUpdate((prev) => {
+      if (prev && prev !== update) prev.dismiss();
+      return update;
+    });
+    setRestartRequired(false);
+    setUpdating(false);
+  }
+
+  useEffect(() => {
     void (async () => {
       const s = await getSettings();
       setSettings(s);
@@ -129,10 +146,20 @@ function App() {
       await refreshChats();
       setReady(true);
       focusComposer();
+      const gen = ++updateCheckGenRef.current;
       void checkForAppUpdate().then((result) => {
-        if (result.status === "available") setPendingUpdate(result.update);
+        if (gen !== updateCheckGenRef.current) {
+          if (result.status === "available") result.update.dismiss();
+          return;
+        }
+        if (result.status === "available") adoptUpdate(result.update);
       });
     })();
+    return () => {
+      updateCheckGenRef.current += 1;
+      pendingUpdateRef.current?.dismiss();
+      pendingUpdateRef.current = null;
+    };
   }, [refreshChats, focusComposer, notify]);
 
   useEffect(() => {
@@ -354,6 +381,7 @@ function App() {
                 void refreshChats();
               }}
               onNotify={notify}
+              onUpdateFound={adoptUpdate}
             />
           </div>
         ) : (

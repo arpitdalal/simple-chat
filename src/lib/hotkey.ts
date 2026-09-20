@@ -53,18 +53,40 @@ function containsPoint(
   return x >= left && x < left + width && y >= top && y < top + height;
 }
 
-function distanceSqToMonitor(mon: Monitor, x: number, y: number): number {
-  const { x: left, y: top } = mon.position;
-  const { width, height } = mon.size;
-  const dx = x < left ? left - x : x >= left + width ? x - (left + width - 1) : 0;
-  const dy = y < top ? top - y : y >= top + height ? y - (top + height - 1) : 0;
+/** Desktop-point frame — undoes per-monitor physicalization that can overlap on macOS. */
+function logicalFrame(mon: Monitor) {
+  const s = mon.scaleFactor || 1;
+  return {
+    mon,
+    x: mon.position.x / s,
+    y: mon.position.y / s,
+    w: mon.size.width / s,
+    h: mon.size.height / s,
+  };
+}
+
+function frameContains(
+  f: { x: number; y: number; w: number; h: number },
+  x: number,
+  y: number,
+): boolean {
+  return x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
+}
+
+function distanceSqToFrame(
+  f: { x: number; y: number; w: number; h: number },
+  x: number,
+  y: number,
+): number {
+  const dx = x < f.x ? f.x - x : x >= f.x + f.w ? x - (f.x + f.w - 1) : 0;
+  const dy = y < f.y ? f.y - y : y >= f.y + f.h ? y - (f.y + f.h - 1) : 0;
   return dx * dx + dy * dy;
 }
 
 /**
- * Monitor under the cursor via physical AABB (cursorPosition + Monitor bounds
- * are both physical). Avoids monitorFromPoint's undocumented logical/physical
- * mismatch on macOS HiDPI (tauri#13338 / #12676).
+ * Monitor under the cursor. Prefer logical frames (scale-aware) so mixed-DPI
+ * macOS layouts — where independently physicalized rects can overlap — still
+ * resolve to the display that actually contains the cursor.
  *
  * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
  * reliable cursor-display summon until the runtime supports both.
@@ -72,17 +94,33 @@ function distanceSqToMonitor(mon: Monitor, x: number, y: number): number {
 export async function monitorForCursor(): Promise<Monitor | null> {
   const cursor = await cursorPosition();
   const monitors = await availableMonitors();
-  const hit = monitors.find((m) => containsPoint(m, cursor.x, cursor.y));
-  if (hit) return hit;
-  if (monitors.length) {
-    return monitors.reduce((best, m) =>
-      distanceSqToMonitor(m, cursor.x, cursor.y) <
-      distanceSqToMonitor(best, cursor.x, cursor.y)
-        ? m
-        : best,
-    );
-  }
-  return primaryMonitor();
+  if (!monitors.length) return primaryMonitor();
+
+  const frames = monitors.map(logicalFrame);
+  // cursorPosition shares the desktop point space with logical frames after
+  // undoing per-monitor scale (Codex/tauri mixed-DPI overlap case).
+  const logicalHits = frames.filter((f) =>
+    frameContains(f, cursor.x, cursor.y),
+  );
+  if (logicalHits.length === 1) return logicalHits[0].mon;
+
+  const physicalHits = monitors.filter((m) =>
+    containsPoint(m, cursor.x, cursor.y),
+  );
+  if (physicalHits.length === 1) return physicalHits[0];
+
+  const pool =
+    logicalHits.length > 0
+      ? logicalHits
+      : physicalHits.length > 0
+        ? physicalHits.map(logicalFrame)
+        : frames;
+  return pool.reduce((best, f) =>
+    distanceSqToFrame(f, cursor.x, cursor.y) <
+    distanceSqToFrame(best, cursor.x, cursor.y)
+      ? f
+      : best,
+  ).mon;
 }
 
 function clampedCenter(
@@ -113,6 +151,26 @@ function clampedCenter(
   return new PhysicalPosition(x, y);
 }
 
+/** Map outerSize from the window's current scale into the destination monitor's. */
+async function outerSizeForMonitor(
+  win: Window,
+  monitor: Monitor,
+): Promise<{ width: number; height: number }> {
+  const outer = await win.outerSize();
+  let srcScale = 1;
+  try {
+    srcScale = (await win.scaleFactor()) || 1;
+  } catch {
+    srcScale = 1;
+  }
+  const dstScale = monitor.scaleFactor || srcScale;
+  const factor = dstScale / srcScale;
+  return {
+    width: Math.round(outer.width * factor),
+    height: Math.round(outer.height * factor),
+  };
+}
+
 /** Center on the monitor under the cursor; fall back to window.center(). */
 export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
   let monitor: Monitor | null = null;
@@ -136,7 +194,7 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
   }
   let size = { width: 0, height: 0 };
   try {
-    size = await win.outerSize();
+    size = await outerSizeForMonitor(win, monitor);
   } catch {
     // clampedCenter treats non-positive as workArea origin
   }

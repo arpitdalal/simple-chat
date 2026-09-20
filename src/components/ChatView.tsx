@@ -433,10 +433,10 @@ export function ChatView({
     } catch (e) {
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
-        // User msg never landed — put composer back
+        // Restore only if composer still empty — don't clobber newer typing/attachments
         if (!userPersisted) {
-          setInput(text);
-          setImages(imageParts);
+          setInput((cur) => (cur === "" ? text : cur));
+          setImages((cur) => (cur.length === 0 ? imageParts : cur));
         }
         setStreaming("");
       }

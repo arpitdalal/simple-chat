@@ -250,6 +250,40 @@ describe("ChatView", () => {
     expect(streamChat).not.toHaveBeenCalled();
   });
 
+  it("does not clobber newer composer text when failed send restores", async () => {
+    const user = userEvent.setup();
+    let rejectAdd!: (e: Error) => void;
+    addMessage.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAdd = reject;
+        }),
+    );
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    await user.type(ta, "first");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(ta).toHaveValue(""));
+    await user.type(ta, "newer draft");
+    await act(async () => {
+      rejectAdd(new Error("db down"));
+    });
+    await waitFor(() => expect(ta).toHaveValue("newer draft"));
+  });
+
   it("keeps partial assistant reply when stream fails mid-way", async () => {
     const user = userEvent.setup();
     streamChat.mockImplementation(

@@ -74,6 +74,8 @@ export function ChatView({
   const streamTextRef = useRef("");
   const messagesRef = useRef<Message[]>([]);
   const imagesRef = useRef<string[]>([]);
+  /** In-flight FileReaders — composer not "empty" until they settle. */
+  const pendingImageReadsRef = useRef(0);
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
 
@@ -302,6 +304,7 @@ export function ChatView({
 
     let full = "";
     let assistantSaved = false;
+    let streamed = false;
     try {
       await streamChat({
         provider: chatSnap.provider as ProviderId,
@@ -320,14 +323,27 @@ export function ChatView({
           if (viewingIdRef.current === chatId) setStreaming("");
         },
       });
+      streamed = true;
 
       await appendAssistant(full);
       assistantSaved = true;
     } catch (e) {
       const aborted = (e as Error).name === "AbortError";
+      if (!aborted && streamed && !assistantSaved && full) {
+        // Stream finished — retry persist once; success = no error toast
+        try {
+          await appendAssistant(full);
+          assistantSaved = true;
+          return;
+        } catch {
+          if (viewingIdRef.current === chatId) setStreaming("");
+          onNotify((e as Error).message || String(e), "err");
+          throw e;
+        }
+      }
       const partial = full || streamTextRef.current;
-      // Keep partial reply instead of wiping it on API failure
-      if (!aborted && !assistantSaved && partial) {
+      // Keep partial reply only when the stream itself failed
+      if (!aborted && !streamed && !assistantSaved && partial) {
         try {
           await appendAssistant(partial);
           assistantSaved = true;
@@ -440,7 +456,8 @@ export function ChatView({
         if (
           !userPersisted &&
           (inputRef.current?.value ?? "") === "" &&
-          imagesRef.current.length === 0
+          imagesRef.current.length === 0 &&
+          pendingImageReadsRef.current === 0
         ) {
           setInput(text);
           // Hide bumps releaseGen and drops image data URLs — don't undo that
@@ -504,12 +521,23 @@ export function ChatView({
       const file = item.getAsFile();
       if (!file) continue;
       const gen = releaseGenRef.current;
+      pendingImageReadsRef.current += 1;
       const reader = new FileReader();
       reader.onload = () => {
+        pendingImageReadsRef.current = Math.max(
+          0,
+          pendingImageReadsRef.current - 1,
+        );
         if (gen !== releaseGenRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }
+      };
+      reader.onerror = () => {
+        pendingImageReadsRef.current = Math.max(
+          0,
+          pendingImageReadsRef.current - 1,
+        );
       };
       reader.readAsDataURL(file);
     }
@@ -520,12 +548,23 @@ export function ChatView({
     for (const file of files) {
       if (!file.type.startsWith("image/")) continue;
       const gen = releaseGenRef.current;
+      pendingImageReadsRef.current += 1;
       const reader = new FileReader();
       reader.onload = () => {
+        pendingImageReadsRef.current = Math.max(
+          0,
+          pendingImageReadsRef.current - 1,
+        );
         if (gen !== releaseGenRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }
+      };
+      reader.onerror = () => {
+        pendingImageReadsRef.current = Math.max(
+          0,
+          pendingImageReadsRef.current - 1,
+        );
       };
       reader.readAsDataURL(file);
     }

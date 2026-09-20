@@ -66,8 +66,9 @@ export async function prepareDb(db: Database) {
     await db.execute(
       `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
     );
-  } catch {
-    /* already present */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/duplicate column/i.test(msg)) throw err;
   }
 }
 

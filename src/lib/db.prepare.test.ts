@@ -20,4 +20,14 @@ describe("prepareDb", () => {
     await prepareDb({ execute } as never);
     expect(execute).toHaveBeenCalledTimes(2);
   });
+
+  it("rethrows non-duplicate ALTER failures", async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rowsAffected: 0 })
+      .mockRejectedValueOnce(new Error("no such table: chats"));
+    await expect(prepareDb({ execute } as never)).rejects.toThrow(
+      /no such table/,
+    );
+  });
 });

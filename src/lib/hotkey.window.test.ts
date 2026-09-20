@@ -162,6 +162,32 @@ describe("hotkey window actions", () => {
     await expect(monitorForCursor()).resolves.toBe(external1x);
   });
 
+  it("monitorForCursor prefers unique physical hit over misleading logical frame", async () => {
+    // Non-overlapping physical rects, different scales — cursor on first monitor
+    // but x=3000 sits inside the second monitor's logical frame [2560,4480).
+    const left2x = {
+      scaleFactor: 2,
+      position: { x: 0, y: 0 },
+      size: { width: 3840, height: 2160 },
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { width: 3840, height: 2160 },
+      },
+    };
+    const right15x = {
+      scaleFactor: 1.5,
+      position: { x: 3840, y: 0 },
+      size: { width: 2880, height: 1620 },
+      workArea: {
+        position: { x: 3840, y: 0 },
+        size: { width: 2880, height: 1620 },
+      },
+    };
+    availableMonitors.mockResolvedValue([left2x, right15x]);
+    cursorPosition.mockResolvedValue({ x: 3000, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(left2x);
+  });
+
   it("centerOnCursorMonitor scales outerSize into destination monitor DPI", async () => {
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });

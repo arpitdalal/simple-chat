@@ -97,17 +97,18 @@ export async function monitorForCursor(): Promise<Monitor | null> {
   if (!monitors.length) return primaryMonitor();
 
   const frames = monitors.map(logicalFrame);
-  // cursorPosition shares the desktop point space with logical frames after
-  // undoing per-monitor scale (Codex/tauri mixed-DPI overlap case).
-  const logicalHits = frames.filter((f) =>
-    frameContains(f, cursor.x, cursor.y),
-  );
-  if (logicalHits.length === 1) return logicalHits[0].mon;
-
+  // Prefer a unique physical hit when rects don't overlap (true physical space).
   const physicalHits = monitors.filter((m) =>
     containsPoint(m, cursor.x, cursor.y),
   );
   if (physicalHits.length === 1) return physicalHits[0];
+
+  // Overlapping / independently physicalized layouts (mixed-DPI macOS): logical
+  // frames undo per-monitor scale so the cursor's display wins.
+  const logicalHits = frames.filter((f) =>
+    frameContains(f, cursor.x, cursor.y),
+  );
+  if (logicalHits.length === 1) return logicalHits[0].mon;
 
   const pool =
     logicalHits.length > 0

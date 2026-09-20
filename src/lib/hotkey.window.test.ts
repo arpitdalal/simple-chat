@@ -58,6 +58,7 @@ import {
   hideMainWindow,
   monitorForCursor,
   resetActiveHotkeyForTests,
+  setPreferLogicalMonitorFramesForTests,
   toggleMainWindow,
 } from "./hotkey";
 
@@ -147,15 +148,18 @@ describe("hotkey window actions", () => {
   });
 
   it("monitorForCursor picks monitor containing physical cursor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     await expect(monitorForCursor()).resolves.toBe(secondary);
   });
 
   it("monitorForCursor picks nearest when cursor is in a gap", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     cursorPosition.mockResolvedValue({ x: 1910, y: -50 });
     await expect(monitorForCursor()).resolves.toBe(primary);
   });
 
   it("monitorForCursor uses logical frames when physical AABBs overlap", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
     // Desktop points on the external; raw physical AABB would also hit retinaPrimary.
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
@@ -163,6 +167,7 @@ describe("hotkey window actions", () => {
   });
 
   it("monitorForCursor prefers unique physical hit over misleading logical frame", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     // Non-overlapping physical rects, different scales — cursor on first monitor
     // but x=3000 sits inside the second monitor's logical frame [2560,4480).
     const left2x = {
@@ -189,6 +194,7 @@ describe("hotkey window actions", () => {
   });
 
   it("monitorForCursor uses logical when overlap layout hides cursor from right AABB", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
     // 2× left [0,3024) and 1.5× right origin 1512*1.5=2268 — overlap layout;
     // desktop-point cursor 1800 is on the right, but only left's physical AABB contains it.
     const left2x = {
@@ -214,7 +220,34 @@ describe("hotkey window actions", () => {
     await expect(monitorForCursor()).resolves.toBe(right15x);
   });
 
+  it("monitorForCursor on macOS prefers logical for adjacent same-scale Retinas", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    // Independently physicalized [0,3024) | [3024,6048) — no overlap, but cursor is points.
+    const left = {
+      scaleFactor: 2,
+      position: { x: 0, y: 0 },
+      size: { width: 3024, height: 1964 },
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { width: 3024, height: 1964 },
+      },
+    };
+    const right = {
+      scaleFactor: 2,
+      position: { x: 3024, y: 0 },
+      size: { width: 3024, height: 1964 },
+      workArea: {
+        position: { x: 3024, y: 0 },
+        size: { width: 3024, height: 1964 },
+      },
+    };
+    availableMonitors.mockResolvedValue([left, right]);
+    cursorPosition.mockResolvedValue({ x: 1800, y: 100 });
+    await expect(monitorForCursor()).resolves.toBe(right);
+  });
+
   it("centerOnCursorMonitor scales outerSize into destination monitor DPI", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
     scaleFactor.mockResolvedValue(2); // window last on retina

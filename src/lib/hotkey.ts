@@ -31,6 +31,9 @@ let applyChain: Promise<void> = Promise.resolve();
 /** Serialize show/hide so overlapping hotkey presses don't race visibility. */
 let toggleChain: Promise<void> = Promise.resolve();
 
+/** Tests only — force macOS-style logical vs physical hit-test preference. */
+let preferLogicalFramesForTests: boolean | null = null;
+
 export function getActiveHotkey(): string | null {
   return activeHotkey;
 }
@@ -41,6 +44,12 @@ export function resetActiveHotkeyForTests() {
   orphanHotkeys = [];
   applyChain = Promise.resolve();
   toggleChain = Promise.resolve();
+  preferLogicalFramesForTests = null;
+}
+
+/** Tests only. */
+export function setPreferLogicalMonitorFramesForTests(v: boolean | null) {
+  preferLogicalFramesForTests = v;
 }
 
 function containsPoint(
@@ -51,28 +60,6 @@ function containsPoint(
   const { x: left, y: top } = mon.position;
   const { width, height } = mon.size;
   return x >= left && x < left + width && y >= top && y < top + height;
-}
-
-function physicalRectsOverlap(a: Monitor, b: Monitor): boolean {
-  const ax2 = a.position.x + a.size.width;
-  const ay2 = a.position.y + a.size.height;
-  const bx2 = b.position.x + b.size.width;
-  const by2 = b.position.y + b.size.height;
-  return (
-    a.position.x < bx2 &&
-    ax2 > b.position.x &&
-    a.position.y < by2 &&
-    ay2 > b.position.y
-  );
-}
-
-function layoutHasPhysicalOverlap(monitors: Monitor[]): boolean {
-  for (let i = 0; i < monitors.length; i++) {
-    for (let j = i + 1; j < monitors.length; j++) {
-      if (physicalRectsOverlap(monitors[i], monitors[j])) return true;
-    }
-  }
-  return false;
 }
 
 /** Desktop-point frame — undoes per-monitor physicalization that can overlap on macOS. */
@@ -106,10 +93,21 @@ function distanceSqToFrame(
 }
 
 /**
+ * macOS reports cursor/monitor positions in desktop points (logical), even when
+ * Monitor fields are typed physical — prefer logical frames there. Elsewhere
+ * prefer physical AABBs.
+ */
+function preferLogicalMonitorFrames(): boolean {
+  if (preferLogicalFramesForTests != null) return preferLogicalFramesForTests;
+  return (
+    /Mac/i.test(navigator.platform) || /Mac OS X/i.test(navigator.userAgent)
+  );
+}
+
+/**
  * Monitor under the cursor.
- * - Non-overlapping physical layout → unique physical AABB (true physical coords).
- * - Overlapping physical layout (macOS independently physicalized mixed-DPI) →
- *   unique logical frame (desktop points).
+ * macOS (desktop points): unique logical frame first.
+ * Else (physical coords): unique physical AABB first.
  *
  * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
  * reliable cursor-display summon until the runtime supports both.
@@ -126,9 +124,8 @@ export async function monitorForCursor(): Promise<Monitor | null> {
   const logicalHits = frames.filter((f) =>
     frameContains(f, cursor.x, cursor.y),
   );
-  const overlapLayout = layoutHasPhysicalOverlap(monitors);
 
-  if (overlapLayout) {
+  if (preferLogicalMonitorFrames()) {
     if (logicalHits.length === 1) return logicalHits[0].mon;
     if (physicalHits.length === 1) return physicalHits[0];
   } else {

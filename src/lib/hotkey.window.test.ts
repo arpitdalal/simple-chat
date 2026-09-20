@@ -20,6 +20,16 @@ vi.mock("@tauri-apps/api/dpi", () => ({
   PhysicalPosition: class {
     x: number;
     y: number;
+    type = "Physical";
+    constructor(x: number, y: number) {
+      this.x = x;
+      this.y = y;
+    }
+  },
+  LogicalPosition: class {
+    x: number;
+    y: number;
+    type = "Logical";
     constructor(x: number, y: number) {
       this.x = x;
       this.y = y;
@@ -132,10 +142,12 @@ describe("hotkey window actions", () => {
   });
 
   it("toggleMainWindow centers on cursor monitor then shows when hidden", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     isVisible.mockResolvedValue(false);
     await toggleMainWindow();
     expect(setPosition).toHaveBeenCalledWith(
       expect.objectContaining({
+        type: "Physical",
         x: 1920 + (1920 - 800) / 2,
         y: (1080 - 600) / 2,
       }),
@@ -247,7 +259,7 @@ describe("hotkey window actions", () => {
   });
 
   it("centerOnCursorMonitor scales outerSize into destination monitor DPI", async () => {
-    setPreferLogicalMonitorFramesForTests(true);
+    setPreferLogicalMonitorFramesForTests(false);
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
     scaleFactor.mockResolvedValue(2); // window last on retina
@@ -256,6 +268,24 @@ describe("hotkey window actions", () => {
     // Destination is 1x → logical 800x600 → physical 800x600 on external
     expect(setPosition).toHaveBeenCalledWith(
       expect.objectContaining({
+        type: "Physical",
+        x: 1512 + Math.round((1920 - 800) / 2),
+        y: Math.round((1080 - 600) / 2),
+      }),
+    );
+  });
+
+  it("centerOnCursorMonitor on macOS uses LogicalPosition in desktop points", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    scaleFactor.mockResolvedValue(2);
+    outerSize.mockResolvedValue({ width: 1600, height: 1200 });
+    await centerOnCursorMonitor();
+    // external scale 1 → work area already points; win logical 800x600
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "Logical",
         x: 1512 + Math.round((1920 - 800) / 2),
         y: Math.round((1080 - 600) / 2),
       }),
@@ -263,10 +293,11 @@ describe("hotkey window actions", () => {
   });
 
   it("centerOnCursorMonitor clamps oversized window into workArea", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     outerSize.mockResolvedValue({ width: 3000, height: 2000 });
     await centerOnCursorMonitor();
     expect(setPosition).toHaveBeenCalledWith(
-      expect.objectContaining({ x: 1920, y: 0 }),
+      expect.objectContaining({ type: "Physical", x: 1920, y: 0 }),
     );
   });
 
@@ -295,10 +326,11 @@ describe("hotkey window actions", () => {
   });
 
   it("centerOnCursorMonitor still setPositions when outerSize fails", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
     outerSize.mockRejectedValue(new Error("hidden size"));
     await centerOnCursorMonitor();
     expect(setPosition).toHaveBeenCalledWith(
-      expect.objectContaining({ x: 1920, y: 0 }),
+      expect.objectContaining({ type: "Physical", x: 1920, y: 0 }),
     );
     expect(center).not.toHaveBeenCalled();
   });

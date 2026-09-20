@@ -4,7 +4,7 @@ import {
   unregister,
   unregisterAll,
 } from "@tauri-apps/plugin-global-shortcut";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import { LogicalPosition, PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
   availableMonitors,
   cursorPosition,
@@ -151,7 +151,7 @@ function clampedCenter(
   workPos: { x: number; y: number },
   workSize: { width: number; height: number },
   winSize: { width: number; height: number },
-): PhysicalPosition {
+): { x: number; y: number } {
   const w = winSize.width > 0 ? winSize.width : 0;
   const h = winSize.height > 0 ? winSize.height : 0;
   let x = Math.round(workPos.x + (workSize.width - w) / 2);
@@ -172,7 +172,24 @@ function clampedCenter(
   } else {
     y = workPos.y;
   }
-  return new PhysicalPosition(x, y);
+  return { x, y };
+}
+
+/** Logical outer size (desktop points) — correct input for macOS setPosition. */
+async function outerSizeLogical(
+  win: Window,
+): Promise<{ width: number; height: number }> {
+  const outer = await win.outerSize();
+  let srcScale = 1;
+  try {
+    srcScale = (await win.scaleFactor()) || 1;
+  } catch {
+    srcScale = 1;
+  }
+  return {
+    width: Math.round(outer.width / srcScale),
+    height: Math.round(outer.height / srcScale),
+  };
 }
 
 /** Map outerSize from the window's current scale into the destination monitor's. */
@@ -216,16 +233,41 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
     }
     return;
   }
-  let size = { width: 0, height: 0 };
   try {
-    size = await outerSizeForMonitor(win, monitor);
-  } catch {
-    // clampedCenter treats non-positive as workArea origin
-  }
-  try {
-    await win.setPosition(
-      clampedCenter(monitor.workArea.position, monitor.workArea.size, size),
-    );
+    if (preferLogicalMonitorFrames()) {
+      // macOS: setPosition(PhysicalPosition) rescales via the *source* window
+      // factor — pass LogicalPosition in desktop points instead.
+      const s = monitor.scaleFactor || 1;
+      const workPos = {
+        x: monitor.workArea.position.x / s,
+        y: monitor.workArea.position.y / s,
+      };
+      const workSize = {
+        width: monitor.workArea.size.width / s,
+        height: monitor.workArea.size.height / s,
+      };
+      let size = { width: 0, height: 0 };
+      try {
+        size = await outerSizeLogical(win);
+      } catch {
+        /* origin fallback */
+      }
+      const { x, y } = clampedCenter(workPos, workSize, size);
+      await win.setPosition(new LogicalPosition(x, y));
+    } else {
+      let size = { width: 0, height: 0 };
+      try {
+        size = await outerSizeForMonitor(win, monitor);
+      } catch {
+        /* origin fallback */
+      }
+      const { x, y } = clampedCenter(
+        monitor.workArea.position,
+        monitor.workArea.size,
+        size,
+      );
+      await win.setPosition(new PhysicalPosition(x, y));
+    }
   } catch {
     // setPosition failed — center() may land on the wrong display.
     try {

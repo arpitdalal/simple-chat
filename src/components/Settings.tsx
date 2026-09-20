@@ -76,8 +76,11 @@ export function Settings({ onClose, onSaved }: Props) {
     // Prefer settings snapshot — may already include a pre-clear flush not yet in lastGood.
     const accel =
       settingsRef.current?.hotkey.trim() || lastGoodHotkeyRef.current;
-    void applyHotkey(accel).catch(() => {
-      /* leave unbound; user still sees last-good in settings */
+    void applyHotkey(accel).catch((err) => {
+      setHotkeyError(
+        (err as Error).message ||
+          `Could not restore ${formatHotkey(accel)}. Rebind or restart.`,
+      );
     });
   }
 
@@ -134,6 +137,11 @@ export function Settings({ onClose, onSaved }: Props) {
     return () => {
       recordGenRef.current += 1;
       recordingRef.current = false;
+      const hadPendingSave = saveTimer.current != null;
+      if (saveTimer.current) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
       const draft = hotkeyDraftRef.current;
       hotkeyDraftRef.current = null;
       const deferred = deferredPersistRef.current;
@@ -150,7 +158,9 @@ export function Settings({ onClose, onSaved }: Props) {
       if (deferred) {
         // Keep deferred.hotkey (e.g. Reset-to-default during Record).
         void persist(deferred);
+        return;
       }
+      if (hadPendingSave && base) void persist(base);
     };
   }, []);
 

@@ -215,6 +215,24 @@ describe("Settings behaviors", () => {
     );
   });
 
+  it("surfaces an error when paused hotkey restore fails", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    applyHotkey.mockImplementation(async (accel: unknown) => {
+      if (String(accel).includes("Shift+Space")) {
+        throw new Error("Could not restore hotkey");
+      }
+    });
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.getByText(/Could not restore hotkey/i)).toBeInTheDocument(),
+    );
+  });
+
   it("flushes settings changed during Record after Escape", async () => {
     const user = userEvent.setup();
     clearHotkey.mockResolvedValue(undefined);

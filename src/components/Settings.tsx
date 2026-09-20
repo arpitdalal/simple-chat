@@ -73,7 +73,10 @@ export function Settings({ onClose, onSaved }: Props) {
   function restorePausedHotkey() {
     if (!pausedForRecordRef.current) return;
     pausedForRecordRef.current = false;
-    void applyHotkey(lastGoodHotkeyRef.current).catch(() => {
+    // Prefer settings snapshot — may already include a pre-clear flush not yet in lastGood.
+    const accel =
+      settingsRef.current?.hotkey.trim() || lastGoodHotkeyRef.current;
+    void applyHotkey(accel).catch(() => {
       /* leave unbound; user still sees last-good in settings */
     });
   }
@@ -107,6 +110,9 @@ export function Settings({ onClose, onSaved }: Props) {
       const accel = eventToAccelerator(e);
       if (!accel || !settings) return;
       setHotkeyDraft(null);
+      hotkeyDraftRef.current = null;
+      // Invalidate in-flight Record starts so they cannot re-arm after capture.
+      recordGenRef.current += 1;
       // Capture owns registration; merge into any deferred non-hotkey edits.
       pausedForRecordRef.current = false;
       if (deferredPersistRef.current) {
@@ -167,6 +173,7 @@ export function Settings({ onClose, onSaved }: Props) {
   }
 
   async function startRecording() {
+    if (recordingRef.current) return;
     const gen = ++recordGenRef.current;
     // Arm restore before any await so Close mid-flush still restores.
     pausedForRecordRef.current = true;
@@ -177,7 +184,7 @@ export function Settings({ onClose, onSaved }: Props) {
     if (saveTimer.current && settingsRef.current) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
-      await persist(settingsRef.current);
+      await persist(settingsRef.current, { allowDuringPause: true });
       if (gen !== recordGenRef.current) return;
     }
     try {
@@ -186,10 +193,11 @@ export function Settings({ onClose, onSaved }: Props) {
       if (gen !== recordGenRef.current) return;
       setHotkeyError((err as Error).message || String(err));
       restorePausedHotkey();
+      flushDeferredPersist();
       return;
     }
     if (gen !== recordGenRef.current) {
-      // Superseded by unmount or a newer Record — owner of the pause restores.
+      // Superseded by unmount, capture, or a newer Record — owner restores.
       return;
     }
     setRecording(true);
@@ -213,8 +221,14 @@ export function Settings({ onClose, onSaved }: Props) {
     }, 250);
   }
 
-  async function persist(s: AppSettings) {
-    if (recordingRef.current) {
+  async function persist(
+    s: AppSettings,
+    opts?: { allowDuringPause?: boolean },
+  ) {
+    if (
+      recordingRef.current ||
+      (pausedForRecordRef.current && !opts?.allowDuringPause)
+    ) {
       deferredPersistRef.current = s;
       return;
     }
@@ -373,14 +387,13 @@ export function Settings({ onClose, onSaved }: Props) {
                   : (hotkeyDraft ?? (settings.hotkey || DEFAULT_HOTKEY))
               }
               onChange={(e) => {
-                if (!recording) {
-                  setHotkeyDraft(e.target.value);
-                  hotkeyDraftRef.current = e.target.value;
-                }
+                if (recording || pausedForRecordRef.current) return;
+                setHotkeyDraft(e.target.value);
+                hotkeyDraftRef.current = e.target.value;
               }}
               onBlur={() => commitHotkeyDraft()}
               onKeyDown={(e) => {
-                if (recording) return;
+                if (recording || pausedForRecordRef.current) return;
                 if (e.key === "Enter") {
                   e.preventDefault();
                   (e.target as HTMLInputElement).blur();
@@ -394,6 +407,7 @@ export function Settings({ onClose, onSaved }: Props) {
             <button
               type="button"
               className="ghost"
+              disabled={recording}
               onClick={() => void startRecording()}
             >
               Record

@@ -162,6 +162,18 @@ describe("Settings behaviors", () => {
     );
   });
 
+  it("disables Record while already recording", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(/Press keys/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Record").closest("button")).toBeDisabled();
+  });
+
   it("flushes settings changed during Record after Escape", async () => {
     const user = userEvent.setup();
     clearHotkey.mockResolvedValue(undefined);

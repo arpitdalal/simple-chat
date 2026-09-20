@@ -138,6 +138,16 @@ describe("retryDelayMs", () => {
     expect(retryDelayMs(err, 1)).toBe(5000);
   });
 
+  it("honors Retry-After of one minute", () => {
+    const err = new FakeAPICallError("429", true, { "retry-after": "60" });
+    expect(retryDelayMs(err, 1)).toBe(60_000);
+  });
+
+  it("declines retry when Retry-After exceeds 2m ceiling", () => {
+    const err = new FakeAPICallError("429", true, { "retry-after": "180" });
+    expect(retryDelayMs(err, 1)).toBe(-1);
+  });
+
   it("falls back to exponential backoff", () => {
     expect(retryDelayMs(new Error("network"), 1)).toBe(STREAM_BACKOFF_MS);
     expect(retryDelayMs(new Error("network"), 2)).toBe(STREAM_BACKOFF_MS * 2);

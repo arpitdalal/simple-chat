@@ -399,6 +399,7 @@ export function ChatView({
           ];
 
     let userPersisted = false;
+    const sendGen = releaseGenRef.current;
     try {
       const userMsg = await addMessage(chatId, "user", displayText);
       userPersisted = true;
@@ -442,7 +443,10 @@ export function ChatView({
           imagesRef.current.length === 0
         ) {
           setInput(text);
-          setImages(imageParts);
+          // Hide bumps releaseGen and drops image data URLs — don't undo that
+          if (sendGen === releaseGenRef.current) {
+            setImages(imageParts);
+          }
         }
         setStreaming("");
       }

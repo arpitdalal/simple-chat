@@ -76,32 +76,35 @@ export function isRetryableStreamError(err: unknown): boolean {
   );
 }
 
-/** Prefer Retry-After headers; fall back to exponential backoff. */
+/** Prefer Retry-After headers; fall back to exponential backoff.
+ *  ponytail: cap at 2m — longer waits should fail fast rather than hang the UI. */
+const MAX_RETRY_AFTER_MS = 120_000;
+
 export function retryDelayMs(err: unknown, attempt: number): number {
   const fallback = STREAM_BACKOFF_MS * 2 ** (attempt - 1);
   if (!APICallError.isInstance(err)) return fallback;
   const headers = err.responseHeaders;
   if (!headers) return fallback;
 
+  let ms: number | undefined;
   const retryAfterMs = headers["retry-after-ms"];
   if (retryAfterMs != null) {
-    const ms = parseFloat(retryAfterMs);
-    if (!Number.isNaN(ms) && ms >= 0 && ms < 60_000) return Math.max(ms, fallback);
+    const parsed = parseFloat(retryAfterMs);
+    if (!Number.isNaN(parsed) && parsed >= 0) ms = parsed;
   }
   const retryAfter = headers["retry-after"];
-  if (retryAfter != null) {
+  if (retryAfter != null && ms === undefined) {
     const seconds = parseFloat(retryAfter);
     if (!Number.isNaN(seconds) && seconds >= 0) {
-      const ms = seconds * 1000;
-      if (ms < 60_000) return Math.max(ms, fallback);
+      ms = seconds * 1000;
     } else {
       const until = Date.parse(retryAfter) - Date.now();
-      if (!Number.isNaN(until) && until >= 0 && until < 60_000) {
-        return Math.max(until, fallback);
-      }
+      if (!Number.isNaN(until) && until >= 0) ms = until;
     }
   }
-  return fallback;
+  if (ms === undefined) return fallback;
+  if (ms > MAX_RETRY_AFTER_MS) return -1; // caller: do not retry
+  return Math.max(ms, fallback);
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -172,9 +175,11 @@ export async function streamChat(opts: {
     } catch (e) {
       lastError = e;
       const canReset = !emitted || opts.onRetry != null;
+      const delay = retryDelayMs(e, attempt + 1);
       if (
         !isRetryableStreamError(e) ||
         !canReset ||
+        delay < 0 ||
         attempt === STREAM_MAX_ATTEMPTS - 1
       ) {
         throw e;

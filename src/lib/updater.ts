@@ -7,7 +7,7 @@ const DOWNLOAD_TIMEOUT_MS = 120_000;
 export type AvailableUpdate = {
   version: string;
   install: () => Promise<void>;
-  /** Drop the native Update resource when the user dismisses. */
+  /** Drop the native Update resource when the user dismisses or install fails. */
   dismiss: () => void;
 };
 

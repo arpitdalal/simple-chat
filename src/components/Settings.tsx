@@ -541,8 +541,14 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
                   onNotifyRef.current?.(result.message, "err");
                   return;
                 }
-                setStatus(`Installing ${result.update.version}…`);
-                await result.update.install();
+                const pending = result.update;
+                setStatus(`Installing ${pending.version}…`);
+                try {
+                  await pending.install();
+                } catch (e) {
+                  pending.dismiss();
+                  throw e;
+                }
               } catch (e) {
                 const msg = (e as Error).message || "Update check failed";
                 setStatus(msg);

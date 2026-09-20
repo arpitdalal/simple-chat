@@ -107,16 +107,24 @@ pub fn run() {
         .expect("error while building Simple Chat");
 
     app.run(|app_handle, event| {
-        if let RunEvent::WindowEvent {
-            label,
-            event: WindowEvent::CloseRequested { api, .. },
-            ..
-        } = event
-        {
-            if label == "main" {
+        match event {
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" => {
                 api.prevent_close();
                 hide_main_window(app_handle);
             }
+            // While visible, another app may take focus — remember it for restore on hide.
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Focused(false),
+                ..
+            } if label == "main" => {
+                focus::capture_previous_app();
+            }
+            _ => {}
         }
     });
 }

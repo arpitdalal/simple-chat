@@ -4,6 +4,7 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: vi.fn(),
   unregister: vi.fn(),
   unregisterAll: vi.fn(),
+  isRegistered: vi.fn(async () => false),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
@@ -14,7 +15,12 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-import { eventToAccelerator, formatHotkey, DEFAULT_HOTKEY } from "./hotkey";
+import {
+  eventToAccelerator,
+  formatHotkey,
+  isValidAccelerator,
+  DEFAULT_HOTKEY,
+} from "./hotkey";
 
 function keyEvent(partial: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -52,5 +58,12 @@ describe("hotkey helpers", () => {
         keyEvent({ key: "Meta", code: "MetaLeft", metaKey: true }),
       ),
     ).toBeNull();
+  });
+
+  it("isValidAccelerator requires a modifier", () => {
+    expect(isValidAccelerator("A")).toBe(false);
+    expect(isValidAccelerator("CommandOrControl+Shift+K")).toBe(true);
+    expect(isValidAccelerator("CmdOrControl+Space")).toBe(true);
+    expect(isValidAccelerator(DEFAULT_HOTKEY)).toBe(true);
   });
 });

@@ -9,10 +9,12 @@ const clearApiKey = vi.fn();
 const getSettings = vi.fn();
 const setSetting = vi.fn();
 const applyHotkey = vi.fn();
+const clearHotkey = vi.fn();
 const setAlwaysOnTop = vi.fn();
 const eventToAccelerator = vi.fn();
 const getActiveHotkey = vi.fn();
 const onSaved = vi.fn();
+let focusHandler: ((e: { payload: boolean }) => void) | null = null;
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
@@ -28,18 +30,29 @@ vi.mock("../lib/db", () => ({
 
 vi.mock("../lib/hotkey", () => ({
   applyHotkey: (...a: unknown[]) => applyHotkey(...a),
+  clearHotkey: (...a: unknown[]) => clearHotkey(...a),
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
   eventToAccelerator: (...a: unknown[]) => eventToAccelerator(...a),
   formatHotkey: (s: string) => s,
   getActiveHotkey: () => getActiveHotkey(),
+  isValidAccelerator: (s: string) => s.includes("+"),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setAlwaysOnTop }),
+  getCurrentWindow: () => ({
+    setAlwaysOnTop,
+    onFocusChanged: async (handler: (e: { payload: boolean }) => void) => {
+      focusHandler = handler;
+      return () => {
+        focusHandler = null;
+      };
+    },
+  }),
 }));
 
 describe("Settings behaviors", () => {
   beforeEach(() => {
+    focusHandler = null;
     vi.clearAllMocks();
     getSettings.mockResolvedValue({
       resume_minutes: 5,
@@ -54,8 +67,226 @@ describe("Settings behaviors", () => {
     });
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
+    clearHotkey.mockResolvedValue(undefined);
     getActiveHotkey.mockReturnValue("CommandOrControl+Shift+Space");
     setSetting.mockResolvedValue(undefined);
+  });
+
+  it("accepts a typed accelerator when Record cannot hear OS-owned combos", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Shift+K");
+    await user.tab();
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+K",
+      ),
+    );
+    expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+K");
+  });
+
+  it("re-registers last-good when a recorded hotkey is rejected", async () => {
+    const user = userEvent.setup();
+    eventToAccelerator.mockReturnValue("CommandOrControl+Shift+K");
+    getActiveHotkey.mockReturnValue(null);
+    applyHotkey.mockImplementation(async (accel: unknown) => {
+      if (String(accel).includes("Shift+K")) {
+        throw new Error("Could not register");
+      }
+    });
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+K"),
+    );
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Space"),
+    );
+  });
+
+  it("cancels pending save before Record clears the grab", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Shift+Z");
+    applyHotkey.mockClear();
+    setSetting.mockClear();
+    // Clicking Record blurs the input (queues save) then flushes before clear.
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    // Flush should have applied the typed accelerator before clear.
+    expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Z");
+  });
+
+  it("rejects typed accelerators without modifiers", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "A");
+    await user.tab();
+    await waitFor(() =>
+      expect(screen.getByText(/at least one modifier/i)).toBeInTheDocument(),
+    );
+    expect(applyHotkey).not.toHaveBeenCalledWith("A");
+  });
+
+  it("commits typed hotkey on Escape before panel can close", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<Settings onClose={onClose} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Alt+Z");
+    // Mimic App: Escape on focused input must commit; parent closes Settings.
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Alt+Z",
+      ),
+    );
+  });
+
+  it("restores last-good when Record clear fails", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockRejectedValue(new Error("Could not release hotkeys"));
+    applyHotkey.mockClear();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByText(/Could not release hotkeys/i)).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Space"),
+    );
+  });
+
+  it("disables Record while already recording", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(/Press keys/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Record").closest("button")).toBeDisabled();
+  });
+
+  it("disarms Record pause when pre-clear flush rejects", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Shift+Z");
+    setSetting.mockRejectedValueOnce(new Error("db locked"));
+    applyHotkey.mockClear();
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByText(/db locked/i)).toBeInTheDocument(),
+    );
+    expect(clearHotkey).not.toHaveBeenCalled();
+    // Pause disarmed — typed edits work again.
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Alt+Y");
+    expect(input).toHaveValue("CommandOrControl+Alt+Y");
+  });
+
+  it("keeps Reset-to-default when closing during Record", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    const { unmount } = render(
+      <Settings onClose={vi.fn()} onSaved={onSaved} />,
+    );
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    setSetting.mockClear();
+    applyHotkey.mockClear();
+    await user.click(screen.getByText("Reset"));
+    unmount();
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+Space",
+      ),
+    );
+  });
+
+  it("surfaces an error when paused hotkey restore fails", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    applyHotkey.mockImplementation(async (accel: unknown) => {
+      if (String(accel).includes("Shift+Space")) {
+        throw new Error("Could not restore hotkey");
+      }
+    });
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.getByText(/Could not restore hotkey/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("restores hotkey when window blurs during Record", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    applyHotkey.mockClear();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(/Press keys/i)).toBeInTheDocument(),
+    );
+    applyHotkey.mockClear();
+    focusHandler?.({ payload: false });
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Space"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByDisplayValue(/Press keys/i),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("flushes settings changed during Record after Escape", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    setSetting.mockClear();
+    await user.click(screen.getByRole("checkbox", { name: /always on top/i }));
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith("always_on_top", true),
+    );
+  });
+
+  it("clears the live grab when Record starts", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
   });
 
   it("keeps prior hotkey when registration fails", async () => {
@@ -119,7 +350,7 @@ describe("Settings behaviors", () => {
     render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
     await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
     await user.click(screen.getByText("Record"));
-    expect(screen.getByText(/Press keys/i)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/Press keys/i)).toBeInTheDocument();
     await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
     await waitFor(() =>
       expect(setSetting).toHaveBeenCalledWith(

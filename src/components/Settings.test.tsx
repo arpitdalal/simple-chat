@@ -25,14 +25,19 @@ vi.mock("../lib/db", () => ({
 
 vi.mock("../lib/hotkey", () => ({
   applyHotkey: (...a: unknown[]) => applyHotkey(...a),
+  clearHotkey: vi.fn(async () => undefined),
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
   eventToAccelerator: vi.fn(),
   formatHotkey: (s: string) => s,
   getActiveHotkey: () => "CommandOrControl+Shift+Space",
+  isValidAccelerator: (s: string) => s.includes("+"),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setAlwaysOnTop }),
+  getCurrentWindow: () => ({
+    setAlwaysOnTop,
+    onFocusChanged: async () => () => {},
+  }),
 }));
 
 describe("Settings", () => {

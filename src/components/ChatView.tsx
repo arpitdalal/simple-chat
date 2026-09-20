@@ -73,11 +73,13 @@ export function ChatView({
   const streamOwnerRef = useRef<string | null>(null);
   const streamTextRef = useRef("");
   const messagesRef = useRef<Message[]>([]);
+  const imagesRef = useRef<string[]>([]);
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
 
   viewingIdRef.current = chat?.id ?? null;
   messagesRef.current = messages;
+  imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
@@ -433,10 +435,14 @@ export function ChatView({
     } catch (e) {
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
-        // Restore only if composer still empty — don't clobber newer typing/attachments
-        if (!userPersisted) {
-          setInput((cur) => (cur === "" ? text : cur));
-          setImages((cur) => (cur.length === 0 ? imageParts : cur));
+        // Restore only if whole composer still empty — don't merge into a newer draft
+        if (
+          !userPersisted &&
+          (inputRef.current?.value ?? "") === "" &&
+          imagesRef.current.length === 0
+        ) {
+          setInput(text);
+          setImages(imageParts);
         }
         setStreaming("");
       }

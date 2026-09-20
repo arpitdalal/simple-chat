@@ -284,6 +284,50 @@ describe("ChatView", () => {
     await waitFor(() => expect(ta).toHaveValue("newer draft"));
   });
 
+  it("does not restore failed images into a text-only newer draft", async () => {
+    const user = userEvent.setup();
+    let rejectAdd!: (e: Error) => void;
+    addMessage.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAdd = reject;
+        }),
+    );
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    // Attach image then send
+    const file = new File(["x"], "a.png", { type: "image/png" });
+    await act(async () => {
+      const input = document.querySelector(
+        'input[type="file"]',
+      ) as HTMLInputElement;
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitFor(() => expect(screen.getByTitle("Remove")).toBeInTheDocument());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByTitle("Remove")).toBeNull());
+    await user.type(ta, "typed after");
+    await act(async () => {
+      rejectAdd(new Error("db down"));
+    });
+    await waitFor(() => expect(ta).toHaveValue("typed after"));
+    expect(screen.queryByTitle("Remove")).toBeNull();
+  });
+
   it("keeps partial assistant reply when stream fails mid-way", async () => {
     const user = userEvent.setup();
     streamChat.mockImplementation(

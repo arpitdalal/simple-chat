@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: vi.fn(),
+  unregister: vi.fn(),
   unregisterAll: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/window", () => ({

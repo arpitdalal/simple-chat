@@ -5,7 +5,7 @@ const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
 const register = vi.fn();
-const unregisterAll = vi.fn();
+const unregister = vi.fn();
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ hide, show, setFocus, isVisible }),
@@ -13,18 +13,22 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: (...a: unknown[]) => register(...a),
-  unregisterAll: (...a: unknown[]) => unregisterAll(...a),
+  unregister: (...a: unknown[]) => unregister(...a),
+  unregisterAll: vi.fn(),
 }));
 
 import {
   applyHotkey,
+  getActiveHotkey,
   hideMainWindow,
+  resetActiveHotkeyForTests,
   toggleMainWindow,
 } from "./hotkey";
 
 describe("hotkey window actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetActiveHotkeyForTests();
   });
 
   it("hideMainWindow hides current window", async () => {
@@ -46,13 +50,154 @@ describe("hotkey window actions", () => {
     expect(setFocus).toHaveBeenCalled();
   });
 
-  it("applyHotkey unregisters then registers accelerator", async () => {
-    register.mockImplementation(async (_accel: string, _cb: unknown) => {});
+  it("applyHotkey registers accelerator", async () => {
+    register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+Space");
-    expect(unregisterAll).toHaveBeenCalled();
     expect(register).toHaveBeenCalledWith(
       "CommandOrControl+Shift+Space",
       expect.any(Function),
     );
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+Space");
+  });
+
+  it("applyHotkey registers new before unregistering previous", async () => {
+    register.mockResolvedValue(undefined);
+    unregister.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+    await applyHotkey("CommandOrControl+Shift+B");
+
+    expect(register.mock.calls.map((c) => c[0])).toEqual([
+      "CommandOrControl+Shift+A",
+      "CommandOrControl+Shift+B",
+    ]);
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
+  });
+
+  it("applyHotkey keeps previous when new register fails", async () => {
+    register.mockResolvedValueOnce(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    register.mockRejectedValueOnce(new Error("already registered"));
+
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not register/i,
+    );
+
+    expect(unregister).not.toHaveBeenCalled();
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
+  it("applyHotkey no-ops when accelerator unchanged", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+    register.mockClear();
+    await applyHotkey("CommandOrControl+Shift+A");
+    expect(register).not.toHaveBeenCalled();
+    expect(unregister).not.toHaveBeenCalled();
+  });
+
+  it("applyHotkey serializes concurrent rebinds", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    register.mockImplementationOnce(async () => firstGate);
+    register.mockResolvedValue(undefined);
+    unregister.mockResolvedValue(undefined);
+
+    const first = applyHotkey("CommandOrControl+Shift+A");
+    const second = applyHotkey("CommandOrControl+Shift+B");
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(1));
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+  });
+
+  it("applyHotkey throws when previous cannot be released", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockResolvedValueOnce(undefined);
+
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /could not release/i,
+    );
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
+  it("applyHotkey throws when both unregisters fail", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValue(new Error("busy"));
+
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
+  it("applyHotkey sweeps orphan after dual-unregister failure", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+
+    unregister.mockReset();
+    unregister.mockResolvedValue(undefined);
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+C");
+
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+B");
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+C");
+  });
+
+  it("applyHotkey fails when orphan sweep cannot release", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+
+    unregister.mockReset();
+    unregister.mockRejectedValue(new Error("busy"));
+    register.mockClear();
+    await expect(applyHotkey("CommandOrControl+Shift+C")).rejects.toThrow(
+      /Could not release/i,
+    );
+    expect(register).not.toHaveBeenCalled();
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
+  it("applyHotkey promotes orphaned target without re-registering", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+
+    unregister.mockReset();
+    unregister.mockResolvedValue(undefined);
+    register.mockClear();
+    await applyHotkey("CommandOrControl+Shift+B");
+
+    expect(register).not.toHaveBeenCalled();
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
   });
 });

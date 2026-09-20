@@ -20,7 +20,7 @@ import {
   type Chat,
 } from "./lib/db";
 import type { ProviderId } from "./lib/models";
-import { applyHotkey, hideMainWindow } from "./lib/hotkey";
+import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { isEmptyNewChat } from "./lib/chats";
 import "./App.css";
 
@@ -103,6 +103,11 @@ function App() {
         await applyHotkey(s.hotkey);
       } catch (err) {
         console.error("hotkey register failed", err);
+        notify(
+          (err as Error).message ||
+            `Hotkey ${formatHotkey(s.hotkey)} failed — rebind in Settings.`,
+          "err",
+        );
       }
 
       const chat = await openOrCreateChat(s);
@@ -114,7 +119,7 @@ function App() {
       setReady(true);
       focusComposer();
     })();
-  }, [refreshChats, focusComposer]);
+  }, [refreshChats, focusComposer, notify]);
 
   useEffect(() => {
     if (!activeId) return;

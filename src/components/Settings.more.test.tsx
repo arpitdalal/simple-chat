@@ -11,6 +11,7 @@ const setSetting = vi.fn();
 const applyHotkey = vi.fn();
 const setAlwaysOnTop = vi.fn();
 const eventToAccelerator = vi.fn();
+const getActiveHotkey = vi.fn();
 const onSaved = vi.fn();
 
 vi.mock("../lib/keys", () => ({
@@ -30,6 +31,7 @@ vi.mock("../lib/hotkey", () => ({
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
   eventToAccelerator: (...a: unknown[]) => eventToAccelerator(...a),
   formatHotkey: (s: string) => s,
+  getActiveHotkey: () => getActiveHotkey(),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -52,7 +54,52 @@ describe("Settings behaviors", () => {
     });
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
+    getActiveHotkey.mockReturnValue("CommandOrControl+Shift+Space");
     setSetting.mockResolvedValue(undefined);
+  });
+
+  it("keeps prior hotkey when registration fails", async () => {
+    const user = userEvent.setup();
+    eventToAccelerator.mockReturnValue("CommandOrControl+Shift+K");
+    applyHotkey.mockRejectedValue(
+      new Error("Could not register ⌘/Ctrl + ⇧ + K — already taken"),
+    );
+    getActiveHotkey.mockReturnValue("CommandOrControl+Shift+Space");
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not register/i),
+      ).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+Space",
+      ),
+    );
+  });
+
+  it("keeps last-good hotkey when active binding is null", async () => {
+    const user = userEvent.setup();
+    eventToAccelerator.mockReturnValue("CommandOrControl+Shift+K");
+    applyHotkey.mockRejectedValue(
+      new Error("Could not register ⌘/Ctrl + ⇧ + K — already taken"),
+    );
+    getActiveHotkey.mockReturnValue(null);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+Space",
+      ),
+    );
+    expect(screen.getByText(/Could not register/i)).toBeInTheDocument();
   });
 
   it("toggles always on top and persists", async () => {

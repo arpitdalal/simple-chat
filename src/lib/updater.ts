@@ -4,6 +4,10 @@ import { relaunch } from "@tauri-apps/plugin-process";
 const CHECK_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
+/** Thrown (message) when bits are applied but process restart failed. */
+export const RESTART_REQUIRED_PREFIX =
+  "Update installed but restart failed — quit and reopen.";
+
 export type AvailableUpdate = {
   version: string;
   install: () => Promise<void>;
@@ -19,6 +23,17 @@ export type CheckResult =
 /** Serialize install so banner + Settings cannot overlap download/relaunch. */
 let installInFlight: Promise<void> | null = null;
 
+function errMessage(e: unknown, fallback: string): string {
+  if (e instanceof Error) return e.message || fallback;
+  if (typeof e === "string" && e) return e;
+  const s = String(e);
+  return s && s !== "undefined" && s !== "null" ? s : fallback;
+}
+
+export function isRestartRequiredError(e: unknown): boolean {
+  return errMessage(e, "").startsWith(RESTART_REQUIRED_PREFIX);
+}
+
 function wrapUpdate(update: Update): AvailableUpdate {
   return {
     version: update.version,
@@ -33,14 +48,14 @@ function wrapUpdate(update: Update): AvailableUpdate {
             timeout: DOWNLOAD_TIMEOUT_MS,
           });
         } catch (e) {
-          throw e instanceof Error ? e : new Error(String(e));
+          throw new Error(errMessage(e, "Download failed"));
         }
         try {
           await relaunch();
         } catch (e) {
-          const detail = e instanceof Error ? e.message : String(e);
+          const detail = errMessage(e, "");
           throw new Error(
-            `Update installed but restart failed — quit and reopen.${detail ? ` ${detail}` : ""}`,
+            `${RESTART_REQUIRED_PREFIX}${detail ? ` ${detail}` : ""}`,
           );
         }
       })().finally(() => {
@@ -62,7 +77,7 @@ export async function checkForAppUpdate(): Promise<CheckResult> {
   } catch (e) {
     return {
       status: "error",
-      message: e instanceof Error ? e.message : "Update check failed",
+      message: errMessage(e, "Update check failed"),
     };
   }
   if (!update) return { status: "none" };

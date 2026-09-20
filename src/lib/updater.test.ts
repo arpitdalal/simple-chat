@@ -8,7 +8,11 @@ const close = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-updater", () => ({ check }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch }));
 
-import { checkForAppUpdate } from "./updater";
+import {
+  checkForAppUpdate,
+  isRestartRequiredError,
+  RESTART_REQUIRED_PREFIX,
+} from "./updater";
 
 function fakeUpdate(version = "0.2.0") {
   return { version, downloadAndInstall, close };
@@ -22,11 +26,11 @@ describe("checkForAppUpdate", () => {
     close.mockReset();
   });
 
-  it("returns error when check throws (not up-to-date)", async () => {
-    check.mockRejectedValue(new Error("network"));
+  it("returns error with string rejection details", async () => {
+    check.mockRejectedValue("endpoint 404");
     await expect(checkForAppUpdate()).resolves.toEqual({
       status: "error",
-      message: "network",
+      message: "endpoint 404",
     });
   });
 
@@ -67,8 +71,13 @@ describe("checkForAppUpdate", () => {
     const result = await checkForAppUpdate();
     if (result.status !== "available") throw new Error("expected available");
 
-    await expect(result.update.install()).rejects.toThrow(
-      /Update installed but restart failed/,
-    );
+    let err: unknown;
+    try {
+      await result.update.install();
+    } catch (e) {
+      err = e;
+    }
+    expect(isRestartRequiredError(err)).toBe(true);
+    expect(String(err)).toContain(RESTART_REQUIRED_PREFIX);
   });
 });

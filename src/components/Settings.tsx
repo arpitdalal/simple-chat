@@ -18,7 +18,7 @@ import {
   getActiveHotkey,
   isValidAccelerator,
 } from "../lib/hotkey";
-import { checkForAppUpdate } from "../lib/updater";
+import { checkForAppUpdate, type AvailableUpdate } from "../lib/updater";
 
 type Props = {
   onClose: () => void;
@@ -45,6 +45,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   const [hotkeyError, setHotkeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [foundUpdate, setFoundUpdate] = useState<AvailableUpdate | null>(null);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
@@ -522,45 +523,79 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
 
       <section>
         <h3>Updates</h3>
-        <button
-          type="button"
-          className="ghost"
-          disabled={updateBusy}
-          onClick={() => {
-            void (async () => {
-              setUpdateBusy(true);
-              setStatus("Checking for updates…");
-              try {
-                const result = await checkForAppUpdate();
-                if (result.status === "none") {
-                  setStatus("Up to date");
-                  return;
-                }
-                if (result.status === "error") {
-                  setStatus(result.message);
-                  onNotifyRef.current?.(result.message, "err");
-                  return;
-                }
-                const pending = result.update;
-                setStatus(`Installing ${pending.version}…`);
+        <div className="key-row">
+          <button
+            type="button"
+            className="ghost"
+            disabled={updateBusy}
+            onClick={() => {
+              void (async () => {
+                setUpdateBusy(true);
+                setStatus("Checking for updates…");
+                foundUpdate?.dismiss();
+                setFoundUpdate(null);
                 try {
-                  await pending.install();
+                  const result = await checkForAppUpdate();
+                  if (result.status === "none") {
+                    setStatus("Up to date");
+                    return;
+                  }
+                  if (result.status === "error") {
+                    setStatus(result.message);
+                    onNotifyRef.current?.(result.message, "err");
+                    return;
+                  }
+                  setFoundUpdate(result.update);
+                  setStatus(`Update ${result.update.version} available`);
                 } catch (e) {
-                  pending.dismiss();
-                  throw e;
+                  const msg =
+                    e instanceof Error
+                      ? e.message
+                      : typeof e === "string"
+                        ? e
+                        : "Update check failed";
+                  setStatus(msg);
+                  onNotifyRef.current?.(msg, "err");
+                } finally {
+                  setUpdateBusy(false);
                 }
-              } catch (e) {
-                const msg = (e as Error).message || "Update check failed";
-                setStatus(msg);
-                onNotifyRef.current?.(msg, "err");
-              } finally {
-                setUpdateBusy(false);
-              }
-            })();
-          }}
-        >
-          {updateBusy ? "Working…" : "Check for updates"}
-        </button>
+              })();
+            }}
+          >
+            {updateBusy ? "Checking…" : "Check for updates"}
+          </button>
+          {foundUpdate && (
+            <button
+              type="button"
+              className="ghost"
+              disabled={updateBusy}
+              onClick={() => {
+                void (async () => {
+                  setUpdateBusy(true);
+                  setStatus(`Installing ${foundUpdate.version}…`);
+                  try {
+                    await foundUpdate.install();
+                  } catch (e) {
+                    foundUpdate.dismiss();
+                    setFoundUpdate(null);
+                    const msg =
+                      e instanceof Error
+                        ? e.message
+                        : typeof e === "string"
+                          ? e
+                          : "Update failed";
+                    setStatus(msg);
+                    onNotifyRef.current?.(msg, "err");
+                  } finally {
+                    setUpdateBusy(false);
+                  }
+                })();
+              }}
+            >
+              Install &amp; restart
+            </button>
+          )}
+        </div>
       </section>
 
       <section>

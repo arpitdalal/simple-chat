@@ -24,6 +24,7 @@ import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { isEmptyNewChat } from "./lib/chats";
 import {
   checkForAppUpdate,
+  isRestartRequiredError,
   type AvailableUpdate,
 } from "./lib/updater";
 import "./App.css";
@@ -44,6 +45,8 @@ function App() {
     null,
   );
   const [updating, setUpdating] = useState(false);
+  /** Install succeeded; only quit/reopen left — do not re-offer Install. */
+  const [restartRequired, setRestartRequired] = useState(false);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -262,13 +265,23 @@ function App() {
   }
 
   async function installPendingUpdate() {
-    if (!pendingUpdate || updating) return;
+    if (!pendingUpdate || updating || restartRequired) return;
     setUpdating(true);
     try {
       await pendingUpdate.install();
     } catch (e) {
       setUpdating(false);
-      notify((e as Error).message || "Update failed", "err");
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "string"
+            ? e
+            : "Update failed";
+      if (isRestartRequiredError(e)) {
+        setRestartRequired(true);
+        pendingUpdate.dismiss();
+      }
+      notify(msg, "err");
     }
   }
 
@@ -358,12 +371,14 @@ function App() {
       {pendingUpdate && (
         <div className="update-banner" role="status">
           <span>
-            {updating
-              ? `Installing ${pendingUpdate.version}…`
-              : `Update ${pendingUpdate.version} available`}
+            {restartRequired
+              ? `Update ${pendingUpdate.version} installed — quit and reopen`
+              : updating
+                ? `Installing ${pendingUpdate.version}…`
+                : `Update ${pendingUpdate.version} available`}
           </span>
           <div className="update-banner-actions">
-            {!updating && (
+            {!updating && !restartRequired && (
               <>
                 <button
                   type="button"

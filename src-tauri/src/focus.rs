@@ -86,11 +86,12 @@ fn activate_previous(prev: &objc2_app_kit::NSRunningApplication) -> bool {
         if let Some(mtm) = MainThreadMarker::new() {
             NSApplication::sharedApplication(mtm).yieldActivationToApplication(prev);
         }
+        // Return value = request accepted (activation may complete async).
         if prev.activateFromApplication_options(
             &me,
             NSApplicationActivationOptions::empty(),
         ) {
-            return prev.isActive();
+            return true;
         }
     }
 
@@ -99,10 +100,7 @@ fn activate_previous(prev: &objc2_app_kit::NSRunningApplication) -> bool {
     #[allow(deprecated)]
     let opts = NSApplicationActivationOptions::ActivateIgnoringOtherApps
         | NSApplicationActivationOptions::ActivateAllWindows;
-    if prev.activateWithOptions(opts) {
-        return prev.isActive();
-    }
-    false
+    prev.activateWithOptions(opts)
 }
 
 #[cfg(not(target_os = "macos"))]

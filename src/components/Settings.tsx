@@ -55,6 +55,8 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   /** Settings snapshot deferred while recording; flushed when recording ends. */
   const deferredPersistRef = useRef<AppSettings | null>(null);
   const hotkeyDraftRef = useRef<string | null>(null);
+  const onNotifyRef = useRef(onNotify);
+  onNotifyRef.current = onNotify;
 
   useEffect(() => {
     void (async () => {
@@ -83,8 +85,18 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
         (err as Error).message ||
         `Could not restore ${formatHotkey(accel)}. Rebind or restart.`;
       setHotkeyError(msg);
-      onNotify?.(msg, "err");
+      onNotifyRef.current?.(msg, "err");
     });
+  }
+
+  function abortRecordingForHide() {
+    if (!pausedForRecordRef.current && !recordingRef.current) return;
+    recordGenRef.current += 1;
+    recordingRef.current = false;
+    setRecording(false);
+    setRecordBusy(false);
+    restorePausedHotkey();
+    flushDeferredPersist();
   }
 
   function flushDeferredPersist(hotkeyOverride?: string) {
@@ -102,6 +114,19 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
     recordingRef.current = recording;
     if (!recording) flushDeferredPersist();
   }, [recording]);
+
+  // Hide/blur (CloseRequested → hide) does not unmount Settings — restore grab.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) abortRecordingForHide();
+      })
+      .then((fn) => {
+        un = fn;
+      });
+    return () => un?.();
+  }, []);
 
   useEffect(() => {
     if (!recording) return;
@@ -202,12 +227,23 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
       try {
         await persist(settingsRef.current, { allowDuringPause: true });
       } catch (err) {
+        const msg = (err as Error).message || String(err);
         if (gen !== recordGenRef.current) {
-          if (settingsRef.current) deferredPersistRef.current = settingsRef.current;
+          // Unmount may have drained deferred — report + retry via surviving notify.
+          onNotifyRef.current?.(msg, "err");
+          const snap = settingsRef.current;
+          if (snap) {
+            void persist(snap, { allowDuringPause: true }).catch((e) => {
+              onNotifyRef.current?.(
+                (e as Error).message || String(e),
+                "err",
+              );
+            });
+          }
           setRecordBusy(false);
           return;
         }
-        setHotkeyError((err as Error).message || String(err));
+        setHotkeyError(msg);
         restorePausedHotkey();
         flushDeferredPersist();
         setRecordBusy(false);
@@ -292,7 +328,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
             (restoreErr as Error).message ||
             `Could not restore ${formatHotkey(hotkey)}. Rebind or restart.`;
           setHotkeyError(msg);
-          onNotify?.(msg, "err");
+          onNotifyRef.current?.(msg, "err");
         }
       } else {
         hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;

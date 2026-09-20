@@ -34,7 +34,10 @@ vi.mock("../lib/hotkey", () => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setAlwaysOnTop }),
+  getCurrentWindow: () => ({
+    setAlwaysOnTop,
+    onFocusChanged: async () => () => {},
+  }),
 }));
 
 describe("Settings", () => {

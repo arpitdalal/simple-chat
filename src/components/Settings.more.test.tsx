@@ -14,6 +14,7 @@ const setAlwaysOnTop = vi.fn();
 const eventToAccelerator = vi.fn();
 const getActiveHotkey = vi.fn();
 const onSaved = vi.fn();
+let focusHandler: ((e: { payload: boolean }) => void) | null = null;
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
@@ -38,11 +39,20 @@ vi.mock("../lib/hotkey", () => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setAlwaysOnTop }),
+  getCurrentWindow: () => ({
+    setAlwaysOnTop,
+    onFocusChanged: async (handler: (e: { payload: boolean }) => void) => {
+      focusHandler = handler;
+      return () => {
+        focusHandler = null;
+      };
+    },
+  }),
 }));
 
 describe("Settings behaviors", () => {
   beforeEach(() => {
+    focusHandler = null;
     vi.clearAllMocks();
     getSettings.mockResolvedValue({
       resume_minutes: 5,
@@ -230,6 +240,28 @@ describe("Settings behaviors", () => {
     await user.keyboard("{Escape}");
     await waitFor(() =>
       expect(screen.getByText(/Could not restore hotkey/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("restores hotkey when window blurs during Record", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    applyHotkey.mockClear();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(/Press keys/i)).toBeInTheDocument(),
+    );
+    applyHotkey.mockClear();
+    focusHandler?.({ payload: false });
+    await waitFor(() =>
+      expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Space"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByDisplayValue(/Press keys/i),
+      ).not.toBeInTheDocument(),
     );
   });
 

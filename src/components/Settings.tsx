@@ -175,8 +175,7 @@ export function Settings({ onClose, onSaved }: Props) {
       return;
     }
     if (gen !== recordGenRef.current) {
-      // Unmounted (or superseded) after clear — put last-good back.
-      void applyHotkey(lastGoodHotkeyRef.current).catch(() => {});
+      // Superseded by unmount or a newer Record — owner of the pause restores.
       return;
     }
     setRecording(true);
@@ -213,7 +212,7 @@ export function Settings({ onClose, onSaved }: Props) {
       await applyHotkey(requested);
       setHotkeyError("");
       lastGoodHotkeyRef.current = requested;
-      pausedForRecordRef.current = false;
+      // Do not clear pausedForRecordRef here — Record start may be mid-flush.
     } catch (err) {
       hotkeyOk = false;
       setHotkeyError((err as Error).message || String(err));

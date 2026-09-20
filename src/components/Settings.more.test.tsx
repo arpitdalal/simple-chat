@@ -9,6 +9,7 @@ const clearApiKey = vi.fn();
 const getSettings = vi.fn();
 const setSetting = vi.fn();
 const applyHotkey = vi.fn();
+const clearHotkey = vi.fn();
 const setAlwaysOnTop = vi.fn();
 const eventToAccelerator = vi.fn();
 const getActiveHotkey = vi.fn();
@@ -28,6 +29,7 @@ vi.mock("../lib/db", () => ({
 
 vi.mock("../lib/hotkey", () => ({
   applyHotkey: (...a: unknown[]) => applyHotkey(...a),
+  clearHotkey: (...a: unknown[]) => clearHotkey(...a),
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
   eventToAccelerator: (...a: unknown[]) => eventToAccelerator(...a),
   formatHotkey: (s: string) => s,
@@ -54,8 +56,33 @@ describe("Settings behaviors", () => {
     });
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
+    clearHotkey.mockResolvedValue(undefined);
     getActiveHotkey.mockReturnValue("CommandOrControl+Shift+Space");
     setSetting.mockResolvedValue(undefined);
+  });
+
+  it("accepts a typed accelerator when Record cannot hear OS-owned combos", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "CommandOrControl+Shift+K");
+    await user.tab();
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+K",
+      ),
+    );
+    expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+K");
+  });
+
+  it("clears the live grab when Record starts", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
   });
 
   it("keeps prior hotkey when registration fails", async () => {
@@ -119,7 +146,7 @@ describe("Settings behaviors", () => {
     render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
     await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
     await user.click(screen.getByText("Record"));
-    expect(screen.getByText(/Press keys/i)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/Press keys/i)).toBeInTheDocument();
     await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
     await waitFor(() =>
       expect(setSetting).toHaveBeenCalledWith(

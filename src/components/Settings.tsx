@@ -11,6 +11,7 @@ import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   applyHotkey,
+  clearHotkey,
   DEFAULT_HOTKEY,
   eventToAccelerator,
   formatHotkey,
@@ -36,6 +37,7 @@ export function Settings({ onClose, onSaved }: Props) {
   });
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
+  const [hotkeyDraft, setHotkeyDraft] = useState<string | null>(null);
   const [hotkeyError, setHotkeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
   const saveTimer = useRef<number | null>(null);
@@ -66,10 +68,12 @@ export function Settings({ onClose, onSaved }: Props) {
       e.stopPropagation();
       if (e.key === "Escape") {
         setRecording(false);
+        void applyHotkey(lastGoodHotkeyRef.current);
         return;
       }
       const accel = eventToAccelerator(e);
       if (!accel || !settings) return;
+      setHotkeyDraft(null);
       patch({ hotkey: accel });
       setRecording(false);
       setHotkeyError("");
@@ -77,6 +81,25 @@ export function Settings({ onClose, onSaved }: Props) {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [recording, settings]);
+
+  function commitHotkeyDraft() {
+    if (hotkeyDraft == null || !settings) return;
+    const next = hotkeyDraft.trim() || DEFAULT_HOTKEY;
+    setHotkeyDraft(null);
+    if (next !== settings.hotkey) patch({ hotkey: next });
+  }
+
+  async function startRecording() {
+    setHotkeyDraft(null);
+    setRecording(true);
+    setHotkeyError("");
+    // Free our own grab so Record can hear it; other apps may still steal.
+    try {
+      await clearHotkey();
+    } catch {
+      /* ignore */
+    }
+  }
 
   function patch(partial: Partial<AppSettings>) {
     setSettings((prev) => {
@@ -229,26 +252,51 @@ export function Settings({ onClose, onSaved }: Props) {
         <label className="field">
           <span>Global hotkey</span>
           <div className="hotkey-row">
-            <code className="hotkey-display">
-              {recording
-                ? "Press keys… (Esc cancel)"
-                : formatHotkey(settings.hotkey || DEFAULT_HOTKEY)}
-            </code>
+            <input
+              className="hotkey-display"
+              aria-label="Global hotkey accelerator"
+              title={formatHotkey(settings.hotkey || DEFAULT_HOTKEY)}
+              spellCheck={false}
+              readOnly={recording}
+              value={
+                recording
+                  ? "Press keys… (Esc cancel)"
+                  : (hotkeyDraft ?? (settings.hotkey || DEFAULT_HOTKEY))
+              }
+              onChange={(e) => {
+                if (!recording) setHotkeyDraft(e.target.value);
+              }}
+              onBlur={() => commitHotkeyDraft()}
+              onKeyDown={(e) => {
+                if (recording) return;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
             <button
               type="button"
               className="ghost"
-              onClick={() => setRecording(true)}
+              onClick={() => void startRecording()}
             >
               Record
             </button>
             <button
               type="button"
               className="ghost"
-              onClick={() => patch({ hotkey: DEFAULT_HOTKEY })}
+              onClick={() => {
+                setHotkeyDraft(null);
+                patch({ hotkey: DEFAULT_HOTKEY });
+              }}
             >
               Reset
             </button>
           </div>
+          <p className="hint">
+            If Record opens another app, that combo is already taken — type the
+            accelerator (e.g. CommandOrControl+Shift+Space) instead.
+          </p>
           {hotkeyError && <p className="hint error-text">{hotkeyError}</p>}
         </label>
         <label className="check">

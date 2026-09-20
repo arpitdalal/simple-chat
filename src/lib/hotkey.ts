@@ -146,6 +146,26 @@ export async function applyHotkey(accelerator: string) {
   return queued;
 }
 
+/** Drop the active registration so Record can hear our own combo. */
+export async function clearHotkey() {
+  const run = async () => {
+    await sweepOrphans(new Set());
+    if (!activeHotkey) return;
+    try {
+      await unregister(activeHotkey);
+    } catch {
+      /* leave orphan tracking empty — next applyHotkey will rebind */
+    }
+    activeHotkey = null;
+  };
+  const queued = applyChain.then(run, run);
+  applyChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
+}
+
 /** Map a KeyboardEvent to a global-shortcut accelerator, or null if incomplete. */
 export function eventToAccelerator(e: KeyboardEvent): string | null {
   if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;

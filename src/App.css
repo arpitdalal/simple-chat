@@ -916,12 +916,15 @@ select {
 }
 .hotkey-display {
   display: inline-block;
-  min-width: 180px;
+  min-width: 220px;
+  flex: 1;
   padding: 8px 10px;
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border);
   border-radius: 8px;
   font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: inherit;
 }
 .error-text {
   color: #ff8a84;

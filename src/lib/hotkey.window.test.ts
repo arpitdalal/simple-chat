@@ -19,6 +19,7 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
 
 import {
   applyHotkey,
+  clearHotkey,
   getActiveHotkey,
   hideMainWindow,
   resetActiveHotkeyForTests,
@@ -199,5 +200,14 @@ describe("hotkey window actions", () => {
     expect(register).not.toHaveBeenCalled();
     expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
+  });
+
+  it("clearHotkey unregisters the active binding", async () => {
+    register.mockResolvedValue(undefined);
+    unregister.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+    await clearHotkey();
+    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+    expect(getActiveHotkey()).toBeNull();
   });
 });

@@ -25,6 +25,7 @@ vi.mock("../lib/db", () => ({
 
 vi.mock("../lib/hotkey", () => ({
   applyHotkey: (...a: unknown[]) => applyHotkey(...a),
+  clearHotkey: vi.fn(async () => undefined),
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",
   eventToAccelerator: vi.fn(),
   formatHotkey: (s: string) => s,

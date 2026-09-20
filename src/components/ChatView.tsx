@@ -254,6 +254,7 @@ export function ChatView({
     lastUserContent?: ModelMessage["content"],
   ) {
     const chatId = chatSnap.id;
+    const startGen = releaseGenRef.current;
     streamOwnerRef.current = chatId;
     streamTextRef.current = "";
     flushSync(() => {
@@ -293,10 +294,12 @@ export function ChatView({
 
       const assistant = await addMessage(chatId, "assistant", full);
       if (viewingIdRef.current === chatId) {
-        const wouldTrim = messagesRef.current.length >= MAX_CACHED_MESSAGES;
-        setMessages((m) =>
-          trimRecentMessages([...m, assistant], MAX_CACHED_MESSAGES),
-        );
+        const limit =
+          startGen !== releaseGenRef.current
+            ? MESSAGE_PAGE
+            : MAX_CACHED_MESSAGES;
+        const wouldTrim = messagesRef.current.length >= limit;
+        setMessages((m) => trimRecentMessages([...m, assistant], limit));
         if (wouldTrim) setHasMore(true);
         setStreaming("");
       }
@@ -422,13 +425,16 @@ export function ChatView({
     if (!chat || busy) return;
     const chatId = chat.id;
     const chatSnap = chat;
+    const startGen = releaseGenRef.current;
     const all = await listMessages(chatId);
     const idx = all.findIndex((m) => m.id === userMessageId);
     if (idx < 0 || all[idx].role !== "user") return;
 
     await deleteMessagesAfter(chatId, userMessageId);
     const keep = all.slice(0, idx + 1);
-    const visible = trimRecentMessages(keep, MAX_CACHED_MESSAGES);
+    const limit =
+      startGen !== releaseGenRef.current ? MESSAGE_PAGE : MAX_CACHED_MESSAGES;
+    const visible = trimRecentMessages(keep, limit);
     flushSync(() => {
       setMessages(visible);
       if (visible.length < keep.length) setHasMore(true);

@@ -22,9 +22,10 @@ import {
 type Props = {
   onClose: () => void;
   onSaved: (s: AppSettings) => void;
+  onNotify?: (text: string, kind?: "ok" | "err") => void;
 };
 
-export function Settings({ onClose, onSaved }: Props) {
+export function Settings({ onClose, onSaved, onNotify }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
     openai: "",
@@ -77,10 +78,11 @@ export function Settings({ onClose, onSaved }: Props) {
     const accel =
       settingsRef.current?.hotkey.trim() || lastGoodHotkeyRef.current;
     void applyHotkey(accel).catch((err) => {
-      setHotkeyError(
+      const msg =
         (err as Error).message ||
-          `Could not restore ${formatHotkey(accel)}. Rebind or restart.`,
-      );
+        `Could not restore ${formatHotkey(accel)}. Rebind or restart.`;
+      setHotkeyError(msg);
+      onNotify?.(msg, "err");
     });
   }
 
@@ -155,12 +157,15 @@ export function Settings({ onClose, onSaved }: Props) {
           return;
         }
       }
+      // Prefer latest settingsRef over an older deferred snapshot.
+      if (hadPendingSave && base) {
+        void persist(base);
+        return;
+      }
       if (deferred) {
         // Keep deferred.hotkey (e.g. Reset-to-default during Record).
         void persist(deferred);
-        return;
       }
-      if (hadPendingSave && base) void persist(base);
     };
   }, []);
 
@@ -274,6 +279,7 @@ export function Settings({ onClose, onSaved }: Props) {
         }
       } else {
         hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;
+        lastGoodHotkeyRef.current = hotkey;
       }
       // Only roll UI back if this request is still showing and not superseded.
       if (

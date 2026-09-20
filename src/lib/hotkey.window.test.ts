@@ -268,5 +268,11 @@ describe("hotkey window actions", () => {
     await applyHotkey("CommandOrControl+Shift+A");
     unregisterAll.mockRejectedValueOnce(new Error("busy"));
     await expect(clearHotkey()).rejects.toThrow(/Could not release hotkeys/i);
+    // Stale active cleared so a later apply re-registers instead of no-op.
+    expect(getActiveHotkey()).toBeNull();
+    unregisterAll.mockResolvedValue(undefined);
+    register.mockClear();
+    await applyHotkey("CommandOrControl+Shift+A");
+    expect(register).toHaveBeenCalled();
   });
 });

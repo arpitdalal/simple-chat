@@ -318,6 +318,7 @@ function App() {
                 setSettings(s);
                 void refreshChats();
               }}
+              onNotify={notify}
             />
           </div>
         ) : (

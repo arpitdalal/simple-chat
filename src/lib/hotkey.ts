@@ -187,6 +187,10 @@ export async function clearHotkey() {
       activeHotkey = null;
       orphanHotkeys = [];
     } catch (err) {
+      // unregisterAll may have partially cleared — don't trust tracking.
+      const prev = activeHotkey;
+      activeHotkey = null;
+      if (prev && !orphanHotkeys.includes(prev)) orphanHotkeys.push(prev);
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
         `Could not release hotkeys for recording${detail ? ` — ${detail}` : ""}. Rebind or restart.`,

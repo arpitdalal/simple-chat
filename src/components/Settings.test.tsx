@@ -33,6 +33,10 @@ vi.mock("../lib/hotkey", () => ({
   isValidAccelerator: (s: string) => s.includes("+"),
 }));
 
+vi.mock("../lib/updater", () => ({
+  checkForAppUpdate: vi.fn(async () => null),
+}));
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setAlwaysOnTop,

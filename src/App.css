@@ -849,6 +849,28 @@ select {
   background: color-mix(in srgb, var(--danger) 22%, transparent);
   color: #ff8a84;
 }
+.update-banner {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 20px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--glass-strong));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text);
+  font-size: 13px;
+}
+.update-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
 
 .settings-panel {
   padding: 20px 28px;

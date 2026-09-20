@@ -15,6 +15,10 @@ test-results
 playwright-report
 coverage
 
+# Updater signing private keys — never commit
+*.key
+!*.key.pub
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

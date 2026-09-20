@@ -22,6 +22,10 @@ import {
 import type { ProviderId } from "./lib/models";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { isEmptyNewChat } from "./lib/chats";
+import {
+  checkForAppUpdate,
+  type AvailableUpdate,
+} from "./lib/updater";
 import "./App.css";
 
 function App() {
@@ -36,6 +40,10 @@ function App() {
   const [ready, setReady] = useState(false);
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<AvailableUpdate | null>(
+    null,
+  );
+  const [updating, setUpdating] = useState(false);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -118,6 +126,7 @@ function App() {
       await refreshChats();
       setReady(true);
       focusComposer();
+      void checkForAppUpdate().then(setPendingUpdate);
     })();
   }, [refreshChats, focusComposer, notify]);
 
@@ -250,6 +259,17 @@ function App() {
     }
   }
 
+  async function installPendingUpdate() {
+    if (!pendingUpdate || updating) return;
+    setUpdating(true);
+    try {
+      await pendingUpdate.install();
+    } catch (e) {
+      setUpdating(false);
+      notify((e as Error).message || "Update failed", "err");
+    }
+  }
+
   function beginDrag(e: React.MouseEvent) {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
@@ -333,6 +353,35 @@ function App() {
           />
         )}
       </div>
+      {pendingUpdate && (
+        <div className="update-banner" role="status">
+          <span>
+            {updating
+              ? `Installing ${pendingUpdate.version}…`
+              : `Update ${pendingUpdate.version} available`}
+          </span>
+          <div className="update-banner-actions">
+            {!updating && (
+              <>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void installPendingUpdate()}
+                >
+                  Install &amp; restart
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setPendingUpdate(null)}
+                >
+                  Later
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );

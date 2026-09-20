@@ -18,6 +18,7 @@ import {
   getActiveHotkey,
   isValidAccelerator,
 } from "../lib/hotkey";
+import { checkForAppUpdate } from "../lib/updater";
 
 type Props = {
   onClose: () => void;
@@ -43,6 +44,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   const [hotkeyDraft, setHotkeyDraft] = useState<string | null>(null);
   const [hotkeyError, setHotkeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
@@ -516,6 +518,38 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
           />
           Always on top
         </label>
+      </section>
+
+      <section>
+        <h3>Updates</h3>
+        <button
+          type="button"
+          className="ghost"
+          disabled={updateBusy}
+          onClick={() => {
+            void (async () => {
+              setUpdateBusy(true);
+              setStatus("Checking for updates…");
+              try {
+                const available = await checkForAppUpdate();
+                if (!available) {
+                  setStatus("Up to date");
+                  return;
+                }
+                setStatus(`Installing ${available.version}…`);
+                await available.install();
+              } catch (e) {
+                const msg = (e as Error).message || "Update check failed";
+                setStatus(msg);
+                onNotifyRef.current?.(msg, "err");
+              } finally {
+                setUpdateBusy(false);
+              }
+            })();
+          }}
+        >
+          {updateBusy ? "Checking…" : "Check for updates"}
+        </button>
       </section>
 
       <section>

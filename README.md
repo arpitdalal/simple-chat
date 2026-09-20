@@ -23,6 +23,8 @@ npm run check
 npm run tauri:dev
 ```
 
+Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` (or `_PATH`) set — pubkey is in `src-tauri/tauri.conf.json`. Endpoints point at GitHub Releases `latest.json` (wired by issue #1 CI).
+
 ## Tests
 
 ```bash

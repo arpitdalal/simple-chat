@@ -136,6 +136,7 @@ export function ChatView({
     void onMainWindowHidden(() => {
       releaseGenRef.current += 1;
       setImages([]);
+      if (fileRef.current) fileRef.current.value = "";
       const cur = messagesRef.current;
       if (cur.length <= MESSAGE_PAGE) return;
       setMessages(trimRecentMessages(cur, MESSAGE_PAGE));

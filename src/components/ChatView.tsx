@@ -73,6 +73,8 @@ export function ChatView({
   const streamOwnerRef = useRef<string | null>(null);
   const streamTextRef = useRef("");
   const messagesRef = useRef<Message[]>([]);
+  /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
+  const releaseGenRef = useRef(0);
 
   viewingIdRef.current = chat?.id ?? null;
   messagesRef.current = messages;
@@ -132,6 +134,7 @@ export function ChatView({
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void onMainWindowHidden(() => {
+      releaseGenRef.current += 1;
       setImages([]);
       const cur = messagesRef.current;
       if (cur.length <= MESSAGE_PAGE) return;
@@ -190,6 +193,7 @@ export function ChatView({
     const el = parentRef.current;
     const prevHeight = el?.scrollHeight ?? 0;
     const prevTop = el?.scrollTop ?? 0;
+    const gen = releaseGenRef.current;
     setLoadingOlder(true);
     try {
       const room = MAX_CACHED_MESSAGES - messages.length;
@@ -198,6 +202,7 @@ export function ChatView({
         messages[0].created_at,
         Math.min(MESSAGE_PAGE, room),
       );
+      if (gen !== releaseGenRef.current) return;
       if (older.length === 0) {
         setHasMore(false);
         return;
@@ -209,7 +214,7 @@ export function ChatView({
       stickBottom.current = false;
       setMessages((m) => [...older, ...m]);
       requestAnimationFrame(() => {
-        if (!el) return;
+        if (!el || gen !== releaseGenRef.current) return;
         const delta = el.scrollHeight - prevHeight;
         el.scrollTop = prevTop + delta;
       });
@@ -448,8 +453,10 @@ export function ChatView({
       e.preventDefault();
       const file = item.getAsFile();
       if (!file) continue;
+      const gen = releaseGenRef.current;
       const reader = new FileReader();
       reader.onload = () => {
+        if (gen !== releaseGenRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }
@@ -462,8 +469,10 @@ export function ChatView({
     if (!files) return;
     for (const file of files) {
       if (!file.type.startsWith("image/")) continue;
+      const gen = releaseGenRef.current;
       const reader = new FileReader();
       reader.onload = () => {
+        if (gen !== releaseGenRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }

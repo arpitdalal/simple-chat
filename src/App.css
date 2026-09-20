@@ -853,7 +853,9 @@ select {
   position: absolute;
   left: 20px;
   right: 20px;
-  bottom: 170px;
+  /* Above chrome — never fights float-composer (grows to ~330px). */
+  top: calc(var(--chrome-h) + 8px);
+  bottom: auto;
   z-index: 7;
   display: flex;
   align-items: center;

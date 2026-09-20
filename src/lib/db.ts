@@ -47,10 +47,15 @@ let dbPromise: Promise<Database> | null = null;
 
 export function getDb() {
   if (!dbPromise) {
-    dbPromise = Database.load("sqlite:simple-chat.db").then(async (db) => {
-      await prepareDb(db);
-      return db;
-    });
+    dbPromise = Database.load("sqlite:simple-chat.db")
+      .then(async (db) => {
+        await prepareDb(db);
+        return db;
+      })
+      .catch((err) => {
+        dbPromise = null;
+        throw err;
+      });
   }
   return dbPromise;
 }
@@ -61,14 +66,24 @@ export function getDb() {
  */
 export async function prepareDb(db: Database) {
   await db.execute("PRAGMA journal_mode=WAL;");
+  const modeRows = await db.select<{ journal_mode: string }[]>(
+    "PRAGMA journal_mode;",
+  );
+  const mode = String(modeRows[0]?.journal_mode ?? "").toLowerCase();
+  if (mode !== "wal") {
+    throw new Error(
+      `SQLite journal_mode is ${mode || "unknown"}, expected wal`,
+    );
+  }
+
   // Bridge: DBs created by the old JS CREATE (no pinned) before formal migrations.
-  try {
+  const cols = await db.select<{ name: string }[]>(
+    "SELECT name FROM pragma_table_info('chats')",
+  );
+  if (!cols.some((c) => c.name === "pinned")) {
     await db.execute(
       `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
     );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/duplicate column/i.test(msg)) throw err;
   }
 }
 

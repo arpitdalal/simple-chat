@@ -82,6 +82,26 @@ describe("Settings behaviors", () => {
     );
   });
 
+  it("keeps last-good hotkey when active binding is null", async () => {
+    const user = userEvent.setup();
+    eventToAccelerator.mockReturnValue("CommandOrControl+Shift+K");
+    applyHotkey.mockRejectedValue(
+      new Error("Could not register ⌘/Ctrl + ⇧ + K — already taken"),
+    );
+    getActiveHotkey.mockReturnValue(null);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith(
+        "hotkey",
+        "CommandOrControl+Shift+Space",
+      ),
+    );
+    expect(screen.getByText(/Could not register/i)).toBeInTheDocument();
+  });
+
   it("toggles always on top and persists", async () => {
     const user = userEvent.setup();
     render(<Settings onClose={vi.fn()} onSaved={onSaved} />);

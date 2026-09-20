@@ -40,12 +40,15 @@ export function Settings({ onClose, onSaved }: Props) {
   const [keyEpoch, setKeyEpoch] = useState(0);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
+  const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
+  const persistGenRef = useRef(0);
 
   useEffect(() => {
     void (async () => {
       const s = await getSettings();
       setSettings(s);
       settingsRef.current = s;
+      lastGoodHotkeyRef.current = s.hotkey.trim() || DEFAULT_HOTKEY;
       const hk: Record<ProviderId, boolean> = {
         openai: false,
         anthropic: false,
@@ -93,17 +96,19 @@ export function Settings({ onClose, onSaved }: Props) {
   }
 
   async function persist(s: AppSettings) {
+    const gen = ++persistGenRef.current;
     const requested = s.hotkey.trim() || DEFAULT_HOTKEY;
     let hotkey = requested;
     let hotkeyOk = true;
     try {
       await applyHotkey(requested);
       setHotkeyError("");
+      lastGoodHotkeyRef.current = requested;
     } catch (err) {
       hotkeyOk = false;
       setHotkeyError((err as Error).message || String(err));
-      // Keep last working binding in settings + UI when OS rejects the new one.
-      hotkey = getActiveHotkey() || s.hotkey.trim() || DEFAULT_HOTKEY;
+      // Never persist a rejected combo — keep last known-good.
+      hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;
       if (hotkey !== requested) {
         setSettings((prev) => {
           if (!prev) return prev;
@@ -113,6 +118,7 @@ export function Settings({ onClose, onSaved }: Props) {
         });
       }
     }
+    if (gen !== persistGenRef.current) return;
     await setSetting("resume_minutes", s.resume_minutes);
     await setSetting("always_on_top", s.always_on_top);
     await setSetting("show_tray", s.show_tray);
@@ -120,6 +126,7 @@ export function Settings({ onClose, onSaved }: Props) {
     await setSetting("default_model", s.default_model);
     await setSetting("web_search", true);
     await setSetting("hotkey", hotkey);
+    if (gen !== persistGenRef.current) return;
     await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
     onSaved({ ...s, hotkey });
     setStatus(hotkeyOk ? "Saved" : "Saved (hotkey unchanged)");

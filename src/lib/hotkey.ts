@@ -69,14 +69,17 @@ export async function applyHotkey(accelerator: string) {
       try {
         await unregister(prev);
       } catch {
-        // New is live; drop it so the previous OS binding remains the only one.
+        // New is live; try to drop it so previous remains the only binding.
         try {
           await unregister(next);
         } catch {
-          /* both may be live — prefer tracking the one we just registered */
-          activeHotkey = next;
-          return;
+          // ponytail: both may stay live if OS rejects both unregisters; throw so UI warns
+          activeHotkey = prev;
+          throw new Error(
+            `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,
+          );
         }
+        activeHotkey = prev;
         throw new Error(
           `Registered ${formatHotkey(next)} but could not release ${formatHotkey(prev)}. Rebind or restart.`,
         );

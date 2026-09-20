@@ -115,4 +115,29 @@ describe("hotkey window actions", () => {
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
     expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
   });
+
+  it("applyHotkey throws when previous cannot be released", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockResolvedValueOnce(undefined);
+
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /could not release/i,
+    );
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
+  it("applyHotkey throws when both unregisters fail", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValue(new Error("busy"));
+
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
 });

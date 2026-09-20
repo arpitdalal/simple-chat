@@ -54,7 +54,7 @@ describe("checkForAppUpdate", () => {
     expect(relaunch).toHaveBeenCalledOnce();
   });
 
-  it("does not relaunch when downloadAndInstall rejects", async () => {
+  it("does not relaunch when downloadAndInstall rejects; closes Update", async () => {
     downloadAndInstall.mockRejectedValue(new Error("dl failed"));
     check.mockResolvedValue(fakeUpdate());
     const result = await checkForAppUpdate();
@@ -62,9 +62,10 @@ describe("checkForAppUpdate", () => {
 
     await expect(result.update.install()).rejects.toThrow("dl failed");
     expect(relaunch).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 
-  it("surfaces restart failure after successful install", async () => {
+  it("surfaces restart failure after successful install; closes Update", async () => {
     downloadAndInstall.mockResolvedValue(undefined);
     relaunch.mockRejectedValue(new Error("nope"));
     check.mockResolvedValue(fakeUpdate());
@@ -79,5 +80,6 @@ describe("checkForAppUpdate", () => {
     }
     expect(isRestartRequiredError(err)).toBe(true);
     expect(String(err)).toContain(RESTART_REQUIRED_PREFIX);
+    expect(close).toHaveBeenCalledOnce();
   });
 });

@@ -35,10 +35,16 @@ export function isRestartRequiredError(e: unknown): boolean {
 }
 
 function wrapUpdate(update: Update): AvailableUpdate {
+  let closePromise: Promise<void> | null = null;
+  const closeUpdate = () => {
+    closePromise ??= Promise.resolve(update.close()).catch(() => {});
+    return closePromise;
+  };
+
   return {
     version: update.version,
     dismiss: () => {
-      void update.close();
+      void closeUpdate();
     },
     install: () => {
       if (installInFlight) return installInFlight;
@@ -48,11 +54,13 @@ function wrapUpdate(update: Update): AvailableUpdate {
             timeout: DOWNLOAD_TIMEOUT_MS,
           });
         } catch (e) {
+          await closeUpdate();
           throw new Error(errMessage(e, "Download failed"));
         }
         try {
           await relaunch();
         } catch (e) {
+          await closeUpdate();
           const detail = errMessage(e, "");
           throw new Error(
             `${RESTART_REQUIRED_PREFIX}${detail ? ` ${detail}` : ""}`,

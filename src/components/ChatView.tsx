@@ -277,21 +277,7 @@ export function ChatView({
       };
     }
 
-    try {
-      let full = "";
-      await streamChat({
-        provider: chatSnap.provider as ProviderId,
-        modelId: chatSnap.model_id,
-        messages: modelMessages,
-        webSearch: true,
-        abortSignal: ac.signal,
-        onToken: (t) => {
-          full += t;
-          streamTextRef.current = full;
-          if (viewingIdRef.current === chatId) setStreaming(full);
-        },
-      });
-
+    const appendAssistant = async (full: string) => {
       const assistant = await addMessage(chatId, "assistant", full);
       if (viewingIdRef.current === chatId) {
         const limit =
@@ -305,9 +291,43 @@ export function ChatView({
       }
       await updateChat(chatId, { preview: full.slice(0, 120) });
       onChatUpdated();
+    };
+
+    let full = "";
+    try {
+      await streamChat({
+        provider: chatSnap.provider as ProviderId,
+        modelId: chatSnap.model_id,
+        messages: modelMessages,
+        webSearch: true,
+        abortSignal: ac.signal,
+        onToken: (t) => {
+          full += t;
+          streamTextRef.current = full;
+          if (viewingIdRef.current === chatId) setStreaming(full);
+        },
+        onRetry: () => {
+          // Reset live buffer only — streamTextRef keeps last partial until new tokens
+          full = "";
+          if (viewingIdRef.current === chatId) setStreaming("");
+        },
+      });
+
+      await appendAssistant(full);
     } catch (e) {
-      if (viewingIdRef.current === chatId) setStreaming("");
-      if ((e as Error).name !== "AbortError") {
+      const aborted = (e as Error).name === "AbortError";
+      const partial = full || streamTextRef.current;
+      // Keep partial reply instead of wiping it on API failure
+      if (!aborted && partial) {
+        try {
+          await appendAssistant(partial);
+        } catch {
+          if (viewingIdRef.current === chatId) setStreaming("");
+        }
+      } else if (viewingIdRef.current === chatId) {
+        setStreaming("");
+      }
+      if (!aborted) {
         onNotify((e as Error).message || String(e), "err");
       }
       throw e;
@@ -368,8 +388,10 @@ export function ChatView({
             })),
           ];
 
+    let userPersisted = false;
     try {
       const userMsg = await addMessage(chatId, "user", displayText);
+      userPersisted = true;
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
       }
@@ -402,9 +424,12 @@ export function ChatView({
       await streamReply(chatSnap, history, userContent as never);
     } catch (e) {
       if (viewingIdRef.current === chatId) {
-        setMessages((m) =>
-          m.some((x) => x.id === tempId) ? m.filter((x) => x.id !== tempId) : m,
-        );
+        setMessages((m) => m.filter((x) => x.id !== tempId));
+        // User msg never landed — put composer back
+        if (!userPersisted) {
+          setInput(text);
+          setImages(imageParts);
+        }
         setStreaming("");
       }
       if ((e as Error).name !== "AbortError") {

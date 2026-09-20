@@ -226,6 +226,60 @@ describe("ChatView", () => {
     );
   });
 
+  it("restores composer draft when send fails before user message persists", async () => {
+    const user = userEvent.setup();
+    addMessage.mockRejectedValueOnce(new Error("db down"));
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    await user.type(ta, "keep me");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(ta).toHaveValue("keep me"));
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps partial assistant reply when stream fails mid-way", async () => {
+    const user = userEvent.setup();
+    streamChat.mockImplementation(
+      async (opts: { onToken: (t: string) => void }) => {
+        opts.onToken("Hello partial");
+        throw new Error("timeout");
+      },
+    );
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    await user.type(screen.getByPlaceholderText("Ask AI anything…"), "hi");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "Hello partial"),
+    );
+    expect(await screen.findByText("Hello partial")).toBeInTheDocument();
+  });
+
   it("loads older messages when scrolled near top", async () => {
     // PAGE=50 — hasMore only when recent page is full
     const existing = Array.from({ length: 50 }, (_, i) =>

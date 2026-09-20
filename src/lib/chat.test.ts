@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 const getApiKey = vi.fn();
 const streamText = vi.fn();
@@ -16,6 +16,20 @@ const anthropicWebSearch = vi.fn((opts?: unknown) => ({
 }));
 const anthropicWebFetch = vi.fn(() => ({ type: "anthropic.web_fetch" }));
 
+const { FakeAPICallError } = vi.hoisted(() => {
+  class FakeAPICallError extends Error {
+    isRetryable: boolean;
+    constructor(message: string, isRetryable: boolean) {
+      super(message);
+      this.isRetryable = isRetryable;
+    }
+    static isInstance(err: unknown): err is FakeAPICallError {
+      return err instanceof FakeAPICallError;
+    }
+  }
+  return { FakeAPICallError };
+});
+
 vi.mock("./keys", () => ({
   getApiKey: (...a: unknown[]) => getApiKey(...a),
 }));
@@ -24,6 +38,7 @@ vi.mock("ai", () => ({
   streamText: (...a: unknown[]) => streamText(...a),
   generateText: vi.fn(),
   stepCountIs: (...a: unknown[]) => stepCountIs(...a),
+  APICallError: FakeAPICallError,
 }));
 
 vi.mock("@ai-sdk/openai", () => ({
@@ -51,7 +66,12 @@ vi.mock("@ai-sdk/google", () => ({
     }),
 }));
 
-import { streamChat, withWebSearch } from "./chat";
+import {
+  streamChat,
+  withWebSearch,
+  isRetryableStreamError,
+  STREAM_BACKOFF_MS,
+} from "./chat";
 
 describe("withWebSearch", () => {
   it("returns no tools when disabled", () => {
@@ -85,11 +105,35 @@ describe("withWebSearch", () => {
   });
 });
 
+describe("isRetryableStreamError", () => {
+  it("rejects aborts and non-retryable API errors", () => {
+    const abort = new Error("aborted");
+    abort.name = "AbortError";
+    expect(isRetryableStreamError(abort)).toBe(false);
+    expect(isRetryableStreamError(new FakeAPICallError("bad key", false))).toBe(
+      false,
+    );
+  });
+
+  it("accepts retryable API / network errors", () => {
+    expect(isRetryableStreamError(new FakeAPICallError("rate limited", true))).toBe(
+      true,
+    );
+    expect(isRetryableStreamError(new Error("Failed to fetch"))).toBe(true);
+    expect(isRetryableStreamError(new Error("timeout"))).toBe(true);
+  });
+});
+
 describe("streamChat", () => {
   beforeEach(() => {
     getApiKey.mockReset();
     streamText.mockReset();
     stepCountIs.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("throws when API key missing", async () => {
@@ -130,6 +174,7 @@ describe("streamChat", () => {
           url_context: { type: "google.url_context" },
         },
         stopWhen: { __stepCountIs: 5 },
+        maxRetries: 0,
       }),
     );
   });
@@ -154,5 +199,54 @@ describe("streamChat", () => {
       }),
     );
     expect(streamText.mock.calls[0][0].stopWhen).toBeUndefined();
+  });
+
+  it("retries retryable failures with exponential backoff then succeeds", async () => {
+    getApiKey.mockResolvedValue("sk");
+    streamText
+      .mockReturnValueOnce({
+        textStream: (async function* () {
+          throw new Error("Failed to fetch");
+        })(),
+      })
+      .mockReturnValueOnce({
+        textStream: (async function* () {
+          yield "ok";
+        })(),
+      });
+    const onRetry = vi.fn();
+    const onToken = vi.fn();
+    const done = streamChat({
+      provider: "openai",
+      modelId: "gpt-4o",
+      messages: [],
+      webSearch: false,
+      onToken,
+      onRetry,
+    });
+    await vi.advanceTimersByTimeAsync(STREAM_BACKOFF_MS);
+    await done;
+    expect(onRetry).toHaveBeenCalledWith(1);
+    expect(onToken).toHaveBeenCalledWith("ok");
+    expect(streamText).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry non-retryable errors", async () => {
+    getApiKey.mockResolvedValue("sk");
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        throw new Error("No API key for google");
+      })(),
+    });
+    await expect(
+      streamChat({
+        provider: "google",
+        modelId: "gemini-3.8-flash",
+        messages: [],
+        webSearch: false,
+        onToken: vi.fn(),
+      }),
+    ).rejects.toThrow(/No API key/);
+    expect(streamText).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,6 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import {
+  APICallError,
   generateText,
   stepCountIs,
   streamText,
@@ -10,6 +11,10 @@ import {
 } from "ai";
 import { getApiKey } from "./keys";
 import type { ProviderId } from "./models";
+
+/** ponytail: 3× / 500ms base — covers 429 + brief Wi-Fi drops; bump if providers need longer. */
+export const STREAM_MAX_ATTEMPTS = 3;
+export const STREAM_BACKOFF_MS = 500;
 
 /** Cheap models for auto-titling threads. */
 export const TITLE_MODELS: Record<ProviderId, string> = {
@@ -60,6 +65,67 @@ export function withWebSearch(provider: ProviderId, enabled: boolean) {
   return { tools: webSearchTools(provider, client) };
 }
 
+/** Transient network / rate-limit failures worth another attempt. */
+export function isRetryableStreamError(err: unknown): boolean {
+  if ((err as { name?: string } | null)?.name === "AbortError") return false;
+  if (APICallError.isInstance(err)) return err.isRetryable;
+  const msg = String((err as Error)?.message ?? err).toLowerCase();
+  // "Load failed" = WebKit/Tauri fetch drop; "failed to fetch" = Chromium
+  return /(?:^|\b)(429|timeout|timed out|network|fetch failed|failed to fetch|load failed|econnreset|enotfound|socket|offline)\b/.test(
+    msg,
+  );
+}
+
+/** Prefer Retry-After headers; fall back to exponential backoff.
+ *  ponytail: cap at 2m — longer waits should fail fast rather than hang the UI. */
+const MAX_RETRY_AFTER_MS = 120_000;
+
+export function retryDelayMs(err: unknown, attempt: number): number {
+  const fallback = STREAM_BACKOFF_MS * 2 ** (attempt - 1);
+  if (!APICallError.isInstance(err)) return fallback;
+  const headers = err.responseHeaders;
+  if (!headers) return fallback;
+
+  let ms: number | undefined;
+  const retryAfterMs = headers["retry-after-ms"];
+  if (retryAfterMs != null) {
+    const parsed = parseFloat(retryAfterMs);
+    if (!Number.isNaN(parsed) && parsed >= 0) ms = parsed;
+  }
+  const retryAfter = headers["retry-after"];
+  if (retryAfter != null && ms === undefined) {
+    const seconds = parseFloat(retryAfter);
+    if (!Number.isNaN(seconds) && seconds >= 0) {
+      ms = seconds * 1000;
+    } else {
+      const until = Date.parse(retryAfter) - Date.now();
+      if (!Number.isNaN(until) && until >= 0) ms = until;
+    }
+  }
+  if (ms === undefined) return fallback;
+  if (ms > MAX_RETRY_AFTER_MS) return -1; // caller: do not retry
+  return Math.max(ms, fallback);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      reject(err);
+      return;
+    }
+    const t = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      reject(err);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function streamChat(opts: {
   provider: ProviderId;
   modelId: string;
@@ -67,6 +133,8 @@ export async function streamChat(opts: {
   webSearch: boolean;
   abortSignal?: AbortSignal;
   onToken: (text: string) => void;
+  /** Called before a retry so callers can reset partial accumulators. */
+  onRetry?: (attempt: number) => void;
 }) {
   const key = await getApiKey(opts.provider);
   if (!key) throw new Error(`No API key for ${opts.provider}. Add one in Settings.`);
@@ -74,20 +142,51 @@ export async function streamChat(opts: {
   const client = makeProvider(opts.provider, key);
   const tools = opts.webSearch ? webSearchTools(opts.provider, client) : undefined;
 
-  const result = streamText({
-    model: client(opts.modelId),
-    messages: opts.messages,
-    abortSignal: opts.abortSignal,
-    tools,
-    // Allow search/fetch tool round-trips before the final answer
-    ...(tools ? { stopWhen: stepCountIs(5) } : {}),
-  });
+  let lastError: unknown;
+  for (let attempt = 0; attempt < STREAM_MAX_ATTEMPTS; attempt++) {
+    if (opts.abortSignal?.aborted) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    if (attempt > 0) {
+      opts.onRetry?.(attempt);
+      await sleep(retryDelayMs(lastError, attempt), opts.abortSignal);
+    }
+    let emitted = false;
+    try {
+      // maxRetries: 0 — we own the backoff loop so mid-stream failures can reset tokens
+      const result = streamText({
+        model: client(opts.modelId),
+        messages: opts.messages,
+        abortSignal: opts.abortSignal,
+        maxRetries: 0,
+        tools,
+        // Allow search/fetch tool round-trips before the final answer
+        ...(tools ? { stopWhen: stepCountIs(5) } : {}),
+      });
 
-  for await (const delta of result.textStream) {
-    opts.onToken(delta);
+      for await (const delta of result.textStream) {
+        emitted = true;
+        opts.onToken(delta);
+      }
+
+      return result;
+    } catch (e) {
+      lastError = e;
+      const canReset = !emitted || opts.onRetry != null;
+      const delay = retryDelayMs(e, attempt + 1);
+      if (
+        !isRetryableStreamError(e) ||
+        !canReset ||
+        delay < 0 ||
+        attempt === STREAM_MAX_ATTEMPTS - 1
+      ) {
+        throw e;
+      }
+    }
   }
-
-  return result;
+  throw lastError;
 }
 
 /** Short chat title via cheap model for the active provider. */

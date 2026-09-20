@@ -226,6 +226,138 @@ describe("ChatView", () => {
     );
   });
 
+  it("restores composer draft when send fails before user message persists", async () => {
+    const user = userEvent.setup();
+    addMessage.mockRejectedValueOnce(new Error("db down"));
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    await user.type(ta, "keep me");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(ta).toHaveValue("keep me"));
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it("does not clobber newer composer text when failed send restores", async () => {
+    const user = userEvent.setup();
+    let rejectAdd!: (e: Error) => void;
+    addMessage.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAdd = reject;
+        }),
+    );
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    await user.type(ta, "first");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(ta).toHaveValue(""));
+    await user.type(ta, "newer draft");
+    await act(async () => {
+      rejectAdd(new Error("db down"));
+    });
+    await waitFor(() => expect(ta).toHaveValue("newer draft"));
+  });
+
+  it("does not restore failed images into a text-only newer draft", async () => {
+    const user = userEvent.setup();
+    let rejectAdd!: (e: Error) => void;
+    addMessage.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAdd = reject;
+        }),
+    );
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const ta = screen.getByPlaceholderText("Ask AI anything…");
+    // Attach image then send
+    const file = new File(["x"], "a.png", { type: "image/png" });
+    await act(async () => {
+      const input = document.querySelector(
+        'input[type="file"]',
+      ) as HTMLInputElement;
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitFor(() => expect(screen.getByTitle("Remove")).toBeInTheDocument());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByTitle("Remove")).toBeNull());
+    await user.type(ta, "typed after");
+    await act(async () => {
+      rejectAdd(new Error("db down"));
+    });
+    await waitFor(() => expect(ta).toHaveValue("typed after"));
+    expect(screen.queryByTitle("Remove")).toBeNull();
+  });
+
+  it("keeps partial assistant reply when stream fails mid-way", async () => {
+    const user = userEvent.setup();
+    streamChat.mockImplementation(
+      async (opts: { onToken: (t: string) => void }) => {
+        opts.onToken("Hello partial");
+        throw new Error("timeout");
+      },
+    );
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    await user.type(screen.getByPlaceholderText("Ask AI anything…"), "hi");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "Hello partial"),
+    );
+    expect(await screen.findByText("Hello partial")).toBeInTheDocument();
+  });
+
   it("loads older messages when scrolled near top", async () => {
     // PAGE=50 — hasMore only when recent page is full
     const existing = Array.from({ length: 50 }, (_, i) =>

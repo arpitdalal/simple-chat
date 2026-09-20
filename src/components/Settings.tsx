@@ -39,6 +39,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   });
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
+  const [recordBusy, setRecordBusy] = useState(false);
   const [hotkeyDraft, setHotkeyDraft] = useState<string | null>(null);
   const [hotkeyError, setHotkeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
@@ -186,8 +187,9 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
   }
 
   async function startRecording() {
-    if (recordingRef.current) return;
+    if (recordingRef.current || recordBusy) return;
     const gen = ++recordGenRef.current;
+    setRecordBusy(true);
     // Arm restore before any await so Close mid-flush still restores.
     pausedForRecordRef.current = true;
     setHotkeyDraft(null);
@@ -200,29 +202,43 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
       try {
         await persist(settingsRef.current, { allowDuringPause: true });
       } catch (err) {
-        if (gen !== recordGenRef.current) return;
+        if (gen !== recordGenRef.current) {
+          if (settingsRef.current) deferredPersistRef.current = settingsRef.current;
+          setRecordBusy(false);
+          return;
+        }
         setHotkeyError((err as Error).message || String(err));
         restorePausedHotkey();
         flushDeferredPersist();
+        setRecordBusy(false);
         return;
       }
-      if (gen !== recordGenRef.current) return;
+      if (gen !== recordGenRef.current) {
+        setRecordBusy(false);
+        return;
+      }
     }
     try {
       await clearHotkey();
     } catch (err) {
-      if (gen !== recordGenRef.current) return;
+      if (gen !== recordGenRef.current) {
+        setRecordBusy(false);
+        return;
+      }
       setHotkeyError((err as Error).message || String(err));
       restorePausedHotkey();
       flushDeferredPersist();
+      setRecordBusy(false);
       return;
     }
     if (gen !== recordGenRef.current) {
       // Superseded by unmount, capture, or a newer Record — owner restores.
+      setRecordBusy(false);
       return;
     }
     setRecording(true);
     recordingRef.current = true;
+    setRecordBusy(false);
   }
 
   function patch(partial: Partial<AppSettings>) {
@@ -272,10 +288,11 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
         try {
           await applyHotkey(hotkey);
         } catch (restoreErr) {
-          setHotkeyError(
+          const msg =
             (restoreErr as Error).message ||
-              `Could not restore ${formatHotkey(hotkey)}. Rebind or restart.`,
-          );
+            `Could not restore ${formatHotkey(hotkey)}. Rebind or restart.`;
+          setHotkeyError(msg);
+          onNotify?.(msg, "err");
         }
       } else {
         hotkey = getActiveHotkey() || lastGoodHotkeyRef.current;
@@ -433,7 +450,7 @@ export function Settings({ onClose, onSaved, onNotify }: Props) {
             <button
               type="button"
               className="ghost"
-              disabled={recording}
+              disabled={recording || recordBusy}
               onClick={() => void startRecording()}
             >
               Record

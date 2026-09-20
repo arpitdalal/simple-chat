@@ -70,9 +70,38 @@ export function isRetryableStreamError(err: unknown): boolean {
   if ((err as { name?: string } | null)?.name === "AbortError") return false;
   if (APICallError.isInstance(err)) return err.isRetryable;
   const msg = String((err as Error)?.message ?? err).toLowerCase();
-  return /(?:^|\b)(429|timeout|timed out|network|fetch failed|failed to fetch|econnreset|enotfound|socket|offline)\b/.test(
+  // "Load failed" = WebKit/Tauri fetch drop; "failed to fetch" = Chromium
+  return /(?:^|\b)(429|timeout|timed out|network|fetch failed|failed to fetch|load failed|econnreset|enotfound|socket|offline)\b/.test(
     msg,
   );
+}
+
+/** Prefer Retry-After headers; fall back to exponential backoff. */
+export function retryDelayMs(err: unknown, attempt: number): number {
+  const fallback = STREAM_BACKOFF_MS * 2 ** (attempt - 1);
+  if (!APICallError.isInstance(err)) return fallback;
+  const headers = err.responseHeaders;
+  if (!headers) return fallback;
+
+  const retryAfterMs = headers["retry-after-ms"];
+  if (retryAfterMs != null) {
+    const ms = parseFloat(retryAfterMs);
+    if (!Number.isNaN(ms) && ms >= 0 && ms < 60_000) return Math.max(ms, fallback);
+  }
+  const retryAfter = headers["retry-after"];
+  if (retryAfter != null) {
+    const seconds = parseFloat(retryAfter);
+    if (!Number.isNaN(seconds) && seconds >= 0) {
+      const ms = seconds * 1000;
+      if (ms < 60_000) return Math.max(ms, fallback);
+    } else {
+      const until = Date.parse(retryAfter) - Date.now();
+      if (!Number.isNaN(until) && until >= 0 && until < 60_000) {
+        return Math.max(until, fallback);
+      }
+    }
+  }
+  return fallback;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -119,7 +148,7 @@ export async function streamChat(opts: {
     }
     if (attempt > 0) {
       opts.onRetry?.(attempt);
-      await sleep(STREAM_BACKOFF_MS * 2 ** (attempt - 1), opts.abortSignal);
+      await sleep(retryDelayMs(lastError, attempt), opts.abortSignal);
     }
     let emitted = false;
     try {

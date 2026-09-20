@@ -19,9 +19,15 @@ const anthropicWebFetch = vi.fn(() => ({ type: "anthropic.web_fetch" }));
 const { FakeAPICallError } = vi.hoisted(() => {
   class FakeAPICallError extends Error {
     isRetryable: boolean;
-    constructor(message: string, isRetryable: boolean) {
+    responseHeaders?: Record<string, string>;
+    constructor(
+      message: string,
+      isRetryable: boolean,
+      responseHeaders?: Record<string, string>,
+    ) {
       super(message);
       this.isRetryable = isRetryable;
+      this.responseHeaders = responseHeaders;
     }
     static isInstance(err: unknown): err is FakeAPICallError {
       return err instanceof FakeAPICallError;
@@ -70,6 +76,7 @@ import {
   streamChat,
   withWebSearch,
   isRetryableStreamError,
+  retryDelayMs,
   STREAM_BACKOFF_MS,
 } from "./chat";
 
@@ -121,6 +128,19 @@ describe("isRetryableStreamError", () => {
     );
     expect(isRetryableStreamError(new Error("Failed to fetch"))).toBe(true);
     expect(isRetryableStreamError(new Error("timeout"))).toBe(true);
+    expect(isRetryableStreamError(new Error("Load failed"))).toBe(true);
+  });
+});
+
+describe("retryDelayMs", () => {
+  it("uses Retry-After seconds when present", () => {
+    const err = new FakeAPICallError("429", true, { "retry-after": "5" });
+    expect(retryDelayMs(err, 1)).toBe(5000);
+  });
+
+  it("falls back to exponential backoff", () => {
+    expect(retryDelayMs(new Error("network"), 1)).toBe(STREAM_BACKOFF_MS);
+    expect(retryDelayMs(new Error("network"), 2)).toBe(STREAM_BACKOFF_MS * 2);
   });
 });
 

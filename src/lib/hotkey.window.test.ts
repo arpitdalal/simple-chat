@@ -6,6 +6,8 @@ const setFocus = vi.fn();
 const isVisible = vi.fn();
 const register = vi.fn();
 const unregister = vi.fn();
+const unregisterAll = vi.fn();
+const isRegistered = vi.fn();
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ hide, show, setFocus, isVisible }),
@@ -14,7 +16,8 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: (...a: unknown[]) => register(...a),
   unregister: (...a: unknown[]) => unregister(...a),
-  unregisterAll: vi.fn(),
+  unregisterAll: (...a: unknown[]) => unregisterAll(...a),
+  isRegistered: (...a: unknown[]) => isRegistered(...a),
 }));
 
 import {
@@ -30,6 +33,7 @@ describe("hotkey window actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetActiveHotkeyForTests();
+    isRegistered.mockResolvedValue(false);
   });
 
   it("hideMainWindow hides current window", async () => {
@@ -122,7 +126,8 @@ describe("hotkey window actions", () => {
     await applyHotkey("CommandOrControl+Shift+A");
 
     unregister.mockRejectedValueOnce(new Error("busy"));
-    unregister.mockResolvedValueOnce(undefined);
+    isRegistered.mockResolvedValueOnce(true); // prev still ours
+    unregister.mockResolvedValueOnce(undefined); // drop next
 
     await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
       /could not release/i,
@@ -135,6 +140,7 @@ describe("hotkey window actions", () => {
     await applyHotkey("CommandOrControl+Shift+A");
 
     unregister.mockRejectedValue(new Error("busy"));
+    isRegistered.mockResolvedValue(true);
 
     await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
       /Could not finish switching/i,
@@ -146,14 +152,15 @@ describe("hotkey window actions", () => {
     register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");
 
-    unregister.mockRejectedValueOnce(new Error("busy"));
-    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValue(new Error("busy"));
+    isRegistered.mockResolvedValue(true);
     await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
       /Could not finish switching/i,
     );
 
     unregister.mockReset();
     unregister.mockResolvedValue(undefined);
+    isRegistered.mockResolvedValue(false);
     register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+C");
 
@@ -166,14 +173,15 @@ describe("hotkey window actions", () => {
     register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");
 
-    unregister.mockRejectedValueOnce(new Error("busy"));
-    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValue(new Error("busy"));
+    isRegistered.mockResolvedValue(true);
     await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
       /Could not finish switching/i,
     );
 
     unregister.mockReset();
     unregister.mockRejectedValue(new Error("busy"));
+    isRegistered.mockResolvedValue(true);
     register.mockClear();
     await expect(applyHotkey("CommandOrControl+Shift+C")).rejects.toThrow(
       /Could not release/i,
@@ -182,18 +190,19 @@ describe("hotkey window actions", () => {
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
   });
 
-  it("applyHotkey promotes orphaned target without re-registering", async () => {
+  it("applyHotkey promotes orphaned target when still registered", async () => {
     register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");
 
-    unregister.mockRejectedValueOnce(new Error("busy"));
-    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValue(new Error("busy"));
+    isRegistered.mockResolvedValue(true);
     await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
       /Could not finish switching/i,
     );
 
     unregister.mockReset();
     unregister.mockResolvedValue(undefined);
+    isRegistered.mockImplementation(async (a: string) => a.includes("Shift+B"));
     register.mockClear();
     await applyHotkey("CommandOrControl+Shift+B");
 
@@ -202,21 +211,20 @@ describe("hotkey window actions", () => {
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+B");
   });
 
-  it("clearHotkey unregisters the active binding", async () => {
+  it("clearHotkey uses unregisterAll", async () => {
     register.mockResolvedValue(undefined);
-    unregister.mockResolvedValue(undefined);
+    unregisterAll.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");
     await clearHotkey();
-    expect(unregister).toHaveBeenCalledWith("CommandOrControl+Shift+A");
+    expect(unregisterAll).toHaveBeenCalled();
     expect(getActiveHotkey()).toBeNull();
   });
 
-  it("clearHotkey keeps tracking when unregister fails", async () => {
+  it("clearHotkey throws when unregisterAll fails", async () => {
     register.mockResolvedValue(undefined);
-    unregister.mockResolvedValue(undefined);
+    unregisterAll.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");
-    unregister.mockRejectedValueOnce(new Error("busy"));
-    await expect(clearHotkey()).rejects.toThrow(/Could not release/i);
-    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+    unregisterAll.mockRejectedValueOnce(new Error("busy"));
+    await expect(clearHotkey()).rejects.toThrow(/Could not release hotkeys/i);
   });
 });

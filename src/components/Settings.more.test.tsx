@@ -34,6 +34,7 @@ vi.mock("../lib/hotkey", () => ({
   eventToAccelerator: (...a: unknown[]) => eventToAccelerator(...a),
   formatHotkey: (s: string) => s,
   getActiveHotkey: () => getActiveHotkey(),
+  isValidAccelerator: (s: string) => s.includes("+"),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -109,11 +110,39 @@ describe("Settings behaviors", () => {
     await user.type(input, "CommandOrControl+Shift+Z");
     applyHotkey.mockClear();
     setSetting.mockClear();
-    // Clicking Record blurs the input (queues save) then cancels that timer.
+    // Clicking Record blurs the input (queues save) then flushes before clear.
     await user.click(screen.getByText("Record"));
     await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 300));
-    expect(applyHotkey).not.toHaveBeenCalledWith("CommandOrControl+Shift+Z");
+    // Flush should have applied the typed accelerator before clear.
+    expect(applyHotkey).toHaveBeenCalledWith("CommandOrControl+Shift+Z");
+  });
+
+  it("rejects typed accelerators without modifiers", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const input = await screen.findByLabelText(/Global hotkey accelerator/i);
+    await user.clear(input);
+    await user.type(input, "A");
+    await user.tab();
+    await waitFor(() =>
+      expect(screen.getByText(/at least one modifier/i)).toBeInTheDocument(),
+    );
+    expect(applyHotkey).not.toHaveBeenCalledWith("A");
+  });
+
+  it("flushes settings changed during Record after Escape", async () => {
+    const user = userEvent.setup();
+    clearHotkey.mockResolvedValue(undefined);
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    await waitFor(() => expect(screen.getByText("Record")).toBeInTheDocument());
+    await user.click(screen.getByText("Record"));
+    await waitFor(() => expect(clearHotkey).toHaveBeenCalled());
+    setSetting.mockClear();
+    await user.click(screen.getByRole("checkbox", { name: /always on top/i }));
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith("always_on_top", true),
+    );
   });
 
   it("clears the live grab when Record starts", async () => {

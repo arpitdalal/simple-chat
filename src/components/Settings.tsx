@@ -16,6 +16,7 @@ import {
   eventToAccelerator,
   formatHotkey,
   getActiveHotkey,
+  isValidAccelerator,
 } from "../lib/hotkey";
 
 type Props = {
@@ -45,8 +46,10 @@ export function Settings({ onClose, onSaved }: Props) {
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
   const recordingRef = useRef(false);
-  /** True after clearHotkey for Record until restore or a new apply owns the grab. */
+  /** True once Record intends to clear — including while clearHotkey is in flight. */
   const pausedForRecordRef = useRef(false);
+  /** Settings snapshot deferred while recording; flushed when recording ends. */
+  const deferredPersistRef = useRef<AppSettings | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -72,8 +75,20 @@ export function Settings({ onClose, onSaved }: Props) {
     });
   }
 
+  function flushDeferredPersist(hotkeyOverride?: string) {
+    const deferred = deferredPersistRef.current;
+    deferredPersistRef.current = null;
+    if (!deferred) return;
+    const snapshot =
+      hotkeyOverride != null
+        ? { ...deferred, hotkey: hotkeyOverride }
+        : deferred;
+    void persist(snapshot);
+  }
+
   useEffect(() => {
     recordingRef.current = recording;
+    if (!recording) flushDeferredPersist();
   }, [recording]);
 
   useEffect(() => {
@@ -89,8 +104,14 @@ export function Settings({ onClose, onSaved }: Props) {
       const accel = eventToAccelerator(e);
       if (!accel || !settings) return;
       setHotkeyDraft(null);
-      // persist will register; do not restore last-good over the new choice
+      // Capture owns registration; merge into any deferred non-hotkey edits.
       pausedForRecordRef.current = false;
+      if (deferredPersistRef.current) {
+        deferredPersistRef.current = {
+          ...deferredPersistRef.current,
+          hotkey: accel,
+        };
+      }
       patch({ hotkey: accel });
       setRecording(false);
       setHotkeyError("");
@@ -99,41 +120,57 @@ export function Settings({ onClose, onSaved }: Props) {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [recording, settings]);
 
-  // Close/unmount while recording left the grab cleared — put last-good back.
+  // Close/unmount while paused (incl. clear in flight) — restore + flush deferred.
   useEffect(() => {
     return () => {
+      recordingRef.current = false;
+      const deferred = deferredPersistRef.current;
+      deferredPersistRef.current = null;
       restorePausedHotkey();
+      if (deferred) {
+        void persist({
+          ...deferred,
+          hotkey: lastGoodHotkeyRef.current,
+        });
+      }
     };
   }, []);
 
   function commitHotkeyDraft() {
     if (hotkeyDraft == null || !settings) return;
-    const next = hotkeyDraft.trim() || DEFAULT_HOTKEY;
+    const raw = hotkeyDraft.trim() || DEFAULT_HOTKEY;
     setHotkeyDraft(null);
-    if (next !== settings.hotkey) patch({ hotkey: next });
-  }
-
-  function cancelPendingSave() {
-    if (saveTimer.current) {
-      window.clearTimeout(saveTimer.current);
-      saveTimer.current = null;
+    if (!isValidAccelerator(raw)) {
+      setHotkeyError(
+        "Need at least one modifier (e.g. CommandOrControl+Shift+K).",
+      );
+      return;
     }
-    persistGenRef.current += 1;
+    setHotkeyError("");
+    if (raw !== settings.hotkey) patch({ hotkey: raw });
   }
 
   async function startRecording() {
-    cancelPendingSave();
+    // Flush pending debounce first so unrelated edits are not dropped.
+    if (saveTimer.current && settingsRef.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      await persist(settingsRef.current);
+    }
     setHotkeyDraft(null);
-    setRecording(true);
     setHotkeyError("");
-    // Free our own grab so Record can hear it; other apps may still steal.
+    // Mark paused before await so unmount during clear still restores.
+    // Arm the key listener only after clear succeeds.
+    pausedForRecordRef.current = true;
     try {
       await clearHotkey();
-      pausedForRecordRef.current = true;
     } catch (err) {
-      setRecording(false);
+      pausedForRecordRef.current = false;
       setHotkeyError((err as Error).message || String(err));
+      return;
     }
+    setRecording(true);
+    recordingRef.current = true;
   }
 
   function patch(partial: Partial<AppSettings>) {
@@ -154,11 +191,14 @@ export function Settings({ onClose, onSaved }: Props) {
   }
 
   async function persist(s: AppSettings) {
+    if (recordingRef.current) {
+      deferredPersistRef.current = s;
+      return;
+    }
     const gen = ++persistGenRef.current;
     const requested = s.hotkey.trim() || DEFAULT_HOTKEY;
     let hotkey = requested;
     let hotkeyOk = true;
-    if (recordingRef.current) return;
     try {
       await applyHotkey(requested);
       setHotkeyError("");

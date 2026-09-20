@@ -1,6 +1,8 @@
 import {
+  isRegistered,
   register,
   unregister,
+  unregisterAll,
 } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -56,6 +58,14 @@ function conflictMessage(accelerator: string, err: unknown): string {
   );
 }
 
+async function stillRegistered(accel: string): Promise<boolean> {
+  try {
+    return await isRegistered(accel);
+  } catch {
+    return false;
+  }
+}
+
 async function sweepOrphans(keep: Set<string>) {
   const remaining: string[] = [];
   const failed: string[] = [];
@@ -67,8 +77,10 @@ async function sweepOrphans(keep: Set<string>) {
     try {
       await unregister(accel);
     } catch {
-      remaining.push(accel);
-      failed.push(accel);
+      if (await stillRegistered(accel)) {
+        remaining.push(accel);
+        failed.push(accel);
+      }
     }
   }
   orphanHotkeys = remaining;
@@ -89,16 +101,15 @@ export async function applyHotkey(accelerator: string) {
     const prev = activeHotkey;
     if (prev === next && orphanHotkeys.length === 0) return;
 
-    const nextAlreadyLive = orphanHotkeys.includes(next);
-    await sweepOrphans(
-      new Set([next, ...(prev ? [prev] : [])]),
-    );
+    const nextWasOrphan = orphanHotkeys.includes(next);
+    await sweepOrphans(new Set([next, ...(prev ? [prev] : [])]));
 
     if (prev === next) return;
 
-    if (nextAlreadyLive) {
+    if (nextWasOrphan && (await stillRegistered(next))) {
       orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
     } else {
+      orphanHotkeys = orphanHotkeys.filter((a) => a !== next);
       try {
         await register(next, onHotkey);
       } catch (err) {
@@ -110,28 +121,25 @@ export async function applyHotkey(accelerator: string) {
       try {
         await unregister(prev);
       } catch {
-        // New is live; try to drop it so previous remains the only binding.
-        if (nextAlreadyLive) {
-          orphanHotkeys.push(next);
+        if (await stillRegistered(prev)) {
+          // New is live; try to drop it so previous remains the only binding.
+          try {
+            await unregister(next);
+          } catch {
+            if (await stillRegistered(next)) {
+              orphanHotkeys.push(next);
+            }
+            activeHotkey = prev;
+            throw new Error(
+              `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,
+            );
+          }
           activeHotkey = prev;
           throw new Error(
-            `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,
+            `Registered ${formatHotkey(next)} but could not release ${formatHotkey(prev)}. Rebind or restart.`,
           );
         }
-        try {
-          await unregister(next);
-        } catch {
-          // ponytail: both may stay live; remember next so later applies can sweep/promote it
-          orphanHotkeys.push(next);
-          activeHotkey = prev;
-          throw new Error(
-            `Could not finish switching from ${formatHotkey(prev)} to ${formatHotkey(next)}. Rebind or restart.`,
-          );
-        }
-        activeHotkey = prev;
-        throw new Error(
-          `Registered ${formatHotkey(next)} but could not release ${formatHotkey(prev)}. Rebind or restart.`,
-        );
+        // prev already gone from OS — treat as success
       }
     }
 
@@ -146,20 +154,17 @@ export async function applyHotkey(accelerator: string) {
   return queued;
 }
 
-/** Drop the active registration so Record can hear our own combo. */
+/** Drop all app shortcuts so Record can hear our own combo. */
 export async function clearHotkey() {
   const run = async () => {
-    await sweepOrphans(new Set());
-    if (!activeHotkey) return;
-    const prev = activeHotkey;
     try {
-      await unregister(prev);
+      await unregisterAll();
       activeHotkey = null;
-    } catch {
-      // OS may still hold it — keep tracking so a later apply can sweep.
-      if (!orphanHotkeys.includes(prev)) orphanHotkeys.push(prev);
+      orphanHotkeys = [];
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Could not release ${formatHotkey(prev)} for recording. Rebind or restart.`,
+        `Could not release hotkeys for recording${detail ? ` — ${detail}` : ""}. Rebind or restart.`,
       );
     }
   };
@@ -169,6 +174,32 @@ export async function clearHotkey() {
     () => undefined,
   );
   return queued;
+}
+
+/** True when accelerator has ≥1 modifier + a key (same rule as Record). */
+export function isValidAccelerator(raw: string): boolean {
+  const parts = raw
+    .trim()
+    .split("+")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return false;
+  const mods = parts.slice(0, -1);
+  const key = parts[parts.length - 1];
+  if (!key || key === "Unidentified") return false;
+  const known = new Set([
+    "CommandOrControl",
+    "CmdOrControl",
+    "Command",
+    "Control",
+    "Ctrl",
+    "Alt",
+    "Option",
+    "Shift",
+    "Super",
+    "Meta",
+  ]);
+  return mods.some((m) => known.has(m));
 }
 
 /** Map a KeyboardEvent to a global-shortcut accelerator, or null if incomplete. */
@@ -200,6 +231,7 @@ export function eventToAccelerator(e: KeyboardEvent): string | null {
 export function formatHotkey(accelerator: string): string {
   return accelerator
     .replace(/CommandOrControl/g, "⌘/Ctrl")
+    .replace(/CmdOrControl/g, "⌘/Ctrl")
     .replace(/Command/g, "⌘")
     .replace(/Control/g, "Ctrl")
     .replace(/Shift/g, "⇧")

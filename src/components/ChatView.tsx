@@ -14,6 +14,12 @@ import {
   type Message,
 } from "../lib/db";
 import { generateChatTitle, streamChat } from "../lib/chat";
+import {
+  MAX_CACHED_MESSAGES,
+  MESSAGE_PAGE,
+  onMainWindowHidden,
+  trimRecentMessages,
+} from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
@@ -30,7 +36,6 @@ import type { ToastKind } from "./Toast";
 const LINE_H = 22;
 const MAX_LINES = 15;
 const MIN_LINES = 1;
-const PAGE = 50;
 
 type Props = {
   chat: Chat | null;
@@ -67,8 +72,10 @@ export function ChatView({
   const viewingIdRef = useRef<string | null>(chat?.id ?? null);
   const streamOwnerRef = useRef<string | null>(null);
   const streamTextRef = useRef("");
+  const messagesRef = useRef<Message[]>([]);
 
   viewingIdRef.current = chat?.id ?? null;
+  messagesRef.current = messages;
   const showStream = busy && streamOwnerRef.current === chat?.id;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
@@ -103,10 +110,10 @@ export function ChatView({
       setStreaming("");
     }
     void (async () => {
-      const page = await listRecentMessages(chat.id, PAGE);
+      const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
       if (cancelled) return;
       setMessages(page);
-      setHasMore(page.length >= PAGE);
+      setHasMore(page.length >= MESSAGE_PAGE);
       stickBottom.current = true;
       requestAnimationFrame(() => {
         virtualizer.scrollToIndex(Math.max(page.length - 1, 0), {
@@ -119,6 +126,27 @@ export function ChatView({
       cancelled = true;
     };
   }, [chat?.id]);
+
+  // Tray-resident: drop scrolled-up history + draft image data URLs on hide.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onMainWindowHidden(() => {
+      setImages([]);
+      const cur = messagesRef.current;
+      if (cur.length <= MESSAGE_PAGE) return;
+      setMessages(trimRecentMessages(cur, MESSAGE_PAGE));
+      setHasMore(true);
+      stickBottom.current = true;
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (stickBottom.current) scrollToBottom();
@@ -158,21 +186,26 @@ export function ChatView({
 
   async function loadOlder() {
     if (!chat || loadingOlder || !hasMore || messages.length === 0) return;
+    if (messages.length >= MAX_CACHED_MESSAGES) return;
     const el = parentRef.current;
     const prevHeight = el?.scrollHeight ?? 0;
     const prevTop = el?.scrollTop ?? 0;
     setLoadingOlder(true);
     try {
+      const room = MAX_CACHED_MESSAGES - messages.length;
       const older = await listOlderMessages(
         chat.id,
         messages[0].created_at,
-        PAGE,
+        Math.min(MESSAGE_PAGE, room),
       );
       if (older.length === 0) {
         setHasMore(false);
         return;
       }
-      setHasMore(older.length >= PAGE);
+      setHasMore(
+        older.length >= Math.min(MESSAGE_PAGE, room) &&
+          messages.length + older.length < MAX_CACHED_MESSAGES,
+      );
       stickBottom.current = false;
       setMessages((m) => [...older, ...m]);
       requestAnimationFrame(() => {
@@ -254,7 +287,11 @@ export function ChatView({
 
       const assistant = await addMessage(chatId, "assistant", full);
       if (viewingIdRef.current === chatId) {
-        setMessages((m) => [...m, assistant]);
+        const wouldTrim = messagesRef.current.length >= MAX_CACHED_MESSAGES;
+        setMessages((m) =>
+          trimRecentMessages([...m, assistant], MAX_CACHED_MESSAGES),
+        );
+        if (wouldTrim) setHasMore(true);
         setStreaming("");
       }
       await updateChat(chatId, { preview: full.slice(0, 120) });
@@ -385,8 +422,10 @@ export function ChatView({
 
     await deleteMessagesAfter(chatId, userMessageId);
     const keep = all.slice(0, idx + 1);
+    const visible = trimRecentMessages(keep, MAX_CACHED_MESSAGES);
     flushSync(() => {
-      setMessages(keep);
+      setMessages(visible);
+      if (visible.length < keep.length) setHasMore(true);
       setBusy(true);
       setStreaming("");
       streamOwnerRef.current = chatId;

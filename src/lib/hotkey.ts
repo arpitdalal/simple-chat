@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   isRegistered,
   register,
@@ -282,8 +283,10 @@ export async function toggleMainWindow() {
   const run = async () => {
     const win = getCurrentWindow();
     if (await win.isVisible()) {
-      await win.hide();
+      await hideMainWindow();
     } else {
+      // Capture frontmost app before we steal focus (macOS accessory restore).
+      await invoke("capture_previous_app");
       await centerOnCursorMonitor(win);
       await win.show();
       await win.setFocus();
@@ -297,8 +300,9 @@ export async function toggleMainWindow() {
   return queued;
 }
 
+/** Hide and hand keyboard focus back to the previously active app. */
 export async function hideMainWindow() {
-  await getCurrentWindow().hide();
+  await invoke("hide_main_window_cmd");
 }
 
 function onHotkey(event: { state: string }) {

@@ -15,6 +15,11 @@ const register = vi.fn();
 const unregister = vi.fn();
 const unregisterAll = vi.fn();
 const isRegistered = vi.fn();
+const invoke = vi.fn();
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...a: unknown[]) => invoke(...a),
+}));
 
 vi.mock("@tauri-apps/api/dpi", () => ({
   PhysicalPosition: class {
@@ -119,6 +124,7 @@ describe("hotkey window actions", () => {
     vi.clearAllMocks();
     resetActiveHotkeyForTests();
     isRegistered.mockResolvedValue(false);
+    invoke.mockResolvedValue(undefined);
     outerSize.mockResolvedValue({ width: 800, height: 600 });
     scaleFactor.mockResolvedValue(1);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
@@ -128,15 +134,16 @@ describe("hotkey window actions", () => {
     center.mockResolvedValue(undefined);
   });
 
-  it("hideMainWindow hides current window", async () => {
+  it("hideMainWindow invokes hide_main_window_cmd", async () => {
     await hideMainWindow();
-    expect(hide).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("hide_main_window_cmd");
+    expect(hide).not.toHaveBeenCalled();
   });
 
   it("toggleMainWindow hides when visible", async () => {
     isVisible.mockResolvedValue(true);
     await toggleMainWindow();
-    expect(hide).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("hide_main_window_cmd");
     expect(show).not.toHaveBeenCalled();
     expect(setPosition).not.toHaveBeenCalled();
   });
@@ -145,6 +152,7 @@ describe("hotkey window actions", () => {
     setPreferLogicalMonitorFramesForTests(false);
     isVisible.mockResolvedValue(false);
     await toggleMainWindow();
+    expect(invoke).toHaveBeenCalledWith("capture_previous_app");
     expect(setPosition).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "Physical",
@@ -154,6 +162,9 @@ describe("hotkey window actions", () => {
     );
     expect(show).toHaveBeenCalled();
     expect(setFocus).toHaveBeenCalled();
+    expect(invoke.mock.invocationCallOrder[0]).toBeLessThan(
+      setPosition.mock.invocationCallOrder[0],
+    );
     expect(setPosition.mock.invocationCallOrder[0]).toBeLessThan(
       show.mock.invocationCallOrder[0],
     );
@@ -341,12 +352,16 @@ describe("hotkey window actions", () => {
       releaseHide = r;
     });
     isVisible.mockResolvedValueOnce(true).mockResolvedValue(false);
-    hide.mockImplementationOnce(async () => hideGate);
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "hide_main_window_cmd") return hideGate;
+    });
     show.mockResolvedValue(undefined);
 
     const first = toggleMainWindow();
     const second = toggleMainWindow();
-    await vi.waitFor(() => expect(hide).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("hide_main_window_cmd"),
+    );
     expect(show).not.toHaveBeenCalled();
 
     releaseHide();

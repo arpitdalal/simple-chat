@@ -1,3 +1,4 @@
+mod focus;
 mod keys;
 
 use tauri::{
@@ -6,25 +7,40 @@ use tauri::{
     ActivationPolicy, AppHandle, Manager, RunEvent, WindowEvent,
 };
 
-fn toggle_main_window(app: &AppHandle) {
+fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        match window.is_visible() {
-            Ok(true) => {
-                let _ = window.hide();
-            }
-            _ => {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
+        let _ = window.hide();
     }
+    focus::restore_previous_app();
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(ActivationPolicy::Accessory);
 }
 
 fn show_main_window(app: &AppHandle) {
+    focus::capture_previous_app();
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+fn toggle_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        match window.is_visible() {
+            Ok(true) => hide_main_window(app),
+            _ => show_main_window(app),
+        }
+    }
+}
+
+#[tauri::command]
+fn capture_previous_app() {
+    focus::capture_previous_app();
+}
+
+#[tauri::command]
+fn hide_main_window_cmd(app: AppHandle) {
+    hide_main_window(&app);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -39,6 +55,8 @@ pub fn run() {
             keys::set_api_key,
             keys::get_api_key,
             keys::has_api_key,
+            capture_previous_app,
+            hide_main_window_cmd,
         ])
         .setup(|app| {
             #[cfg(desktop)]
@@ -97,11 +115,7 @@ pub fn run() {
         {
             if label == "main" {
                 api.prevent_close();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-                #[cfg(target_os = "macos")]
-                let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
+                hide_main_window(app_handle);
             }
         }
     });

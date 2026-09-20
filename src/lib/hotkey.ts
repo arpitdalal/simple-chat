@@ -58,6 +58,7 @@ function conflictMessage(accelerator: string, err: unknown): string {
 
 async function sweepOrphans(keep: Set<string>) {
   const remaining: string[] = [];
+  const failed: string[] = [];
   for (const accel of orphanHotkeys) {
     if (keep.has(accel)) {
       remaining.push(accel);
@@ -67,9 +68,15 @@ async function sweepOrphans(keep: Set<string>) {
       await unregister(accel);
     } catch {
       remaining.push(accel);
+      failed.push(accel);
     }
   }
   orphanHotkeys = remaining;
+  if (failed.length) {
+    throw new Error(
+      `Could not release ${formatHotkey(failed[0])}. Rebind or restart.`,
+    );
+  }
 }
 
 /**

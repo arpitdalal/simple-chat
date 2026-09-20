@@ -161,6 +161,26 @@ describe("hotkey window actions", () => {
     expect(getActiveHotkey()).toBe("CommandOrControl+Shift+C");
   });
 
+  it("applyHotkey fails when orphan sweep cannot release", async () => {
+    register.mockResolvedValue(undefined);
+    await applyHotkey("CommandOrControl+Shift+A");
+
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    unregister.mockRejectedValueOnce(new Error("busy"));
+    await expect(applyHotkey("CommandOrControl+Shift+B")).rejects.toThrow(
+      /Could not finish switching/i,
+    );
+
+    unregister.mockReset();
+    unregister.mockRejectedValue(new Error("busy"));
+    register.mockClear();
+    await expect(applyHotkey("CommandOrControl+Shift+C")).rejects.toThrow(
+      /Could not release/i,
+    );
+    expect(register).not.toHaveBeenCalled();
+    expect(getActiveHotkey()).toBe("CommandOrControl+Shift+A");
+  });
+
   it("applyHotkey promotes orphaned target without re-registering", async () => {
     register.mockResolvedValue(undefined);
     await applyHotkey("CommandOrControl+Shift+A");

@@ -76,13 +76,6 @@ export function ChatView({
   const imagesRef = useRef<string[]>([]);
   /** In-flight FileReaders — composer not "empty" until they settle. */
   const pendingImageReadsRef = useRef(0);
-  /** Failed send draft to restore when revisiting that chat. */
-  const failedDraftRef = useRef<{
-    chatId: string;
-    text: string;
-    images: string[];
-    sendGen: number;
-  } | null>(null);
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
 
@@ -121,14 +114,6 @@ export function ChatView({
       setStreaming(streamTextRef.current);
     } else {
       setStreaming("");
-    }
-    const draft = failedDraftRef.current;
-    if (draft?.chatId === chat.id) {
-      failedDraftRef.current = null;
-      setInput(draft.text);
-      if (draft.sendGen === releaseGenRef.current) {
-        setImages(draft.images);
-      }
     }
     void (async () => {
       const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
@@ -465,14 +450,6 @@ export function ChatView({
       const history = [...messages, userMsg];
       await streamReply(chatSnap, history, userContent as never);
     } catch (e) {
-      if (!userPersisted) {
-        failedDraftRef.current = {
-          chatId,
-          text,
-          images: imageParts,
-          sendGen,
-        };
-      }
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
         // Restore only if whole composer still empty — don't merge into a newer draft
@@ -487,7 +464,6 @@ export function ChatView({
           if (sendGen === releaseGenRef.current) {
             setImages(imageParts);
           }
-          failedDraftRef.current = null;
         }
         setStreaming("");
       }

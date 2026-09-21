@@ -183,7 +183,7 @@ function clampOrigin(
     );
   }
   if (h > 0) {
-    if (h >= workSize.height) {
+    if (h > workSize.height) {
       // Keep the title bar in the work area (bottom-edge clamp can hide it).
       const titleH = Math.min(48, h);
       const lo = workPos.y;
@@ -215,12 +215,14 @@ async function clampWindowIntoWorkArea(
     const pos = await win.outerPosition();
     if (preferLogicalMonitorFrames()) {
       const s = mon.scaleFactor || 1;
-      let srcScale = 1;
+      let srcScale = 0;
       try {
-        srcScale = (await win.scaleFactor()) || 1;
+        srcScale = (await win.scaleFactor()) || 0;
       } catch {
-        srcScale = 1;
+        srcScale = 0;
       }
+      // Wrong scale would mis-convert physical outerPosition — fall through to recenter.
+      if (!srcScale) return false;
       const workPos = {
         x: mon.workArea.position.x / s,
         y: mon.workArea.position.y / s,
@@ -231,7 +233,11 @@ async function clampWindowIntoWorkArea(
       };
       let size: { width: number; height: number } | null = null;
       try {
-        size = await outerSizeLogical(win);
+        const outer = await win.outerSize();
+        size = {
+          width: Math.round(outer.width / srcScale),
+          height: Math.round(outer.height / srcScale),
+        };
       } catch {
         /* origin-as-point clamp below */
       }
@@ -245,9 +251,12 @@ async function clampWindowIntoWorkArea(
       }
       await win.setPosition(new LogicalPosition(x, y));
     } else {
+      // Same-monitor: outerSize is already physical — do not re-scale via
+      // outerSizeForMonitor (scaleFactor fallback of 1× can double a retina size).
       let size: { width: number; height: number } | null = null;
       try {
-        size = await outerSizeForMonitor(win, mon);
+        const outer = await win.outerSize();
+        size = { width: outer.width, height: outer.height };
       } catch {
         /* origin-as-point clamp below */
       }

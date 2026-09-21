@@ -273,6 +273,31 @@ describe("hotkey window actions", () => {
     );
   });
 
+  it("positionMainWindowForShow fully clamps an exact-fit window", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: 100, y: 500 });
+    outerSize.mockResolvedValue({ width: 800, height: 1080 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 100, y: 0 }),
+    );
+  });
+
+  it("positionMainWindowForShow uses physical outerSize on same-monitor clamp", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(retinaPrimary);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    // Physical 1600 on 2× — must not be treated as 3200 via scale fallback.
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    outerSize.mockResolvedValue({ width: 1600, height: 1200 });
+    scaleFactor.mockRejectedValue(new Error("no scale"));
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
   it("positionMainWindowForShow recenters when same-monitor clamp cannot read geometry", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);

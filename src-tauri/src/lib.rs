@@ -70,17 +70,20 @@ pub fn run() {
             keys::has_api_key,
             capture_previous_app,
             hide_main_window_cmd,
-        ])
-        .setup(|app| {
+        ]);
+
+    // Before setup so on_webview_ready applies to the main webview (CI IPC e2e).
+    #[cfg(feature = "webdriver")]
+    let builder = if std::env::var(tauri_plugin_wdio_webdriver::PORT_ENV_VAR).is_ok() {
+        builder.plugin(tauri_plugin_wdio_webdriver::init())
+    } else {
+        builder
+    };
+
+    let builder = builder.setup(|app| {
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
-
-            // Embedded WebDriver only when WDIO sets TAURI_WEBDRIVER_PORT (CI IPC e2e).
-            if std::env::var(tauri_plugin_wdio_webdriver::PORT_ENV_VAR).is_ok() {
-                app.handle()
-                    .plugin(tauri_plugin_wdio_webdriver::init())?;
-            }
 
             // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
             #[cfg(target_os = "macos")]

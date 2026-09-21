@@ -40,7 +40,7 @@ jobs:
         run: npm run build
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --features webdriver
         working-directory: src-tauri
 
       - name: WebDriver IPC tests

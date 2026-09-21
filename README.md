@@ -34,7 +34,7 @@ npm run test:ipc  # real Tauri↔Rust IPC via embedded WebDriver (Linux CI; need
 npm run test:all
 ```
 
-`test:ipc` expects `src-tauri/target/release/simple-chat` (`npm run build` then `cargo build --release` in `src-tauri`). CI runs it on Ubuntu with `xvfb` (`.github/workflows/webdriver.yml`). Uses `tauri-plugin-wdio-webdriver` (embedded) — external `tauri-driver` + WebKitWebDriver breaks custom-protocol IPC on Linux.
+`test:ipc` expects `src-tauri/target/release/simple-chat` (`npm run build` then `cargo build --release --features webdriver` in `src-tauri`). CI runs it on Ubuntu with `xvfb` (`.github/workflows/webdriver.yml`). Uses `tauri-plugin-wdio-webdriver` (embedded, feature-gated) — external `tauri-driver` + WebKitWebDriver breaks custom-protocol IPC on Linux.
 
 **Note:** `tauri:dev` may briefly show a Dock icon / wrong menu name. Release builds use `LSUIElement` + accessory policy (no Dock; menu name “Simple Chat”).
 

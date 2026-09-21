@@ -22,7 +22,6 @@
     "sql:default",
     "sql:allow-execute",
     "sql:allow-select",
-    "sql:allow-close",
-    "wdio-webdriver:default"
+    "sql:allow-close"
   ]
 }

@@ -229,8 +229,8 @@ describe("hotkey window actions", () => {
   it("positionMainWindowForShow recenters when only a thin edge overlaps", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);
-    // Title bar entirely above the work area; 1px of body would still overlap.
-    outerPosition.mockResolvedValue({ x: 100, y: -47 });
+    // Title bar (top 48px) fully above work area; body still overlaps.
+    outerPosition.mockResolvedValue({ x: 100, y: -48 });
     outerSize.mockResolvedValue({ width: 800, height: 600 });
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();

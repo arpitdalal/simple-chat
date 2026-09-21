@@ -211,6 +211,16 @@ describe("hotkey window actions", () => {
     expect(setPosition).toHaveBeenCalled();
   });
 
+  it("positionMainWindowForShow recenters when window center is off any monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    // Gap between primary and secondary; nearest is primary, cursor also primary.
+    outerPosition.mockResolvedValue({ x: 1900, y: -800 });
+    outerSize.mockResolvedValue({ width: 40, height: 40 }); // center 1920,-780
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
   it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     outerPosition.mockResolvedValue({ x: 100, y: 100 });

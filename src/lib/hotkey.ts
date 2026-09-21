@@ -334,10 +334,11 @@ export async function positionMainWindowForShow(
     try {
       const pos = await win.outerPosition();
       const size = await win.outerSize();
-      winMon = await monitorForPhysicalPoint(
-        pos.x + Math.floor(size.width / 2),
-        pos.y + Math.floor(size.height / 2),
-      );
+      const cx = pos.x + Math.floor(size.width / 2);
+      const cy = pos.y + Math.floor(size.height / 2);
+      winMon = await monitorForPhysicalPoint(cx, cy);
+      // Nearest-monitor fallback is not "on" that display — force recenter.
+      if (winMon && !containsPoint(winMon, cx, cy)) winMon = null;
     } catch {
       winMon = null;
     }

@@ -15,6 +15,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 # Same version key for tag push and dispatch so they cannot mutate the same draft.
 # Unrelated versions keep separate groups (avoids pending-run eviction across versions).
 concurrency:
@@ -257,6 +260,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: v${{ needs.preflight.outputs.version }}
           retryAttempts: 3
           args: ${{ matrix.args }}
 

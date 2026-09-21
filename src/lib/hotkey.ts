@@ -149,6 +149,37 @@ export async function monitorForCursor(): Promise<Monitor | null> {
   return monitorForPoint(cursor.x, cursor.y);
 }
 
+/**
+ * Monitor for a physical desktop point (e.g. window outer center).
+ * Always uses physical AABBs — outerPosition/outerSize are physical even on macOS,
+ * where cursor hit-testing prefers logical frames.
+ */
+export async function monitorForPhysicalPoint(
+  x: number,
+  y: number,
+): Promise<Monitor | null> {
+  const monitors = await availableMonitors();
+  if (!monitors.length) return primaryMonitor();
+
+  const physicalHits = monitors.filter((m) => containsPoint(m, x, y));
+  if (physicalHits.length === 1) return physicalHits[0];
+
+  const pool = physicalHits.length > 0 ? physicalHits : monitors;
+  return pool.reduce((best, m) =>
+    distanceSqToPhysical(m, x, y) < distanceSqToPhysical(best, x, y) ? m : best,
+  );
+}
+
+function distanceSqToPhysical(mon: Monitor, x: number, y: number): number {
+  const { x: left, y: top } = mon.position;
+  const { width, height } = mon.size;
+  const dx =
+    x < left ? left - x : x >= left + width ? x - (left + width - 1) : 0;
+  const dy =
+    y < top ? top - y : y >= top + height ? y - (top + height - 1) : 0;
+  return dx * dx + dy * dy;
+}
+
 function sameMonitor(a: Monitor, b: Monitor): boolean {
   return (
     a.scaleFactor === b.scaleFactor &&
@@ -303,7 +334,7 @@ export async function positionMainWindowForShow(
     try {
       const pos = await win.outerPosition();
       const size = await win.outerSize();
-      winMon = await monitorForPoint(
+      winMon = await monitorForPhysicalPoint(
         pos.x + Math.floor(size.width / 2),
         pos.y + Math.floor(size.height / 2),
       );

@@ -187,6 +187,30 @@ describe("hotkey window actions", () => {
     expect(center).not.toHaveBeenCalled();
   });
 
+  it("positionMainWindowForShow on macOS uses physical AABBs for window monitor", async () => {
+    // Mixed-DPI: window outer coords are physical; cursor path prefers logical.
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    // Physical center 3200 is only inside external1x [1512,3432), not retina [0,3024).
+    outerPosition.mockResolvedValue({ x: 2800, y: 200 });
+    outerSize.mockResolvedValue({ width: 800, height: 600 });
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters across mixed-DPI monitors on macOS", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    // Window on retina (physical center ~1512, inside [0,3024) only as unique… also
+    // overlaps external starting 1512 — use deep-left center unique to retina.
+    outerPosition.mockResolvedValue({ x: 100, y: 200 });
+    outerSize.mockResolvedValue({ width: 800, height: 600 }); // center 500,500
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
   it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     outerPosition.mockResolvedValue({ x: 100, y: 100 });

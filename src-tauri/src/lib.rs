@@ -5,8 +5,10 @@ mod keys;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    ActivationPolicy, AppHandle, Emitter, Manager, RunEvent, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
 
 fn hide_main_window(app: &AppHandle) {
     // Restore while still active (cooperative yield), then hide. Guard blur

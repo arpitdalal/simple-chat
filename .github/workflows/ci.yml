@@ -9,7 +9,7 @@ on:
 
 jobs:
   test:
-    name: unit + e2e (browser) + rust
+    name: unit + rust
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -38,12 +38,6 @@ jobs:
       - name: Rust unit tests
         working-directory: src-tauri
         run: cargo test
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Browser e2e
-        run: npm run test:e2e
 
   build:
     name: tauri build (${{ matrix.label }})

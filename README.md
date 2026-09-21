@@ -27,7 +27,7 @@ Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` s
 
 ## CI / Release
 
-- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test` + Playwright, then `tauri-apps/tauri-action` builds for **macOS** (arm64 + x64). Updater signing skipped on CI; ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`). Win/Linux binary CI deferred.
+- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test`, then `tauri-apps/tauri-action` builds for **macOS** (arm64 + x64). Updater signing skipped on CI; ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`). Playwright e2e stays local for now (IPC covered by `webdriver.yml`). Win/Linux binary CI deferred.
 - **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch from `main`) — preflight → tests → draft GitHub Release → macOS matrix upload → deletes the draft if any leg fails/cancels. Publish the draft when ready. Needs `TAURI_SIGNING_PRIVATE_KEY` (+ optional password). After a failed tag release, delete the `v*` tag before re-pushing. macOS ships `.app` (updater) + DMG. Full Apple ID / notarization is #2.
 
 

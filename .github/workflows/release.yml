@@ -64,7 +64,7 @@ jobs:
           NODE
 
   test:
-    name: unit + e2e (browser) + rust
+    name: unit + rust
     needs: [preflight]
     runs-on: ubuntu-22.04
     steps:
@@ -93,11 +93,6 @@ jobs:
       - name: Rust unit tests
         working-directory: src-tauri
         run: cargo test
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - run: npm run test:e2e
 
   create-release:
     name: create draft release

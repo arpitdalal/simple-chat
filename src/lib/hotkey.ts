@@ -106,25 +106,23 @@ function preferLogicalMonitorFrames(): boolean {
 }
 
 /**
- * Monitor under the cursor.
+ * Monitor containing a desktop point (cursor or window center).
  * macOS (desktop points): unique logical frame first.
  * Else (physical coords): unique physical AABB first.
  *
  * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
  * reliable cursor-display summon until the runtime supports both.
  */
-export async function monitorForCursor(): Promise<Monitor | null> {
-  const cursor = await cursorPosition();
+export async function monitorForPoint(
+  x: number,
+  y: number,
+): Promise<Monitor | null> {
   const monitors = await availableMonitors();
   if (!monitors.length) return primaryMonitor();
 
   const frames = monitors.map(logicalFrame);
-  const physicalHits = monitors.filter((m) =>
-    containsPoint(m, cursor.x, cursor.y),
-  );
-  const logicalHits = frames.filter((f) =>
-    frameContains(f, cursor.x, cursor.y),
-  );
+  const physicalHits = monitors.filter((m) => containsPoint(m, x, y));
+  const logicalHits = frames.filter((f) => frameContains(f, x, y));
 
   if (preferLogicalMonitorFrames()) {
     if (logicalHits.length === 1) return logicalHits[0].mon;
@@ -141,11 +139,24 @@ export async function monitorForCursor(): Promise<Monitor | null> {
         ? physicalHits.map(logicalFrame)
         : frames;
   return pool.reduce((best, f) =>
-    distanceSqToFrame(f, cursor.x, cursor.y) <
-    distanceSqToFrame(best, cursor.x, cursor.y)
-      ? f
-      : best,
+    distanceSqToFrame(f, x, y) < distanceSqToFrame(best, x, y) ? f : best,
   ).mon;
+}
+
+/** Monitor under the cursor. */
+export async function monitorForCursor(): Promise<Monitor | null> {
+  const cursor = await cursorPosition();
+  return monitorForPoint(cursor.x, cursor.y);
+}
+
+function sameMonitor(a: Monitor, b: Monitor): boolean {
+  return (
+    a.scaleFactor === b.scaleFactor &&
+    a.position.x === b.position.x &&
+    a.position.y === b.position.y &&
+    a.size.width === b.size.width &&
+    a.size.height === b.size.height
+  );
 }
 
 function clampedCenter(
@@ -279,13 +290,40 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
   }
 }
 
+/**
+ * Recenter only when the cursor is on a different monitor than the window.
+ * Same-monitor summon keeps the user's last position (hide keeps geometry).
+ */
+export async function positionMainWindowForShow(
+  win: Window = getCurrentWindow(),
+) {
+  try {
+    const cursorMon = await monitorForCursor();
+    let winMon: Monitor | null = null;
+    try {
+      const pos = await win.outerPosition();
+      const size = await win.outerSize();
+      winMon = await monitorForPoint(
+        pos.x + Math.floor(size.width / 2),
+        pos.y + Math.floor(size.height / 2),
+      );
+    } catch {
+      winMon = null;
+    }
+    if (cursorMon && winMon && sameMonitor(cursorMon, winMon)) return;
+  } catch {
+    /* fall through — centerOnCursorMonitor has its own fallbacks */
+  }
+  await centerOnCursorMonitor(win);
+}
+
 export async function toggleMainWindow() {
   const run = async () => {
     const win = getCurrentWindow();
     if (await win.isVisible()) {
       await hideMainWindow();
     } else {
-      await centerOnCursorMonitor(win);
+      await positionMainWindowForShow(win);
       // Recapture immediately before steal — frontmost may have changed while centering.
       await invoke("capture_previous_app");
       await win.show();

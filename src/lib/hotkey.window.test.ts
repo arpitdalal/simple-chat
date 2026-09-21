@@ -5,6 +5,7 @@ const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
 const outerSize = vi.fn();
+const outerPosition = vi.fn();
 const setPosition = vi.fn();
 const center = vi.fn();
 const scaleFactor = vi.fn();
@@ -49,6 +50,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     setFocus,
     isVisible,
     outerSize,
+    outerPosition,
     setPosition,
     center,
     scaleFactor,
@@ -72,6 +74,7 @@ import {
   getActiveHotkey,
   hideMainWindow,
   monitorForCursor,
+  positionMainWindowForShow,
   resetActiveHotkeyForTests,
   setPreferLogicalMonitorFramesForTests,
   toggleMainWindow,
@@ -126,6 +129,9 @@ describe("hotkey window actions", () => {
     isRegistered.mockResolvedValue(false);
     invoke.mockResolvedValue(undefined);
     outerSize.mockResolvedValue({ width: 800, height: 600 });
+    // Default: window sits on primary — cursor tests that put the pointer on
+    // secondary still recenter (cross-monitor summon).
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
     scaleFactor.mockResolvedValue(1);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
     availableMonitors.mockResolvedValue([primary, secondary]);
@@ -169,6 +175,41 @@ describe("hotkey window actions", () => {
       show.mock.invocationCallOrder[0],
     );
     expect(invoke).toHaveBeenCalledWith("capture_previous_app");
+  });
+
+  it("positionMainWindowForShow keeps place when cursor is on the same monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    // Window center ~ (500, 400) on primary; cursor also on primary.
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+    expect(center).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "Physical",
+        x: 1920 + (1920 - 800) / 2,
+        y: (1080 - 600) / 2,
+      }),
+    );
+  });
+
+  it("toggleMainWindow preserves position when already on cursor monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    isVisible.mockResolvedValue(false);
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await toggleMainWindow();
+    expect(setPosition).not.toHaveBeenCalled();
+    expect(show).toHaveBeenCalled();
+    expect(setFocus).toHaveBeenCalled();
   });
 
   it("monitorForCursor picks monitor containing physical cursor", async () => {

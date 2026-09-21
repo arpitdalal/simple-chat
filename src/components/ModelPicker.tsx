@@ -54,18 +54,25 @@ export function ModelPicker({
   hiRef.current = hi;
 
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       const next: ProviderId[] = [];
       try {
         for (const p of PROVIDERS) {
           if (await hasApiKey(p)) next.push(p);
         }
+        if (cancelled) return;
         setProbeError("");
       } catch (err) {
+        if (cancelled) return;
         setProbeError(keyErrorMessage(err));
       }
+      if (cancelled) return;
       setReady(next);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [refreshKey, open]);
 
   useEffect(() => {

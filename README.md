@@ -23,7 +23,13 @@ npm run check
 npm run tauri:dev
 ```
 
-Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` set to the private key contents or a file path — pubkey is in `src-tauri/tauri.conf.json`. Endpoint is GitHub Releases `latest.json` (publish once #1 CI lands). Linux updater packages are AppImage-only (`tauri.linux.conf.json`).
+Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` set to the private key contents or a file path — pubkey is in `src-tauri/tauri.conf.json`. Endpoint is GitHub Releases `latest.json`.
+
+## CI / Release
+
+- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test` (ubuntu), Playwright e2e (**macOS**), then `tauri-apps/tauri-action` builds for macOS arm64 + x64. Updater signing skipped on CI; ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`). Win/Linux binary CI deferred.
+- **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch from `main` with matching version input) — concurrency per version; preflight → tests + macOS e2e → draft GitHub Release (rejects tag/SHA mismatch) → macOS matrix upload → deletes draft only if still draft on fail/cancel. Publish the draft when ready. Needs `TAURI_SIGNING_PRIVATE_KEY` (+ optional password). After a failed tag release, delete the `v*` tag before re-pushing. macOS ships `.app` (updater) + DMG. Full Apple ID / notarization is #2.
+
 
 ## Tests
 

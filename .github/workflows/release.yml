@@ -1,0 +1,303 @@
+# Draft GitHub Release + macOS bundles via tauri-action (issue #1).
+# Win/Linux release matrix deferred. Trigger: tag v* or dispatch from main.
+# Requires TAURI_SIGNING_PRIVATE_KEY (updater .sig + latest.json).
+# Draft stays unpublished until a human publishes (Tauri docs pattern).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to release (no v prefix; must match package.json / tauri.conf)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Same version key for tag push and dispatch so they cannot mutate the same draft.
+# Unrelated versions keep separate groups (avoids pending-run eviction across versions).
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && format('simple-chat-release-v{0}', inputs.version) || format('simple-chat-release-{0}', github.ref_name) }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: secrets + version guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require updater signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
+            echo "Set repo secret TAURI_SIGNING_PRIVATE_KEY before releasing"
+            exit 1
+          }
+
+      - name: Assert package / tauri / tag versions align
+        id: versions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const app = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          if (app !== pkg) {
+            console.error(`version drift: tauri.conf=${app} package.json=${pkg}`);
+            process.exit(1);
+          }
+          const event = process.env.EVENT_NAME;
+          const ref = process.env.REF;
+          const refName = process.env.REF_NAME;
+          const dispatchVersion = process.env.DISPATCH_VERSION || "";
+          if (event === "push" && refName.startsWith("v")) {
+            const tag = refName.slice(1);
+            if (tag !== app) {
+              console.error(`tag ${refName} != app version ${app}`);
+              process.exit(1);
+            }
+          }
+          if (event === "workflow_dispatch") {
+            if (ref !== "refs/heads/main") {
+              console.error(`workflow_dispatch only allowed from main (got ${ref})`);
+              process.exit(1);
+            }
+            if (dispatchVersion.startsWith("v")) {
+              console.error(`version input must omit the v prefix (got ${dispatchVersion})`);
+              process.exit(1);
+            }
+            if (dispatchVersion !== app) {
+              console.error(`dispatch version ${dispatchVersion || "(empty)"} != app version ${app}`);
+              process.exit(1);
+            }
+          }
+          console.log(`version=${app}`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${app}\n`);
+          NODE
+
+  test:
+    name: unit + rust
+    needs: [preflight]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Rust unit tests
+        working-directory: src-tauri
+        run: cargo test
+
+  e2e:
+    name: playwright e2e (macOS)
+    needs: [preflight]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run test:e2e
+
+  create-release:
+    name: create draft release
+    needs: [preflight, test, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fresh draft for this SHA. Concurrency group above prevents deleting another
+      # run's in-flight draft. Reject if v* tag already exists on a different commit
+      # (GitHub ignores target_commitish when the tag already exists).
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const tag = `v${version}`;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            async function peelTagCommit(tagName) {
+              try {
+                const { data: ref } = await github.rest.git.getRef({
+                  owner,
+                  repo,
+                  ref: `tags/${tagName}`,
+                });
+                if (ref.object.type === "commit") return ref.object.sha;
+                const { data: tagObj } = await github.rest.git.getTag({
+                  owner,
+                  repo,
+                  tag_sha: ref.object.sha,
+                });
+                return tagObj.object.sha;
+              } catch (err) {
+                if (err.status === 404) return null;
+                throw err;
+              }
+            }
+
+            const existingSha = await peelTagCommit(tag);
+            if (existingSha && existingSha !== context.sha) {
+              core.setFailed(
+                `tag ${tag} points to ${existingSha}, this run is ${context.sha}. ` +
+                  `Delete the tag (and any published release) or bump the version before re-dispatching.`,
+              );
+              return;
+            }
+
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner, repo, per_page: 100 },
+            );
+            for (const r of releases.filter((x) => x.tag_name === tag && x.draft)) {
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: r.id,
+              });
+              core.info(`deleted stale draft ${r.id} for ${tag}`);
+            }
+
+            const { data: release } = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              name: `Simple Chat v${version}`,
+              body: "See the assets to download this version and install.",
+              draft: true,
+              prerelease: false,
+              target_commitish: context.sha,
+            });
+            return release.id;
+
+  publish-tauri:
+    name: tauri build (${{ matrix.label }})
+    needs: [preflight, create-release]
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos-aarch64
+            args: --target aarch64-apple-darwin
+          - label: macos-x86_64
+            args: --target x86_64-apple-darwin
+
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: v${{ needs.preflight.outputs.version }}
+          retryAttempts: 3
+          args: ${{ matrix.args }}
+
+      - name: Assert macOS bundles + updater artifacts
+        run: |
+          set -euo pipefail
+          root="src-tauri/target"
+          find "$root" -path '*/release/bundle/dmg/*.dmg' | grep -q .
+          find "$root" -path '*/release/bundle/macos/*.app.tar.gz' | grep -q .
+          find "$root" -path '*/release/bundle/macos/*.app.tar.gz.sig' | grep -q .
+
+  cleanup-failed-draft:
+    name: delete incomplete draft on failure
+    if: (failure() || cancelled()) && needs.create-release.result == 'success'
+    needs: [create-release, publish-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            const release_id = Number(process.env.RELEASE_ID);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const { data: release } = await github.rest.repos.getRelease({
+              owner,
+              repo,
+              release_id,
+            });
+            if (!release.draft) {
+              core.info(
+                `skip cleanup; release ${release_id} is no longer a draft (published while matrix ran)`,
+              );
+              return;
+            }
+            await github.rest.repos.deleteRelease({ owner, repo, release_id });
+            console.log(`deleted incomplete draft release ${release_id}`);

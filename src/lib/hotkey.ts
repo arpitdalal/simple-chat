@@ -171,10 +171,10 @@ function clampOrigin(
   let x = pos.x;
   let y = pos.y;
   if (w > 0) {
-    x = Math.min(
-      Math.max(x, workPos.x),
-      workPos.x + Math.max(0, workSize.width - w),
-    );
+    // Works for oversized too: range is [work+workW-w, work] when w > workW.
+    const lo = Math.min(workPos.x, workPos.x + workSize.width - w);
+    const hi = Math.max(workPos.x, workPos.x + workSize.width - w);
+    x = Math.min(Math.max(x, lo), hi);
   } else {
     // Unknown size — clamp the origin as a point; don't snap to top-left.
     x = Math.min(
@@ -183,10 +183,9 @@ function clampOrigin(
     );
   }
   if (h > 0) {
-    y = Math.min(
-      Math.max(y, workPos.y),
-      workPos.y + Math.max(0, workSize.height - h),
-    );
+    const lo = Math.min(workPos.y, workPos.y + workSize.height - h);
+    const hi = Math.max(workPos.y, workPos.y + workSize.height - h);
+    y = Math.min(Math.max(y, lo), hi);
   } else {
     y = Math.min(
       Math.max(y, workPos.y),
@@ -196,8 +195,14 @@ function clampOrigin(
   return { x: Math.round(x), y: Math.round(y) };
 }
 
-/** Pull the window fully into the monitor work area (no-op if already inside). */
-async function clampWindowIntoWorkArea(win: Window, mon: Monitor) {
+/**
+ * Pull the window into the monitor work area (no-op if already inside).
+ * @returns false if geometry could not be read/written — caller should recenter.
+ */
+async function clampWindowIntoWorkArea(
+  win: Window,
+  mon: Monitor,
+): Promise<boolean> {
   try {
     const pos = await win.outerPosition();
     if (preferLogicalMonitorFrames()) {
@@ -227,7 +232,9 @@ async function clampWindowIntoWorkArea(win: Window, mon: Monitor) {
         y: pos.y / srcScale,
       };
       const { x, y } = clampOrigin(logicalPos, workPos, workSize, size);
-      if (x === Math.round(logicalPos.x) && y === Math.round(logicalPos.y)) return;
+      if (x === Math.round(logicalPos.x) && y === Math.round(logicalPos.y)) {
+        return true;
+      }
       await win.setPosition(new LogicalPosition(x, y));
     } else {
       let size: { width: number; height: number } | null = null;
@@ -242,11 +249,12 @@ async function clampWindowIntoWorkArea(win: Window, mon: Monitor) {
         mon.workArea.size,
         size,
       );
-      if (x === pos.x && y === pos.y) return;
+      if (x === pos.x && y === pos.y) return true;
       await win.setPosition(new PhysicalPosition(x, y));
     }
+    return true;
   } catch {
-    /* show still proceeds */
+    return false;
   }
 }
 
@@ -399,8 +407,8 @@ export async function positionMainWindowForShow(
       winMon = null;
     }
     if (cursorMon && winMon && sameMonitor(cursorMon, winMon)) {
-      await clampWindowIntoWorkArea(win, winMon);
-      return;
+      if (await clampWindowIntoWorkArea(win, winMon)) return;
+      // Clamp failed — fall through to centerOnCursorMonitor's fallbacks.
     }
   } catch {
     /* fall through — centerOnCursorMonitor has its own fallbacks */

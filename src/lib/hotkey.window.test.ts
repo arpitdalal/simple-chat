@@ -249,6 +249,26 @@ describe("hotkey window actions", () => {
     expect(setPosition).not.toHaveBeenCalled();
   });
 
+  it("positionMainWindowForShow preserves offset for oversized windows", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    // 3000-wide on 1920 work area; keep deliberate x=-400 (right edge still covers).
+    outerPosition.mockResolvedValue({ x: -400, y: 50 });
+    outerSize.mockResolvedValue({ width: 3000, height: 600 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when same-monitor clamp cannot read geometry", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockRejectedValue(new Error("no pos"));
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
   it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);

@@ -5,7 +5,12 @@ import {
   deleteChatsOlderThan,
   type AppSettings,
 } from "../lib/db";
-import { hasApiKey, setApiKey, clearApiKey } from "../lib/keys";
+import {
+  hasApiKey,
+  setApiKey,
+  clearApiKey,
+  keyErrorMessage,
+} from "../lib/keys";
 import { PROVIDER_LABELS, PROVIDERS, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -53,6 +58,7 @@ export function Settings({
   const [recordBusy, setRecordBusy] = useState(false);
   const [hotkeyDraft, setHotkeyDraft] = useState<string | null>(null);
   const [hotkeyError, setHotkeyError] = useState("");
+  const [keyError, setKeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
   const [updateBusy, setUpdateBusy] = useState(false);
   const updateCheckGenRef = useRef(0);
@@ -61,6 +67,8 @@ export function Settings({
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
   const recordingRef = useRef(false);
+  /** Bumped on key save/clear / unmount so a late probe cannot overwrite hasKey. */
+  const keyProbeGenRef = useRef(0);
   /** True once Record intends to clear — including while flush/clear are in flight. */
   const pausedForRecordRef = useRef(false);
   /** Bumped on unmount / new Record to cancel in-flight startRecording. */
@@ -70,6 +78,37 @@ export function Settings({
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+  const mountedRef = useRef(true);
+
+  async function probeKeys(
+    gen: number,
+    opts?: { notify?: boolean; retainError?: string },
+  ) {
+    const hk: Record<ProviderId, boolean> = {
+      openai: false,
+      anthropic: false,
+      google: false,
+    };
+    let errMsg = "";
+    for (const p of PROVIDERS) {
+      try {
+        hk[p] = await hasApiKey(p);
+      } catch (err) {
+        errMsg = keyErrorMessage(err);
+        // Unreadable entry still exists — show Clear without treating as usable.
+        if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
+      }
+    }
+    if (!mountedRef.current || gen !== keyProbeGenRef.current) return;
+    setHasKey(hk);
+    const displayErr = errMsg || opts?.retainError || "";
+    if (displayErr) {
+      setKeyError(displayErr);
+      if (opts?.notify) onNotifyRef.current?.(displayErr, "err");
+    } else {
+      setKeyError("");
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -78,19 +117,22 @@ export function Settings({
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
+    let cancelled = false;
+    const gen = keyProbeGenRef.current;
     void (async () => {
       const s = await getSettings();
+      if (cancelled || gen !== keyProbeGenRef.current) return;
       setSettings(s);
       settingsRef.current = s;
       lastGoodHotkeyRef.current = s.hotkey.trim() || DEFAULT_HOTKEY;
-      const hk: Record<ProviderId, boolean> = {
-        openai: false,
-        anthropic: false,
-        google: false,
-      };
-      for (const p of PROVIDERS) hk[p] = await hasApiKey(p);
-      setHasKey(hk);
+      await probeKeys(gen, { notify: true });
     })();
+    return () => {
+      cancelled = true;
+      mountedRef.current = false;
+      keyProbeGenRef.current += 1;
+    };
   }, []);
 
   function restorePausedHotkey() {
@@ -383,19 +425,54 @@ export function Settings({
   async function saveKey(provider: ProviderId) {
     const value = keys[provider].trim();
     if (!value) return;
-    await setApiKey(provider, value);
-    setKeys((k) => ({ ...k, [provider]: "" }));
-    setHasKey((h) => ({ ...h, [provider]: true }));
-    setKeyEpoch((n) => n + 1);
-    setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+    // Invalidate in-flight probes (mount / other mutations) before awaiting keyring.
+    keyProbeGenRef.current += 1;
+    try {
+      await setApiKey(provider, value);
+      if (!mountedRef.current) return;
+      // Keep a newer draft typed while the OS prompt was pending.
+      setKeys((k) =>
+        k[provider].trim() === value ? { ...k, [provider]: "" } : k,
+      );
+      setKeyEpoch((n) => n + 1);
+      setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+      // Claim the latest gen after the write so a slower sibling mutation
+      // cannot leave this provider stuck without Clear.
+      const gen = ++keyProbeGenRef.current;
+      await probeKeys(gen);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const msg = keyErrorMessage(err);
+      setStatus("");
+      onNotifyRef.current?.(msg, "err");
+      // Failed mutations also invalidate — refresh so earlier successes keep Clear.
+      const gen = ++keyProbeGenRef.current;
+      await probeKeys(gen, { retainError: msg });
+    }
   }
 
   async function clearKey(provider: ProviderId) {
-    await clearApiKey(provider);
-    setKeys((k) => ({ ...k, [provider]: "" }));
-    setHasKey((h) => ({ ...h, [provider]: false }));
-    setKeyEpoch((n) => n + 1);
-    setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+    const draftAtStart = keys[provider];
+    keyProbeGenRef.current += 1;
+    try {
+      await clearApiKey(provider);
+      if (!mountedRef.current) return;
+      // Keep a draft typed while the OS clear prompt was pending.
+      setKeys((k) =>
+        k[provider] === draftAtStart ? { ...k, [provider]: "" } : k,
+      );
+      setKeyEpoch((n) => n + 1);
+      setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+      const gen = ++keyProbeGenRef.current;
+      await probeKeys(gen);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const msg = keyErrorMessage(err);
+      setStatus("");
+      onNotifyRef.current?.(msg, "err");
+      const gen = ++keyProbeGenRef.current;
+      await probeKeys(gen, { retainError: msg });
+    }
   }
 
   if (!settings) return <div className="settings-panel">Loading…</div>;
@@ -435,6 +512,8 @@ export function Settings({
                 <button
                   type="button"
                   className="ghost"
+                  // Prevent blur-save from racing with Clear on the same input.
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => void clearKey(p)}
                 >
                   Clear
@@ -443,6 +522,7 @@ export function Settings({
             </div>
           </div>
         ))}
+        {keyError && <p className="hint error-text">{keyError}</p>}
       </section>
 
       <section>

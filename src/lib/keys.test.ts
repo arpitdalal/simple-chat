@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...a: unknown[]) => invoke(...a),
 }));
 
-import { clearApiKey, getApiKey, hasApiKey, setApiKey } from "./keys";
+import { clearApiKey, getApiKey, hasApiKey, keyErrorMessage, setApiKey } from "./keys";
 
 describe("keys client", () => {
   beforeEach(() => {
@@ -35,5 +35,49 @@ describe("keys client", () => {
     expect(await getApiKey("google")).toBe("secret");
     invoke.mockResolvedValueOnce(true);
     expect(await hasApiKey("google")).toBe(true);
+  });
+
+  it("keyErrorMessage reads Error, string, and other", () => {
+    expect(keyErrorMessage(new Error("store locked"))).toBe("store locked");
+    expect(keyErrorMessage("plain")).toBe("plain");
+    expect(keyErrorMessage(42)).toBe("42");
+  });
+
+  it("serializes setApiKey then clearApiKey for the same provider", async () => {
+    const order: string[] = [];
+    invoke.mockImplementation(async (_cmd: string, args: { key: string }) => {
+      order.push(`start:${args.key || "clear"}`);
+      await new Promise((r) => setTimeout(r, args.key ? 30 : 5));
+      order.push(`end:${args.key || "clear"}`);
+    });
+    const save = setApiKey("openai", "sk-new");
+    const clear = clearApiKey("openai");
+    await Promise.all([save, clear]);
+    expect(order).toEqual([
+      "start:sk-new",
+      "end:sk-new",
+      "start:clear",
+      "end:clear",
+    ]);
+  });
+
+  it("serializes mutations across providers", async () => {
+    const order: string[] = [];
+    invoke.mockImplementation(
+      async (_cmd: string, args: { provider: string; key: string }) => {
+        order.push(`start:${args.provider}`);
+        await new Promise((r) => setTimeout(r, 20));
+        order.push(`end:${args.provider}`);
+      },
+    );
+    const a = setApiKey("openai", "sk-a");
+    const b = setApiKey("google", "sk-b");
+    await Promise.all([a, b]);
+    expect(order).toEqual([
+      "start:openai",
+      "end:openai",
+      "start:google",
+      "end:google",
+    ]);
   });
 });

@@ -194,7 +194,7 @@ export async function generateChatTitle(
   provider: ProviderId,
   userMessage: string,
 ): Promise<string> {
-  const key = await getApiKey(provider);
+  const key = await getApiKey(provider).catch(() => null);
   if (!key) {
     return userMessage.slice(0, 48) + (userMessage.length > 48 ? "…" : "");
   }

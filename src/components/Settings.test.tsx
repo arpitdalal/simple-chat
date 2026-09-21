@@ -15,6 +15,8 @@ vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
+  keyErrorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
 }));
 
 vi.mock("../lib/db", () => ({
@@ -61,17 +63,167 @@ describe("Settings", () => {
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
     setSetting.mockResolvedValue(undefined);
+    setApiKey.mockResolvedValue(undefined);
     clearApiKey.mockResolvedValue(undefined);
   });
 
   it("shows Clear for saved keys and clears on click", async () => {
     const user = userEvent.setup();
+    clearApiKey.mockImplementation(async () => {
+      hasApiKey.mockResolvedValue(false);
+    });
     render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText(/Google/)).toBeInTheDocument());
     const clearBtns = await screen.findAllByRole("button", { name: "Clear" });
     expect(clearBtns.length).toBeGreaterThanOrEqual(1);
     await user.click(clearBtns[0]);
     await waitFor(() => expect(clearApiKey).toHaveBeenCalledWith("google"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Clear" })).toBeNull(),
+    );
+  });
+
+  it("surfaces keychain errors when saving a key fails", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockRejectedValue(
+      new Error(
+        "Could not access the OS credential store. Unlock or repair Keychain / Credential Manager / Secret Service, then try again.",
+      ),
+    );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    await user.type(inputs[0], "sk-test");
+    await user.tab();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("OS credential store"),
+      "err",
+    );
+    expect(screen.queryByText(/key saved/i)).toBeNull();
+  });
+
+  it("surfaces keychain errors when clearing a key fails", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    clearApiKey.mockRejectedValue(new Error("Credential store error (locked)"));
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    await waitFor(() => expect(screen.getByText(/Google/)).toBeInTheDocument());
+    const clearBtns = await screen.findAllByRole("button", { name: "Clear" });
+    await user.click(clearBtns[0]);
+    await waitFor(() =>
+      expect(screen.getByText(/Credential store error/)).toBeInTheDocument(),
+    );
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("Credential store error"),
+      "err",
+    );
+    expect(screen.getByText(/Google · saved/)).toBeInTheDocument();
+  });
+
+  it("surfaces keychain errors when probing saved keys fails", async () => {
+    const onNotify = vi.fn();
+    hasApiKey.mockRejectedValue(
+      new Error("Could not access the OS credential store (NoDefaultStore)"),
+    );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("OS credential store"),
+      "err",
+    );
+  });
+
+  it("keeps partial saved-key state when one provider probe fails", async () => {
+    const onNotify = vi.fn();
+    hasApiKey.mockImplementation(async (p: string) => {
+      if (p === "anthropic") throw new Error("Could not access the OS credential store");
+      return p === "google";
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Google · saved/)).toBeInTheDocument();
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("OS credential store"),
+      "err",
+    );
+  });
+
+  it("shows Clear when probe fails because a saved credential is unreadable", async () => {
+    hasApiKey.mockImplementation(async (p: string) => {
+      if (p === "google") {
+        throw new Error(
+          "A saved credential is unreadable. Clear the key in Settings and paste it again.",
+        );
+      }
+      return false;
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/unreadable/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
+  });
+
+  it("keeps unreadable guidance after saving a different provider", async () => {
+    const user = userEvent.setup();
+    hasApiKey.mockImplementation(async (p: string) => {
+      if (p === "google") {
+        throw new Error(
+          "A saved credential is unreadable. Clear the key in Settings and paste it again.",
+        );
+      }
+      return false;
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/unreadable/i)).toBeInTheDocument(),
+    );
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    await user.type(inputs[0], "sk-other");
+    await user.tab();
+    await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByText(/unreadable/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
+  });
+
+  it("keeps a draft typed while a save is still pending", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockImplementation(async () => {
+      await gate;
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    await user.type(inputs[0], "sk-first");
+    await user.tab();
+    await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+    await user.click(inputs[0]);
+    await user.clear(inputs[0]);
+    await user.type(inputs[0], "sk-replacement");
+    release();
+    await waitFor(() =>
+      expect((inputs[0] as HTMLInputElement).value).toBe("sk-replacement"),
+    );
   });
 
   it("does not show a web search toggle", async () => {

@@ -78,6 +78,8 @@ vi.mock("./lib/keys", () => ({
   setApiKey: vi.fn(),
   clearApiKey: vi.fn(),
   getApiKey: vi.fn(async () => "k"),
+  keyErrorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
 }));
 
 vi.mock("./lib/chat", () => ({

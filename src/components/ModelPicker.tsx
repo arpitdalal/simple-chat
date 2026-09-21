@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { hasApiKey } from "../lib/keys";
+import { hasApiKey, keyErrorMessage } from "../lib/keys";
 import {
   CATALOG,
   PROVIDER_LABELS,
@@ -27,6 +27,7 @@ export function ModelPicker({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState<ProviderId[]>([]);
+  const [probeError, setProbeError] = useState("");
   const [query, setQuery] = useState("");
   const [hi, setHi] = useState(0);
   const hiRef = useRef(0);
@@ -53,13 +54,24 @@ export function ModelPicker({
   hiRef.current = hi;
 
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       const next: ProviderId[] = [];
+      let errMsg = "";
       for (const p of PROVIDERS) {
-        if (await hasApiKey(p)) next.push(p);
+        try {
+          if (await hasApiKey(p)) next.push(p);
+        } catch (err) {
+          errMsg = keyErrorMessage(err);
+        }
       }
+      if (cancelled) return;
+      setProbeError(errMsg);
       setReady(next);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [refreshKey, open]);
 
   useEffect(() => {
@@ -190,12 +202,17 @@ export function ModelPicker({
               }}
             />
             <div className="model-menu-list" ref={listRef}>
+              {probeError && (
+                <div className="model-menu-empty">{probeError}</div>
+              )}
               {options.length === 0 ? (
-                <div className="model-menu-empty">
-                  {ready.length === 0
-                    ? "Add an API key in Settings"
-                    : "No matching models"}
-                </div>
+                !probeError && (
+                  <div className="model-menu-empty">
+                    {ready.length === 0
+                      ? "Add an API key in Settings"
+                      : "No matching models"}
+                  </div>
+                )
               ) : (
                 options.map((m, i) => {
                   const selected =

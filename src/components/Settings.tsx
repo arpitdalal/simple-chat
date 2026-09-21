@@ -79,7 +79,10 @@ export function Settings({
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
 
-  async function probeKeys(gen: number, opts?: { notify?: boolean }) {
+  async function probeKeys(
+    gen: number,
+    opts?: { notify?: boolean; retainError?: string },
+  ) {
     const hk: Record<ProviderId, boolean> = {
       openai: false,
       anthropic: false,
@@ -97,9 +100,10 @@ export function Settings({
     }
     if (gen !== keyProbeGenRef.current) return;
     setHasKey(hk);
-    if (errMsg) {
-      setKeyError(errMsg);
-      if (opts?.notify) onNotifyRef.current?.(errMsg, "err");
+    const displayErr = errMsg || opts?.retainError || "";
+    if (displayErr) {
+      setKeyError(displayErr);
+      if (opts?.notify) onNotifyRef.current?.(displayErr, "err");
     } else {
       setKeyError("");
     }
@@ -422,7 +426,10 @@ export function Settings({
     keyProbeGenRef.current += 1;
     try {
       await setApiKey(provider, value);
-      setKeys((k) => ({ ...k, [provider]: "" }));
+      // Keep a newer draft typed while the OS prompt was pending.
+      setKeys((k) =>
+        k[provider].trim() === value ? { ...k, [provider]: "" } : k,
+      );
       setKeyEpoch((n) => n + 1);
       setStatus(`${PROVIDER_LABELS[provider]} key saved`);
       // Claim the latest gen after the write so a slower sibling mutation
@@ -432,8 +439,10 @@ export function Settings({
     } catch (err) {
       const msg = keyErrorMessage(err);
       setStatus("");
-      setKeyError(msg);
       onNotifyRef.current?.(msg, "err");
+      // Failed mutations also invalidate — refresh so earlier successes keep Clear.
+      const gen = ++keyProbeGenRef.current;
+      await probeKeys(gen, { retainError: msg });
     }
   }
 
@@ -449,8 +458,9 @@ export function Settings({
     } catch (err) {
       const msg = keyErrorMessage(err);
       setStatus("");
-      setKeyError(msg);
       onNotifyRef.current?.(msg, "err");
+      const gen = ++keyProbeGenRef.current;
+      await probeKeys(gen, { retainError: msg });
     }
   }
 

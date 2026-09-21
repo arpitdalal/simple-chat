@@ -202,6 +202,30 @@ describe("Settings", () => {
     expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
   });
 
+  it("keeps a draft typed while a save is still pending", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockImplementation(async () => {
+      await gate;
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    await user.type(inputs[0], "sk-first");
+    await user.tab();
+    await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+    await user.click(inputs[0]);
+    await user.clear(inputs[0]);
+    await user.type(inputs[0], "sk-replacement");
+    release();
+    await waitFor(() =>
+      expect((inputs[0] as HTMLInputElement).value).toBe("sk-replacement"),
+    );
+  });
+
   it("does not show a web search toggle", async () => {
     render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("Settings")).toBeInTheDocument());

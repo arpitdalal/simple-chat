@@ -60,4 +60,24 @@ describe("keys client", () => {
       "end:clear",
     ]);
   });
+
+  it("serializes mutations across providers", async () => {
+    const order: string[] = [];
+    invoke.mockImplementation(
+      async (_cmd: string, args: { provider: string; key: string }) => {
+        order.push(`start:${args.provider}`);
+        await new Promise((r) => setTimeout(r, 20));
+        order.push(`end:${args.provider}`);
+      },
+    );
+    const a = setApiKey("openai", "sk-a");
+    const b = setApiKey("google", "sk-b");
+    await Promise.all([a, b]);
+    expect(order).toEqual([
+      "start:openai",
+      "end:openai",
+      "start:google",
+      "end:google",
+    ]);
+  });
 });

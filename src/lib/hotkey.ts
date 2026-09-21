@@ -160,21 +160,23 @@ function sameMonitor(a: Monitor, b: Monitor): boolean {
   );
 }
 
-/** True when the window's outer rect overlaps the monitor's physical AABB. */
-async function windowIntersectsMonitor(
+/**
+ * True when the window's title-bar strip overlaps the monitor work area.
+ * Any-pixel AABB overlap is too weak after layout/resolution changes.
+ */
+async function windowTitleBarInWorkArea(
   win: Window,
   mon: Monitor,
 ): Promise<boolean> {
   try {
     const pos = await win.outerPosition();
     const size = await win.outerSize();
+    const titleH = Math.min(48, Math.max(1, size.height));
     const wx2 = pos.x + size.width;
-    const wy2 = pos.y + size.height;
-    const mx1 = mon.position.x;
-    const my1 = mon.position.y;
-    const mx2 = mx1 + mon.size.width;
-    const my2 = my1 + mon.size.height;
-    return pos.x < mx2 && wx2 > mx1 && pos.y < my2 && wy2 > my1;
+    const wy2 = pos.y + titleH;
+    const { x: mx, y: my } = mon.workArea.position;
+    const { width: mw, height: mh } = mon.workArea.size;
+    return pos.x < mx + mw && wx2 > mx && pos.y < my + mh && wy2 > my;
   } catch {
     return false;
   }
@@ -328,12 +330,12 @@ export async function positionMainWindowForShow(
       winMon = null;
     }
     // currentMonitor can name the nearest display for a fully off-screen window
-    // (layout change / unplug) — only preserve when geometry still intersects.
+    // (layout change / unplug) — only preserve when the title bar is still usable.
     if (
       cursorMon &&
       winMon &&
       sameMonitor(cursorMon, winMon) &&
-      (await windowIntersectsMonitor(win, winMon))
+      (await windowTitleBarInWorkArea(win, winMon))
     ) {
       return;
     }

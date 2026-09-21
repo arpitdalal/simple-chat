@@ -217,10 +217,21 @@ describe("hotkey window actions", () => {
   });
 
   it("positionMainWindowForShow recenters when window is fully off-screen", async () => {
-    // currentMonitor may name nearest display; geometry must still intersect.
+    // currentMonitor may name nearest display; title bar must still be in work area.
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);
     outerPosition.mockResolvedValue({ x: -5000, y: -5000 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when only a thin edge overlaps", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    // Title bar entirely above the work area; 1px of body would still overlap.
+    outerPosition.mockResolvedValue({ x: 100, y: -47 });
+    outerSize.mockResolvedValue({ width: 800, height: 600 });
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();
     expect(setPosition).toHaveBeenCalled();

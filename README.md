@@ -30,8 +30,11 @@ Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` s
 ```bash
 npm test          # unit + component integration (vitest)
 npm run test:e2e  # browser UX flows (playwright + in-memory Tauri mocks)
+npm run test:ipc  # real Tauri↔Rust IPC via tauri-driver (Linux/Windows; needs release binary)
 npm run test:all
 ```
+
+`test:ipc` expects `src-tauri/target/release/simple-chat` (`npm run build` then `cargo build --release` in `src-tauri`). CI runs it on Ubuntu with `xvfb` + `webkit2gtk-driver` (`.github/workflows/webdriver.yml`).
 
 **Note:** `tauri:dev` may briefly show a Dock icon / wrong menu name. Release builds use `LSUIElement` + accessory policy (no Dock; menu name “Simple Chat”).
 

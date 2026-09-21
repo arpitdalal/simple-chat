@@ -1,4 +1,4 @@
-# Real Tauri IPC WebDriver e2e (issue #11). Windows — Linux WebKit custom-protocol Origin breaks IPC.
+# Real Tauri IPC WebDriver e2e (issue #11). macOS — embedded WebDriver; Linux/Windows Origin IPC broken under automation.
 name: WebDriver
 
 on:
@@ -8,8 +8,8 @@ on:
 
 jobs:
   ipc:
-    name: tauri-driver IPC (Windows)
-    runs-on: windows-latest
+    name: tauri-driver IPC (macOS)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +30,6 @@ jobs:
         run: npm run build
 
       - name: Build release binary
-        shell: bash
         working-directory: src-tauri
         run: |
           export TAURI_CONFIG="$(cat tauri.webdriver.conf.json)"

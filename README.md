@@ -30,11 +30,11 @@ Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` s
 ```bash
 npm test          # unit + component integration (vitest)
 npm run test:e2e  # browser UX flows (playwright + in-memory Tauri mocks)
-npm run test:ipc  # real Tauri↔Rust IPC via embedded WebDriver (Windows CI; needs release binary)
+npm run test:ipc  # real Tauri↔Rust IPC via embedded WebDriver (macOS CI; needs release binary)
 npm run test:all
 ```
 
-`test:ipc` expects `src-tauri/target/release/simple-chat` (`npm run build` then `cargo build --release --features webdriver` in `src-tauri`). CI runs on Windows (`.github/workflows/webdriver.yml`) — Linux WebKit custom-protocol Origin breaks IPC. Uses embedded `tauri-plugin-wdio-webdriver` (feature-gated).
+`test:ipc` expects `src-tauri/target/release/simple-chat` (`npm run build` then `TAURI_CONFIG=… cargo build --release --features webdriver` in `src-tauri`). CI runs on macOS (`.github/workflows/webdriver.yml`) — Linux/Windows WebView automation sends an invalid IPC Origin. Uses embedded `tauri-plugin-wdio-webdriver` (feature-gated).
 
 **Note:** `tauri:dev` may briefly show a Dock icon / wrong menu name. Release builds use `LSUIElement` + accessory policy (no Dock; menu name “Simple Chat”).
 

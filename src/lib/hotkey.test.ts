@@ -51,6 +51,34 @@ describe("hotkey helpers", () => {
     ).toBe("CommandOrControl+Shift+K");
   });
 
+  it("maps hyper (cmd+ctrl+alt+shift) to all four modifiers", () => {
+    expect(
+      eventToAccelerator(
+        keyEvent({
+          metaKey: true,
+          ctrlKey: true,
+          altKey: true,
+          shiftKey: true,
+          code: "KeyA",
+          key: "a",
+        }),
+      ),
+    ).toBe("Control+Alt+Shift+Command+A");
+  });
+
+  it("expands cmd+ctrl without alt/shift; keeps CommandOrControl for ctrl-only", () => {
+    expect(
+      eventToAccelerator(
+        keyEvent({ metaKey: true, ctrlKey: true, code: "KeyA", key: "a" }),
+      ),
+    ).toBe("Control+Command+A");
+    expect(
+      eventToAccelerator(
+        keyEvent({ ctrlKey: true, shiftKey: true, code: "KeyK", key: "k" }),
+      ),
+    ).toBe("CommandOrControl+Shift+K");
+  });
+
   it("rejects bare keys and modifier-only presses", () => {
     expect(eventToAccelerator(keyEvent({ code: "KeyA", key: "a" }))).toBeNull();
     expect(
@@ -64,6 +92,7 @@ describe("hotkey helpers", () => {
     expect(isValidAccelerator("A")).toBe(false);
     expect(isValidAccelerator("CommandOrControl+Shift+K")).toBe(true);
     expect(isValidAccelerator("CmdOrControl+Space")).toBe(true);
+    expect(isValidAccelerator("Control+Alt+Shift+Command+A")).toBe(true);
     expect(isValidAccelerator(DEFAULT_HOTKEY)).toBe(true);
   });
 });

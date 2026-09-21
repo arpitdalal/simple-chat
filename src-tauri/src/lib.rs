@@ -21,7 +21,7 @@ fn hide_main_window(app: &AppHandle) {
         let _ = window.hide();
     }
     focus::end_restore();
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
     let _ = app.set_activation_policy(ActivationPolicy::Accessory);
 }
 
@@ -86,7 +86,8 @@ pub fn run() {
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
 
             // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
-            #[cfg(target_os = "macos")]
+            // WebDriver CI needs a normal activation policy or the webview stays blank.
+            #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
             let show = MenuItem::with_id(app, "show", "Show Simple Chat", true, None::<&str>)?;
@@ -118,7 +119,7 @@ pub fn run() {
             show_main_window(app.handle());
 
             // Re-assert accessory after showing (dev builds sometimes bounce to regular).
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
             Ok(())

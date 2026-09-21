@@ -1,11 +1,38 @@
 /**
  * Real Tauri ↔ webview IPC via embedded WebDriver (tauri-plugin-wdio-webdriver).
- * External tauri-driver + WebKitWebDriver on Linux breaks custom-protocol Origin/IPC.
  */
 describe("tauri-driver IPC", () => {
   it("loads the webview and round-trips a Rust command", async () => {
+    const ready = await browser
+      .waitUntil(
+        async () => {
+          const text = await browser.execute(
+            () => document.body?.innerText?.slice(0, 300) ?? "",
+          );
+          return (
+            text.includes("Ask Anything") || text.includes("Starting Simple Chat")
+          );
+        },
+        { timeout: 45_000, interval: 1_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+
+    if (!ready) {
+      const diag = await browser.execute(() => ({
+        href: location.href,
+        origin: location.origin,
+        hasInvoke: Boolean(
+          (window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } })
+            .__TAURI__?.core?.invoke,
+        ),
+        body: document.body?.innerText?.slice(0, 500) ?? "",
+      }));
+      throw new Error(`webview not ready: ${JSON.stringify(diag)}`);
+    }
+
     const empty = await $("h1=Ask Anything");
-    await empty.waitForExist({ timeout: 45_000 });
+    await empty.waitForExist({ timeout: 30_000 });
 
     type IpcResult = { ok: true; value: unknown } | { ok: false; error: string };
 
@@ -62,7 +89,7 @@ describe("tauri-driver IPC", () => {
       expect(typeof result.value).toBe("boolean");
       return;
     }
-    // Headless CI often has no Secret Service — still proves IPC reached Rust.
+    // Headless CI often has no keychain unlock — still proves IPC reached Rust.
     expect(result.message).toMatch(/credential|keychain|Secret Service|credential store/i);
   });
 });

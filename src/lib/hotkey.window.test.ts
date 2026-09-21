@@ -5,6 +5,7 @@ const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
 const outerSize = vi.fn();
+const outerPosition = vi.fn();
 const setPosition = vi.fn();
 const center = vi.fn();
 const scaleFactor = vi.fn();
@@ -50,6 +51,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     setFocus,
     isVisible,
     outerSize,
+    outerPosition,
     setPosition,
     center,
     scaleFactor,
@@ -129,6 +131,7 @@ describe("hotkey window actions", () => {
     isRegistered.mockResolvedValue(false);
     invoke.mockResolvedValue(undefined);
     outerSize.mockResolvedValue({ width: 800, height: 600 });
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
     // Default: window on primary — cursor-on-secondary tests still recenter.
     currentMonitor.mockResolvedValue(primary);
     scaleFactor.mockResolvedValue(1);
@@ -207,6 +210,16 @@ describe("hotkey window actions", () => {
   it("positionMainWindowForShow recenters when currentMonitor is null", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(null);
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when window is fully off-screen", async () => {
+    // currentMonitor may name nearest display; geometry must still intersect.
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: -5000, y: -5000 });
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();
     expect(setPosition).toHaveBeenCalled();

@@ -160,6 +160,26 @@ function sameMonitor(a: Monitor, b: Monitor): boolean {
   );
 }
 
+/** True when the window's outer rect overlaps the monitor's physical AABB. */
+async function windowIntersectsMonitor(
+  win: Window,
+  mon: Monitor,
+): Promise<boolean> {
+  try {
+    const pos = await win.outerPosition();
+    const size = await win.outerSize();
+    const wx2 = pos.x + size.width;
+    const wy2 = pos.y + size.height;
+    const mx1 = mon.position.x;
+    const my1 = mon.position.y;
+    const mx2 = mx1 + mon.size.width;
+    const my2 = my1 + mon.size.height;
+    return pos.x < mx2 && wx2 > mx1 && pos.y < my2 && wy2 > my1;
+  } catch {
+    return false;
+  }
+}
+
 function clampedCenter(
   workPos: { x: number; y: number },
   workSize: { width: number; height: number },
@@ -307,7 +327,16 @@ export async function positionMainWindowForShow(
     } catch {
       winMon = null;
     }
-    if (cursorMon && winMon && sameMonitor(cursorMon, winMon)) return;
+    // currentMonitor can name the nearest display for a fully off-screen window
+    // (layout change / unplug) — only preserve when geometry still intersects.
+    if (
+      cursorMon &&
+      winMon &&
+      sameMonitor(cursorMon, winMon) &&
+      (await windowIntersectsMonitor(win, winMon))
+    ) {
+      return;
+    }
   } catch {
     /* fall through — centerOnCursorMonitor has its own fallbacks */
   }

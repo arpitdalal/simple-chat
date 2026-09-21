@@ -363,10 +363,12 @@ select {
 .chat-stage:not(.settings-stage)::after {
   bottom: 0;
   height: var(--fade-bottom);
+  /* Near-opaque through composer-bar band; soft ramp into glass composer */
   background: linear-gradient(
     to top,
-    rgba(12, 12, 14, 0.85) 0%,
-    rgba(12, 12, 14, 0.5) 42%,
+    rgba(12, 12, 14, 0.97) 0%,
+    rgba(12, 12, 14, 0.94) 22%,
+    rgba(12, 12, 14, 0.55) 48%,
     transparent 100%
   );
 }

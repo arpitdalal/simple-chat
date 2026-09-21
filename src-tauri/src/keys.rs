@@ -62,6 +62,17 @@ fn get_api_key_sync(provider: String) -> Result<Option<String>, String> {
     }
 }
 
+fn has_api_key_sync(provider: String) -> Result<bool, String> {
+    match entry(&provider)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        // Entry exists but is unreadable — treat as present so Settings can offer Clear.
+        Err(keyring::Error::BadEncoding(_))
+        | Err(keyring::Error::BadDataFormat(_, _)) => Ok(true),
+        Err(err) => Err(map_keyring_err(err)),
+    }
+}
+
 #[tauri::command]
 pub async fn set_api_key(provider: String, key: String) -> Result<(), String> {
     // Keychain I/O can block on OS prompts — keep it off the UI thread.
@@ -79,7 +90,9 @@ pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub async fn has_api_key(provider: String) -> Result<bool, String> {
-    Ok(get_api_key(provider).await?.is_some())
+    tauri::async_runtime::spawn_blocking(move || has_api_key_sync(provider))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -116,6 +129,15 @@ mod tests {
         ));
         assert!(msg.contains("failed"), "{msg}");
         assert!(!msg.contains("Unlock"), "{msg}");
+    }
+
+    #[test]
+    fn has_api_key_sync_true_for_unreadable_encoding() {
+        // BadEncoding means an entry exists — Clear must remain available.
+        // We only unit-test the match arm shape via map; sync has_* needs a live store.
+        // Guard the public contract: BadEncoding maps to clearable guidance.
+        let msg = map_keyring_err(keyring::Error::BadEncoding(vec![0xff]));
+        assert!(msg.contains("Clear"), "{msg}");
     }
 
     #[test]

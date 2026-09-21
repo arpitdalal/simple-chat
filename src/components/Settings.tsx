@@ -84,8 +84,10 @@ export function Settings({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       const s = await getSettings();
+      if (cancelled) return;
       setSettings(s);
       settingsRef.current = s;
       lastGoodHotkeyRef.current = s.hotkey.trim() || DEFAULT_HOTKEY;
@@ -102,6 +104,7 @@ export function Settings({
           errMsg = keyErrorMessage(err);
         }
       }
+      if (cancelled) return;
       setHasKey(hk);
       if (errMsg) {
         setKeyError(errMsg);
@@ -110,6 +113,9 @@ export function Settings({
         setKeyError("");
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function restorePausedHotkey() {

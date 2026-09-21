@@ -191,7 +191,7 @@ jobs:
               return;
             }
 
-            const { data: releases } = await github.paginate(
+            const releases = await github.paginate(
               github.rest.repos.listReleases,
               { owner, repo, per_page: 100 },
             );

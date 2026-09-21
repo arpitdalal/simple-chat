@@ -1,4 +1,4 @@
-# Real Tauri IPC WebDriver e2e (issue #11). Linux + xvfb; embedded WebDriver in-app.
+# Real Tauri IPC WebDriver e2e (issue #11). Windows — Linux WebKit custom-protocol Origin breaks IPC.
 name: WebDriver
 
 on:
@@ -8,20 +8,10 @@ on:
 
 jobs:
   ipc:
-    name: tauri-driver IPC (Linux)
-    runs-on: ubuntu-latest
+    name: tauri-driver IPC (Windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: System deps (Tauri + xvfb)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            xvfb
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,4 +34,4 @@ jobs:
         working-directory: src-tauri
 
       - name: WebDriver IPC tests
-        run: xvfb-run -a npm run test:ipc
+        run: npm run test:ipc

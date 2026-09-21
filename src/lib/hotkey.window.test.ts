@@ -193,6 +193,7 @@ describe("hotkey window actions", () => {
     setPreferLogicalMonitorFramesForTests(true);
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
     currentMonitor.mockResolvedValue(external1x);
+    outerPosition.mockResolvedValue({ x: 2000, y: 100 }); // intersects external
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
     await positionMainWindowForShow();
     expect(setPosition).not.toHaveBeenCalled();

@@ -60,7 +60,7 @@ jobs:
           const event = process.env.EVENT_NAME;
           const ref = process.env.REF;
           const refName = process.env.REF_NAME;
-          const dispatchVersion = (process.env.DISPATCH_VERSION || "").replace(/^v/, "");
+          const dispatchVersion = process.env.DISPATCH_VERSION || "";
           if (event === "push" && refName.startsWith("v")) {
             const tag = refName.slice(1);
             if (tag !== app) {
@@ -71,6 +71,10 @@ jobs:
           if (event === "workflow_dispatch") {
             if (ref !== "refs/heads/main") {
               console.error(`workflow_dispatch only allowed from main (got ${ref})`);
+              process.exit(1);
+            }
+            if (dispatchVersion.startsWith("v")) {
+              console.error(`version input must omit the v prefix (got ${dispatchVersion})`);
               process.exit(1);
             }
             if (dispatchVersion !== app) {
@@ -187,11 +191,10 @@ jobs:
               return;
             }
 
-            const { data: releases } = await github.rest.repos.listReleases({
-              owner,
-              repo,
-              per_page: 100,
-            });
+            const { data: releases } = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner, repo, per_page: 100 },
+            );
             for (const r of releases.filter((x) => x.tag_name === tag && x.draft)) {
               await github.rest.repos.deleteRelease({
                 owner,

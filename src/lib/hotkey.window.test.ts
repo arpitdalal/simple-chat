@@ -5,12 +5,14 @@ const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
 const outerSize = vi.fn();
+const outerPosition = vi.fn();
 const setPosition = vi.fn();
 const center = vi.fn();
 const scaleFactor = vi.fn();
 const cursorPosition = vi.fn();
 const availableMonitors = vi.fn();
 const primaryMonitor = vi.fn();
+const currentMonitor = vi.fn();
 const register = vi.fn();
 const unregister = vi.fn();
 const unregisterAll = vi.fn();
@@ -49,6 +51,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     setFocus,
     isVisible,
     outerSize,
+    outerPosition,
     setPosition,
     center,
     scaleFactor,
@@ -56,6 +59,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   cursorPosition: (...a: unknown[]) => cursorPosition(...a),
   availableMonitors: (...a: unknown[]) => availableMonitors(...a),
   primaryMonitor: (...a: unknown[]) => primaryMonitor(...a),
+  currentMonitor: (...a: unknown[]) => currentMonitor(...a),
 }));
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
@@ -72,6 +76,7 @@ import {
   getActiveHotkey,
   hideMainWindow,
   monitorForCursor,
+  positionMainWindowForShow,
   resetActiveHotkeyForTests,
   setPreferLogicalMonitorFramesForTests,
   toggleMainWindow,
@@ -126,6 +131,9 @@ describe("hotkey window actions", () => {
     isRegistered.mockResolvedValue(false);
     invoke.mockResolvedValue(undefined);
     outerSize.mockResolvedValue({ width: 800, height: 600 });
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    // Default: window on primary — cursor-on-secondary tests still recenter.
+    currentMonitor.mockResolvedValue(primary);
     scaleFactor.mockResolvedValue(1);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
     availableMonitors.mockResolvedValue([primary, secondary]);
@@ -169,6 +177,159 @@ describe("hotkey window actions", () => {
       show.mock.invocationCallOrder[0],
     );
     expect(invoke).toHaveBeenCalledWith("capture_previous_app");
+  });
+
+  it("positionMainWindowForShow keeps place when cursor is on the same monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+    expect(center).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow trusts currentMonitor on mixed-DPI overlap", async () => {
+    // Physical AABBs overlap; runtime says external — must not false-match primary.
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    currentMonitor.mockResolvedValue(external1x);
+    outerPosition.mockResolvedValue({ x: 2000, y: 100 }); // intersects external
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters across mixed-DPI monitors on macOS", async () => {
+    setPreferLogicalMonitorFramesForTests(true);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    currentMonitor.mockResolvedValue(retinaPrimary);
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when currentMonitor is null", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(null);
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow clamps when window is fully off-screen", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: -5000, y: -5000 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 0, y: 0 }),
+    );
+  });
+
+  it("positionMainWindowForShow clamps a thin edge overlap into the work area", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: 100, y: -48 });
+    outerSize.mockResolvedValue({ width: 800, height: 600 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 100, y: 0 }),
+    );
+  });
+
+  it("positionMainWindowForShow keeps origin when size fails but origin is on-screen", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    outerSize.mockRejectedValue(new Error("hidden size"));
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow preserves offset for oversized windows", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    // 3000-wide on 1920 work area; keep deliberate x=-400 (right edge still covers).
+    outerPosition.mockResolvedValue({ x: -400, y: 50 });
+    outerSize.mockResolvedValue({ width: 3000, height: 600 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow keeps title bar visible for oversized height", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    // Taller than work area; y=-500 would hide the title bar under bottom-edge clamp.
+    outerPosition.mockResolvedValue({ x: 100, y: -500 });
+    outerSize.mockResolvedValue({ width: 800, height: 2000 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 100, y: 0 }),
+    );
+  });
+
+  it("positionMainWindowForShow fully clamps an exact-fit window", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: 100, y: 500 });
+    outerSize.mockResolvedValue({ width: 800, height: 1080 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 100, y: 0 }),
+    );
+  });
+
+  it("positionMainWindowForShow uses physical outerSize on same-monitor clamp", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(retinaPrimary);
+    availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
+    // Physical 1600 on 2× — must not be treated as 3200 via scale fallback.
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    outerSize.mockResolvedValue({ width: 1600, height: 1200 });
+    scaleFactor.mockRejectedValue(new Error("no scale"));
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when same-monitor clamp cannot read geometry", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockRejectedValue(new Error("no pos"));
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalled();
+  });
+
+  it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "Physical",
+        x: 1920 + (1920 - 800) / 2,
+        y: (1080 - 600) / 2,
+      }),
+    );
+  });
+
+  it("toggleMainWindow preserves position when already on cursor monitor", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    isVisible.mockResolvedValue(false);
+    currentMonitor.mockResolvedValue(primary);
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await toggleMainWindow();
+    expect(setPosition).not.toHaveBeenCalled();
+    expect(show).toHaveBeenCalled();
+    expect(setFocus).toHaveBeenCalled();
   });
 
   it("monitorForCursor picks monitor containing physical cursor", async () => {

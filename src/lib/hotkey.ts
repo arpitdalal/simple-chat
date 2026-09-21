@@ -8,6 +8,7 @@ import {
 import { LogicalPosition, PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
   availableMonitors,
+  currentMonitor,
   cursorPosition,
   getCurrentWindow,
   primaryMonitor,
@@ -106,25 +107,23 @@ function preferLogicalMonitorFrames(): boolean {
 }
 
 /**
- * Monitor under the cursor.
+ * Monitor containing a desktop point (cursor or window center).
  * macOS (desktop points): unique logical frame first.
  * Else (physical coords): unique physical AABB first.
  *
  * ponytail: Wayland cursor_position is (0,0) and set_position no-ops — no
  * reliable cursor-display summon until the runtime supports both.
  */
-export async function monitorForCursor(): Promise<Monitor | null> {
-  const cursor = await cursorPosition();
+export async function monitorForPoint(
+  x: number,
+  y: number,
+): Promise<Monitor | null> {
   const monitors = await availableMonitors();
   if (!monitors.length) return primaryMonitor();
 
   const frames = monitors.map(logicalFrame);
-  const physicalHits = monitors.filter((m) =>
-    containsPoint(m, cursor.x, cursor.y),
-  );
-  const logicalHits = frames.filter((f) =>
-    frameContains(f, cursor.x, cursor.y),
-  );
+  const physicalHits = monitors.filter((m) => containsPoint(m, x, y));
+  const logicalHits = frames.filter((f) => frameContains(f, x, y));
 
   if (preferLogicalMonitorFrames()) {
     if (logicalHits.length === 1) return logicalHits[0].mon;
@@ -141,11 +140,139 @@ export async function monitorForCursor(): Promise<Monitor | null> {
         ? physicalHits.map(logicalFrame)
         : frames;
   return pool.reduce((best, f) =>
-    distanceSqToFrame(f, cursor.x, cursor.y) <
-    distanceSqToFrame(best, cursor.x, cursor.y)
-      ? f
-      : best,
+    distanceSqToFrame(f, x, y) < distanceSqToFrame(best, x, y) ? f : best,
   ).mon;
+}
+
+/** Monitor under the cursor. */
+export async function monitorForCursor(): Promise<Monitor | null> {
+  const cursor = await cursorPosition();
+  return monitorForPoint(cursor.x, cursor.y);
+}
+
+function sameMonitor(a: Monitor, b: Monitor): boolean {
+  return (
+    a.scaleFactor === b.scaleFactor &&
+    a.position.x === b.position.x &&
+    a.position.y === b.position.y &&
+    a.size.width === b.size.width &&
+    a.size.height === b.size.height
+  );
+}
+
+function clampOrigin(
+  pos: { x: number; y: number },
+  workPos: { x: number; y: number },
+  workSize: { width: number; height: number },
+  winSize: { width: number; height: number } | null,
+): { x: number; y: number } {
+  const w = winSize && winSize.width > 0 ? winSize.width : 0;
+  const h = winSize && winSize.height > 0 ? winSize.height : 0;
+  let x = pos.x;
+  let y = pos.y;
+  if (w > 0) {
+    // Works for oversized too: range is [work+workW-w, work] when w > workW.
+    const lo = Math.min(workPos.x, workPos.x + workSize.width - w);
+    const hi = Math.max(workPos.x, workPos.x + workSize.width - w);
+    x = Math.min(Math.max(x, lo), hi);
+  } else {
+    // Unknown size — clamp the origin as a point; don't snap to top-left.
+    x = Math.min(
+      Math.max(x, workPos.x),
+      workPos.x + Math.max(0, workSize.width - 1),
+    );
+  }
+  if (h > 0) {
+    if (h > workSize.height) {
+      // Keep the title bar in the work area (bottom-edge clamp can hide it).
+      const titleH = Math.min(48, h);
+      const lo = workPos.y;
+      const hi = workPos.y + Math.max(0, workSize.height - titleH);
+      y = Math.min(Math.max(y, lo), hi);
+    } else {
+      const lo = Math.min(workPos.y, workPos.y + workSize.height - h);
+      const hi = Math.max(workPos.y, workPos.y + workSize.height - h);
+      y = Math.min(Math.max(y, lo), hi);
+    }
+  } else {
+    y = Math.min(
+      Math.max(y, workPos.y),
+      workPos.y + Math.max(0, workSize.height - 1),
+    );
+  }
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/**
+ * Pull the window into the monitor work area (no-op if already inside).
+ * @returns false if geometry could not be read/written — caller should recenter.
+ */
+async function clampWindowIntoWorkArea(
+  win: Window,
+  mon: Monitor,
+): Promise<boolean> {
+  try {
+    const pos = await win.outerPosition();
+    if (preferLogicalMonitorFrames()) {
+      const s = mon.scaleFactor || 1;
+      let srcScale = 0;
+      try {
+        srcScale = (await win.scaleFactor()) || 0;
+      } catch {
+        srcScale = 0;
+      }
+      // Wrong scale would mis-convert physical outerPosition — fall through to recenter.
+      if (!srcScale) return false;
+      const workPos = {
+        x: mon.workArea.position.x / s,
+        y: mon.workArea.position.y / s,
+      };
+      const workSize = {
+        width: mon.workArea.size.width / s,
+        height: mon.workArea.size.height / s,
+      };
+      let size: { width: number; height: number } | null = null;
+      try {
+        const outer = await win.outerSize();
+        size = {
+          width: Math.round(outer.width / srcScale),
+          height: Math.round(outer.height / srcScale),
+        };
+      } catch {
+        /* origin-as-point clamp below */
+      }
+      const logicalPos = {
+        x: pos.x / srcScale,
+        y: pos.y / srcScale,
+      };
+      const { x, y } = clampOrigin(logicalPos, workPos, workSize, size);
+      if (x === Math.round(logicalPos.x) && y === Math.round(logicalPos.y)) {
+        return true;
+      }
+      await win.setPosition(new LogicalPosition(x, y));
+    } else {
+      // Same-monitor: outerSize is already physical — do not re-scale via
+      // outerSizeForMonitor (scaleFactor fallback of 1× can double a retina size).
+      let size: { width: number; height: number } | null = null;
+      try {
+        const outer = await win.outerSize();
+        size = { width: outer.width, height: outer.height };
+      } catch {
+        /* origin-as-point clamp below */
+      }
+      const { x, y } = clampOrigin(
+        pos,
+        mon.workArea.position,
+        mon.workArea.size,
+        size,
+      );
+      if (x === pos.x && y === pos.y) return true;
+      await win.setPosition(new PhysicalPosition(x, y));
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function clampedCenter(
@@ -279,13 +406,40 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
   }
 }
 
+/**
+ * Recenter only when the cursor is on a different monitor than the window.
+ * Same-monitor summon keeps the user's last position (hide keeps geometry),
+ * clamped into the work area so layout changes cannot leave it unusable.
+ * Uses currentMonitor() so mixed-DPI overlapping AABBs don't false-match.
+ */
+export async function positionMainWindowForShow(
+  win: Window = getCurrentWindow(),
+) {
+  try {
+    const cursorMon = await monitorForCursor();
+    let winMon: Monitor | null = null;
+    try {
+      winMon = await currentMonitor();
+    } catch {
+      winMon = null;
+    }
+    if (cursorMon && winMon && sameMonitor(cursorMon, winMon)) {
+      if (await clampWindowIntoWorkArea(win, winMon)) return;
+      // Clamp failed — fall through to centerOnCursorMonitor's fallbacks.
+    }
+  } catch {
+    /* fall through — centerOnCursorMonitor has its own fallbacks */
+  }
+  await centerOnCursorMonitor(win);
+}
+
 export async function toggleMainWindow() {
   const run = async () => {
     const win = getCurrentWindow();
     if (await win.isVisible()) {
       await hideMainWindow();
     } else {
-      await centerOnCursorMonitor(win);
+      await positionMainWindowForShow(win);
       // Recapture immediately before steal — frontmost may have changed while centering.
       await invoke("capture_previous_app");
       await win.show();

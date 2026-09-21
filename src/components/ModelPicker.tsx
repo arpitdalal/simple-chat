@@ -57,17 +57,16 @@ export function ModelPicker({
     let cancelled = false;
     void (async () => {
       const next: ProviderId[] = [];
-      try {
-        for (const p of PROVIDERS) {
+      let errMsg = "";
+      for (const p of PROVIDERS) {
+        try {
           if (await hasApiKey(p)) next.push(p);
+        } catch (err) {
+          errMsg = keyErrorMessage(err);
         }
-        if (cancelled) return;
-        setProbeError("");
-      } catch (err) {
-        if (cancelled) return;
-        setProbeError(keyErrorMessage(err));
       }
       if (cancelled) return;
+      setProbeError(errMsg);
       setReady(next);
     })();
     return () => {
@@ -203,12 +202,17 @@ export function ModelPicker({
               }}
             />
             <div className="model-menu-list" ref={listRef}>
+              {probeError && (
+                <div className="model-menu-empty">{probeError}</div>
+              )}
               {options.length === 0 ? (
-                <div className="model-menu-empty">
-                  {ready.length === 0
-                    ? probeError || "Add an API key in Settings"
-                    : "No matching models"}
-                </div>
+                !probeError && (
+                  <div className="model-menu-empty">
+                    {ready.length === 0
+                      ? "Add an API key in Settings"
+                      : "No matching models"}
+                  </div>
+                )
               ) : (
                 options.map((m, i) => {
                   const selected =

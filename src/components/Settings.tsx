@@ -94,14 +94,20 @@ export function Settings({
         anthropic: false,
         google: false,
       };
-      try {
-        for (const p of PROVIDERS) hk[p] = await hasApiKey(p);
-        setHasKey(hk);
+      let errMsg = "";
+      for (const p of PROVIDERS) {
+        try {
+          hk[p] = await hasApiKey(p);
+        } catch (err) {
+          errMsg = keyErrorMessage(err);
+        }
+      }
+      setHasKey(hk);
+      if (errMsg) {
+        setKeyError(errMsg);
+        onNotifyRef.current?.(errMsg, "err");
+      } else {
         setKeyError("");
-      } catch (err) {
-        const msg = keyErrorMessage(err);
-        setKeyError(msg);
-        onNotifyRef.current?.(msg, "err");
       }
     })();
   }, []);

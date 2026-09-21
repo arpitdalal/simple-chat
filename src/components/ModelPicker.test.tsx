@@ -112,4 +112,26 @@ describe("ModelPicker", () => {
     );
     expect(screen.queryByText(/Add an API key in Settings/)).toBeNull();
   });
+
+  it("keeps partial ready providers and still shows keychain error", async () => {
+    const user = userEvent.setup();
+    hasApiKey.mockImplementation(async (p: string) => {
+      if (p === "openai") throw new Error("Could not access the OS credential store");
+      return p === "google";
+    });
+    render(
+      <ModelPicker
+        provider="google"
+        modelId="gemini-3.8-flash"
+        onChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /gemini 3.8 flash/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(within(screen.getByRole("listbox")).getByText("Gemini 3.8 Flash")).toBeInTheDocument();
+  });
 });

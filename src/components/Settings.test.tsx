@@ -137,6 +137,25 @@ describe("Settings", () => {
     );
   });
 
+  it("keeps partial saved-key state when one provider probe fails", async () => {
+    const onNotify = vi.fn();
+    hasApiKey.mockImplementation(async (p: string) => {
+      if (p === "anthropic") throw new Error("Could not access the OS credential store");
+      return p === "google";
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Google · saved/)).toBeInTheDocument();
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("OS credential store"),
+      "err",
+    );
+  });
+
   it("does not show a web search toggle", async () => {
     render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("Settings")).toBeInTheDocument());

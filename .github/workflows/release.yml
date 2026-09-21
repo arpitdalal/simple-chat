@@ -288,8 +288,15 @@ jobs:
           keychain_path="$RUNNER_TEMP/apple-build.keychain-db"
           keychain_password="$(openssl rand -base64 24)"
 
-          if ! printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path" 2>/dev/null; then
-            printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$cert_path"
+          # Strip whitespace (UI paste often injects newlines); openssl -A is reliable on macOS runners.
+          printf '%s' "$APPLE_CERTIFICATE" | tr -d ' \n\r\t' | openssl base64 -d -A -out "$cert_path" || {
+            echo "::error::APPLE_CERTIFICATE is not valid base64. Re-set with: gh secret set APPLE_CERTIFICATE < <(openssl base64 -A -in cert.p12)"
+            exit 1
+          }
+          cert_bytes="$(wc -c < "$cert_path" | tr -d ' ')"
+          if [ "$cert_bytes" -lt 100 ]; then
+            echo "::error::Decoded APPLE_CERTIFICATE too small (${cert_bytes} bytes)."
+            exit 1
           fi
 
           security create-keychain -p "$keychain_password" "$keychain_path"

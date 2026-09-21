@@ -8,8 +8,20 @@ export function keyErrorMessage(err: unknown): string {
   return String(err);
 }
 
+/** Serialize keychain mutations per provider so blur-save cannot race past Clear. */
+const keyOpTail = new Map<string, Promise<unknown>>();
+
+function runKeyOp<T>(provider: string, op: () => Promise<T>): Promise<T> {
+  const prev = keyOpTail.get(provider) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(op);
+  keyOpTail.set(provider, next);
+  return next as Promise<T>;
+}
+
 export function setApiKey(provider: ProviderId, key: string) {
-  return invoke<void>("set_api_key", { provider, key });
+  return runKeyOp(provider, () =>
+    invoke<void>("set_api_key", { provider, key }),
+  );
 }
 
 export function clearApiKey(provider: ProviderId) {

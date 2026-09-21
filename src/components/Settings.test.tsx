@@ -156,6 +156,22 @@ describe("Settings", () => {
     );
   });
 
+  it("shows Clear when probe fails because a saved credential is unreadable", async () => {
+    hasApiKey.mockImplementation(async (p: string) => {
+      if (p === "google") {
+        throw new Error(
+          "A saved credential is unreadable. Clear the key in Settings and paste it again.",
+        );
+      }
+      return false;
+    });
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/unreadable/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
+  });
+
   it("does not show a web search toggle", async () => {
     render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("Settings")).toBeInTheDocument());

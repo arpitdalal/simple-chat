@@ -42,4 +42,22 @@ describe("keys client", () => {
     expect(keyErrorMessage("plain")).toBe("plain");
     expect(keyErrorMessage(42)).toBe("42");
   });
+
+  it("serializes setApiKey then clearApiKey for the same provider", async () => {
+    const order: string[] = [];
+    invoke.mockImplementation(async (_cmd: string, args: { key: string }) => {
+      order.push(`start:${args.key || "clear"}`);
+      await new Promise((r) => setTimeout(r, args.key ? 30 : 5));
+      order.push(`end:${args.key || "clear"}`);
+    });
+    const save = setApiKey("openai", "sk-new");
+    const clear = clearApiKey("openai");
+    await Promise.all([save, clear]);
+    expect(order).toEqual([
+      "start:sk-new",
+      "end:sk-new",
+      "start:clear",
+      "end:clear",
+    ]);
+  });
 });

@@ -66,9 +66,6 @@ fn has_api_key_sync(provider: String) -> Result<bool, String> {
     match entry(&provider)?.get_password() {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        // Entry exists but is unreadable — treat as present so Settings can offer Clear.
-        Err(keyring::Error::BadEncoding(_))
-        | Err(keyring::Error::BadDataFormat(_, _)) => Ok(true),
         Err(err) => Err(map_keyring_err(err)),
     }
 }
@@ -132,10 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn has_api_key_sync_true_for_unreadable_encoding() {
-        // BadEncoding means an entry exists — Clear must remain available.
-        // We only unit-test the match arm shape via map; sync has_* needs a live store.
-        // Guard the public contract: BadEncoding maps to clearable guidance.
+    fn map_keyring_err_bad_encoding_points_to_clear() {
         let msg = map_keyring_err(keyring::Error::BadEncoding(vec![0xff]));
         assert!(msg.contains("Clear"), "{msg}");
     }

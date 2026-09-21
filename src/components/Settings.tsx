@@ -102,6 +102,8 @@ export function Settings({
           hk[p] = await hasApiKey(p);
         } catch (err) {
           errMsg = keyErrorMessage(err);
+          // Unreadable entry still exists — show Clear without treating as usable.
+          if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
         }
       }
       if (cancelled) return;
@@ -476,6 +478,8 @@ export function Settings({
                 <button
                   type="button"
                   className="ghost"
+                  // Prevent blur-save from racing with Clear on the same input.
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => void clearKey(p)}
                 >
                   Clear

@@ -1,0 +1,57 @@
+# Real Tauri IPC WebDriver e2e (issue #11). macOS — embedded WebDriver; Linux/Windows Origin IPC broken under automation.
+name: WebDriver
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ipc:
+    name: tauri-driver IPC (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Allow Dock / GUI for WebDriver (LSUIElement blanks webview under automation)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src-tauri/Info.plist")
+          text = p.read_text()
+          text = text.replace("<key>LSUIElement</key>\n\t<true/>", "<key>LSUIElement</key>\n\t<false/>")
+          if "<true/>" in text.split("LSUIElement")[1][:40]:
+              raise SystemExit("failed to clear LSUIElement")
+          p.write_text(text)
+          print(p.read_text())
+          PY
+
+      - name: Build release binary
+        working-directory: src-tauri
+        run: |
+          # Opaque visible window for automation (merge at compile time).
+          # --features webdriver pulls custom-protocol so frontendDist embeds
+          # (raw cargo --release alone keeps cfg(dev) → localhost:1420 → about:blank).
+          export TAURI_CONFIG="$(cat tauri.webdriver.conf.json)"
+          cargo build --release --features webdriver
+          ls -la target/release/simple-chat
+          test "$(wc -c < target/release/simple-chat)" -gt 1000000
+
+      - name: WebDriver IPC tests
+        run: npm run test:ipc

@@ -5,8 +5,10 @@ mod keys;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    ActivationPolicy, AppHandle, Emitter, Manager, RunEvent, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
 
 fn hide_main_window(app: &AppHandle) {
     // Restore while still active (cooperative yield), then hide. Guard blur
@@ -19,7 +21,7 @@ fn hide_main_window(app: &AppHandle) {
         let _ = window.hide();
     }
     focus::end_restore();
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
     let _ = app.set_activation_policy(ActivationPolicy::Accessory);
 }
 
@@ -68,14 +70,24 @@ pub fn run() {
             keys::has_api_key,
             capture_previous_app,
             hide_main_window_cmd,
-        ])
-        .setup(|app| {
+        ]);
+
+    // Before setup so on_webview_ready applies to the main webview (CI IPC e2e).
+    #[cfg(feature = "webdriver")]
+    let builder = if std::env::var(tauri_plugin_wdio_webdriver::PORT_ENV_VAR).is_ok() {
+        builder.plugin(tauri_plugin_wdio_webdriver::init())
+    } else {
+        builder
+    };
+
+    let builder = builder.setup(|app| {
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
 
             // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
-            #[cfg(target_os = "macos")]
+            // WebDriver CI needs a normal activation policy or the webview stays blank.
+            #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
             let show = MenuItem::with_id(app, "show", "Show Simple Chat", true, None::<&str>)?;
@@ -107,7 +119,7 @@ pub fn run() {
             show_main_window(app.handle());
 
             // Re-assert accessory after showing (dev builds sometimes bounce to regular).
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
             Ok(())

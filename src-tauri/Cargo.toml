@@ -27,6 +27,13 @@ tauri-plugin-sql = { version = "2.4.1", features = ["sqlite"] }
 keyring = { version = "4.2.0", features = ["apple-native-keyring-store"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 tauri-plugin-process = "2"
+tauri-plugin-wdio-webdriver = { version = "1.4", optional = true }
+
+[features]
+# CI IPC e2e — embeds frontendDist (custom-protocol). Raw `cargo build --release`
+# without it keeps cfg(dev) and loads Vite's localhost:1420 → about:blank.
+custom-protocol = ["tauri/custom-protocol"]
+webdriver = ["dep:tauri-plugin-wdio-webdriver", "custom-protocol"]
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

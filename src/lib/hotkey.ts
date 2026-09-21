@@ -160,25 +160,86 @@ function sameMonitor(a: Monitor, b: Monitor): boolean {
   );
 }
 
-/**
- * True when the window's title-bar strip overlaps the monitor work area.
- * Any-pixel AABB overlap is too weak after layout/resolution changes.
- */
-async function windowTitleBarInWorkArea(
-  win: Window,
-  mon: Monitor,
-): Promise<boolean> {
+function clampOrigin(
+  pos: { x: number; y: number },
+  workPos: { x: number; y: number },
+  workSize: { width: number; height: number },
+  winSize: { width: number; height: number },
+): { x: number; y: number } {
+  const w = winSize.width > 0 ? winSize.width : 0;
+  const h = winSize.height > 0 ? winSize.height : 0;
+  let x = pos.x;
+  let y = pos.y;
+  if (w > 0) {
+    x = Math.min(
+      Math.max(x, workPos.x),
+      workPos.x + Math.max(0, workSize.width - w),
+    );
+  } else {
+    x = workPos.x;
+  }
+  if (h > 0) {
+    y = Math.min(
+      Math.max(y, workPos.y),
+      workPos.y + Math.max(0, workSize.height - h),
+    );
+  } else {
+    y = workPos.y;
+  }
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** Pull the window fully into the monitor work area (no-op if already inside). */
+async function clampWindowIntoWorkArea(win: Window, mon: Monitor) {
   try {
     const pos = await win.outerPosition();
-    const size = await win.outerSize();
-    const titleH = Math.min(48, Math.max(1, size.height));
-    const wx2 = pos.x + size.width;
-    const wy2 = pos.y + titleH;
-    const { x: mx, y: my } = mon.workArea.position;
-    const { width: mw, height: mh } = mon.workArea.size;
-    return pos.x < mx + mw && wx2 > mx && pos.y < my + mh && wy2 > my;
+    if (preferLogicalMonitorFrames()) {
+      const s = mon.scaleFactor || 1;
+      let srcScale = 1;
+      try {
+        srcScale = (await win.scaleFactor()) || 1;
+      } catch {
+        srcScale = 1;
+      }
+      const workPos = {
+        x: mon.workArea.position.x / s,
+        y: mon.workArea.position.y / s,
+      };
+      const workSize = {
+        width: mon.workArea.size.width / s,
+        height: mon.workArea.size.height / s,
+      };
+      let size = { width: 0, height: 0 };
+      try {
+        size = await outerSizeLogical(win);
+      } catch {
+        /* origin-only clamp */
+      }
+      const logicalPos = {
+        x: pos.x / srcScale,
+        y: pos.y / srcScale,
+      };
+      const { x, y } = clampOrigin(logicalPos, workPos, workSize, size);
+      if (x === Math.round(logicalPos.x) && y === Math.round(logicalPos.y)) return;
+      await win.setPosition(new LogicalPosition(x, y));
+    } else {
+      let size = { width: 0, height: 0 };
+      try {
+        size = await outerSizeForMonitor(win, mon);
+      } catch {
+        /* origin-only clamp */
+      }
+      const { x, y } = clampOrigin(
+        pos,
+        mon.workArea.position,
+        mon.workArea.size,
+        size,
+      );
+      if (x === pos.x && y === pos.y) return;
+      await win.setPosition(new PhysicalPosition(x, y));
+    }
   } catch {
-    return false;
+    /* show still proceeds */
   }
 }
 
@@ -315,7 +376,8 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
 
 /**
  * Recenter only when the cursor is on a different monitor than the window.
- * Same-monitor summon keeps the user's last position (hide keeps geometry).
+ * Same-monitor summon keeps the user's last position (hide keeps geometry),
+ * clamped into the work area so layout changes cannot leave it unusable.
  * Uses currentMonitor() so mixed-DPI overlapping AABBs don't false-match.
  */
 export async function positionMainWindowForShow(
@@ -329,14 +391,8 @@ export async function positionMainWindowForShow(
     } catch {
       winMon = null;
     }
-    // currentMonitor can name the nearest display for a fully off-screen window
-    // (layout change / unplug) — only preserve when the title bar is still usable.
-    if (
-      cursorMon &&
-      winMon &&
-      sameMonitor(cursorMon, winMon) &&
-      (await windowTitleBarInWorkArea(win, winMon))
-    ) {
+    if (cursorMon && winMon && sameMonitor(cursorMon, winMon)) {
+      await clampWindowIntoWorkArea(win, winMon);
       return;
     }
   } catch {

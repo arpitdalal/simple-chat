@@ -216,25 +216,27 @@ describe("hotkey window actions", () => {
     expect(setPosition).toHaveBeenCalled();
   });
 
-  it("positionMainWindowForShow recenters when window is fully off-screen", async () => {
-    // currentMonitor may name nearest display; title bar must still be in work area.
+  it("positionMainWindowForShow clamps when window is fully off-screen", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);
     outerPosition.mockResolvedValue({ x: -5000, y: -5000 });
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();
-    expect(setPosition).toHaveBeenCalled();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 0, y: 0 }),
+    );
   });
 
-  it("positionMainWindowForShow recenters when only a thin edge overlaps", async () => {
+  it("positionMainWindowForShow clamps a thin edge overlap into the work area", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);
-    // Title bar (top 48px) fully above work area; body still overlaps.
     outerPosition.mockResolvedValue({ x: 100, y: -48 });
     outerSize.mockResolvedValue({ width: 800, height: 600 });
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();
-    expect(setPosition).toHaveBeenCalled();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 100, y: 0 }),
+    );
   });
 
   it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {

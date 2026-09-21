@@ -15,8 +15,11 @@ pub fn is_clear_key(key: &str) -> bool {
 fn map_keyring_err(err: keyring::Error) -> String {
     match &err {
         keyring::Error::NoEntry => err.to_string(),
-        keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_) => {
+        keyring::Error::NoStorageAccess(_) => {
             "Could not access the OS credential store. Unlock Keychain / Credential Manager / Secret Service (or approve access), then try again.".into()
+        }
+        keyring::Error::PlatformFailure(_) => {
+            "The OS credential store failed. Check Keychain / Credential Manager / Secret Service is running, then try again.".into()
         }
         keyring::Error::NoDefaultStore => {
             "No OS credential store is available. Install or start Keychain, Windows Credential Manager, or a Secret Service (e.g. gnome-keyring / KWallet), then try again.".into()
@@ -104,6 +107,15 @@ mod tests {
             "locked".to_string().into(),
         ));
         assert!(msg.contains("Unlock"), "{msg}");
+    }
+
+    #[test]
+    fn map_keyring_err_platform_failure_avoids_unlock_cta() {
+        let msg = map_keyring_err(keyring::Error::PlatformFailure(
+            "backend".to_string().into(),
+        ));
+        assert!(msg.contains("failed"), "{msg}");
+        assert!(!msg.contains("Unlock"), "{msg}");
     }
 
     #[test]

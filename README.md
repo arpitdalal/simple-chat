@@ -27,8 +27,9 @@ Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` s
 
 ## CI / Release
 
-- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test` + Playwright, then `tauri-apps/tauri-action` builds for macOS (arm64 + x64), Windows (NSIS/MSI), Linux (AppImage + deb). Updater signing skipped on CI; macOS uses ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`).
-- **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch from `main`) — preflight secrets/versions → tests → draft GitHub Release → matrix upload (NSIS preferred in updater JSON) → deletes the draft if any platform fails/cancels. Publish the draft when ready. Needs `TAURI_SIGNING_PRIVATE_KEY` (+ optional password). After a failed tag release, delete the local/remote `v*` tag before re-pushing. Linux updater consumes AppImage; deb is for apt-style installs. macOS ships `.app` (updater) + DMG.
+- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test` + Playwright, then `tauri-apps/tauri-action` builds for **macOS** (arm64 + x64). Updater signing skipped on CI; ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`). Win/Linux binary CI deferred.
+- **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch from `main`) — preflight → tests → draft GitHub Release → macOS matrix upload → deletes the draft if any leg fails/cancels. Publish the draft when ready. Needs `TAURI_SIGNING_PRIVATE_KEY` (+ optional password). After a failed tag release, delete the `v*` tag before re-pushing. macOS ships `.app` (updater) + DMG. Full Apple ID / notarization is #2.
+
 
 ## Tests
 

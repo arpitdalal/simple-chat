@@ -66,6 +66,19 @@ describe("hotkey helpers", () => {
     ).toBe("Control+Alt+Shift+Command+A");
   });
 
+  it("expands cmd+ctrl without alt/shift; keeps CommandOrControl for ctrl-only", () => {
+    expect(
+      eventToAccelerator(
+        keyEvent({ metaKey: true, ctrlKey: true, code: "KeyA", key: "a" }),
+      ),
+    ).toBe("Control+Command+A");
+    expect(
+      eventToAccelerator(
+        keyEvent({ ctrlKey: true, shiftKey: true, code: "KeyK", key: "k" }),
+      ),
+    ).toBe("CommandOrControl+Shift+K");
+  });
+
   it("rejects bare keys and modifier-only presses", () => {
     expect(eventToAccelerator(keyEvent({ code: "KeyA", key: "a" }))).toBeNull();
     expect(

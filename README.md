@@ -30,7 +30,7 @@ Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` s
 ```bash
 npm test          # unit + component integration (vitest)
 npm run test:e2e  # browser UX flows (playwright + in-memory Tauri mocks)
-npm run test:ipc  # real Tauri↔Rust IPC via embedded WebDriver (Linux CI; needs release binary)
+npm run test:ipc  # real Tauri↔Rust IPC via embedded WebDriver (Windows CI; needs release binary)
 npm run test:all
 ```
 

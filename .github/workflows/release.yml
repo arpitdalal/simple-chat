@@ -10,9 +10,11 @@ on:
       - "v*"
   workflow_dispatch:
 
-# One release at a time so create-release never deletes another run's live draft.
+# Serialize per release tag so v0.1 and v0.2 don't evict each other from the
+# pending queue (GitHub keeps at most one pending run per concurrency group).
+# All workflow_dispatch runs share one group (same tip/version from main).
 concurrency:
-  group: simple-chat-release
+  group: ${{ github.event_name == 'workflow_dispatch' && 'simple-chat-release-dispatch' || format('simple-chat-release-{0}', github.ref_name) }}
   cancel-in-progress: false
 
 jobs:

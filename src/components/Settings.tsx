@@ -78,6 +78,7 @@ export function Settings({
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+  const mountedRef = useRef(true);
 
   async function probeKeys(
     gen: number,
@@ -98,7 +99,7 @@ export function Settings({
         if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
       }
     }
-    if (gen !== keyProbeGenRef.current) return;
+    if (!mountedRef.current || gen !== keyProbeGenRef.current) return;
     setHasKey(hk);
     const displayErr = errMsg || opts?.retainError || "";
     if (displayErr) {
@@ -116,6 +117,7 @@ export function Settings({
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     let cancelled = false;
     const gen = keyProbeGenRef.current;
     void (async () => {
@@ -128,6 +130,7 @@ export function Settings({
     })();
     return () => {
       cancelled = true;
+      mountedRef.current = false;
       keyProbeGenRef.current += 1;
     };
   }, []);
@@ -426,6 +429,7 @@ export function Settings({
     keyProbeGenRef.current += 1;
     try {
       await setApiKey(provider, value);
+      if (!mountedRef.current) return;
       // Keep a newer draft typed while the OS prompt was pending.
       setKeys((k) =>
         k[provider].trim() === value ? { ...k, [provider]: "" } : k,
@@ -437,6 +441,7 @@ export function Settings({
       const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
     } catch (err) {
+      if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
       setStatus("");
       onNotifyRef.current?.(msg, "err");
@@ -447,15 +452,21 @@ export function Settings({
   }
 
   async function clearKey(provider: ProviderId) {
+    const draftAtStart = keys[provider];
     keyProbeGenRef.current += 1;
     try {
       await clearApiKey(provider);
-      setKeys((k) => ({ ...k, [provider]: "" }));
+      if (!mountedRef.current) return;
+      // Keep a draft typed while the OS clear prompt was pending.
+      setKeys((k) =>
+        k[provider] === draftAtStart ? { ...k, [provider]: "" } : k,
+      );
       setKeyEpoch((n) => n + 1);
       setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
       const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
     } catch (err) {
+      if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
       setStatus("");
       onNotifyRef.current?.(msg, "err");

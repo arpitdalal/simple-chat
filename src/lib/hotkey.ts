@@ -183,9 +183,17 @@ function clampOrigin(
     );
   }
   if (h > 0) {
-    const lo = Math.min(workPos.y, workPos.y + workSize.height - h);
-    const hi = Math.max(workPos.y, workPos.y + workSize.height - h);
-    y = Math.min(Math.max(y, lo), hi);
+    if (h >= workSize.height) {
+      // Keep the title bar in the work area (bottom-edge clamp can hide it).
+      const titleH = Math.min(48, h);
+      const lo = workPos.y;
+      const hi = workPos.y + Math.max(0, workSize.height - titleH);
+      y = Math.min(Math.max(y, lo), hi);
+    } else {
+      const lo = Math.min(workPos.y, workPos.y + workSize.height - h);
+      const hi = Math.max(workPos.y, workPos.y + workSize.height - h);
+      y = Math.min(Math.max(y, lo), hi);
+    }
   } else {
     y = Math.min(
       Math.max(y, workPos.y),

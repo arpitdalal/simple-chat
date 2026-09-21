@@ -260,6 +260,19 @@ describe("hotkey window actions", () => {
     expect(setPosition).not.toHaveBeenCalled();
   });
 
+  it("positionMainWindowForShow keeps title bar visible for oversized height", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    // Taller than work area; y=-500 would hide the title bar under bottom-edge clamp.
+    outerPosition.mockResolvedValue({ x: 100, y: -500 });
+    outerSize.mockResolvedValue({ width: 800, height: 2000 });
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Physical", x: 100, y: 0 }),
+    );
+  });
+
   it("positionMainWindowForShow recenters when same-monitor clamp cannot read geometry", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);

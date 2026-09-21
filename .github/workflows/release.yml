@@ -10,6 +10,11 @@ on:
       - "v*"
   workflow_dispatch:
 
+# One release at a time so create-release never deletes another run's live draft.
+concurrency:
+  group: simple-chat-release
+  cancel-in-progress: false
+
 jobs:
   preflight:
     name: secrets + version guard
@@ -94,9 +99,28 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+  e2e:
+    name: playwright e2e (macOS)
+    needs: [preflight]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run test:e2e
+
   create-release:
     name: create draft release
-    needs: [preflight, test]
+    needs: [preflight, test, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -105,9 +129,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Always create a fresh draft for this SHA. Deleting any prior draft for the
-      # same tag avoids: (1) cleanup wiping a reused draft this run didn't create,
-      # (2) packaging HEAD while the draft/tag still points at an older commit.
+      # Fresh draft for this SHA. Concurrency group above prevents deleting another
+      # run's in-flight draft. Reject if v* tag already exists on a different commit
+      # (GitHub ignores target_commitish when the tag already exists).
       - name: Create draft release
         id: create
         uses: actions/github-script@v7
@@ -117,22 +141,55 @@ jobs:
           script: |
             const version = process.env.VERSION;
             const tag = `v${version}`;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            async function peelTagCommit(tagName) {
+              try {
+                const { data: ref } = await github.rest.git.getRef({
+                  owner,
+                  repo,
+                  ref: `tags/${tagName}`,
+                });
+                if (ref.object.type === "commit") return ref.object.sha;
+                const { data: tagObj } = await github.rest.git.getTag({
+                  owner,
+                  repo,
+                  tag_sha: ref.object.sha,
+                });
+                return tagObj.object.sha;
+              } catch (err) {
+                if (err.status === 404) return null;
+                throw err;
+              }
+            }
+
+            const existingSha = await peelTagCommit(tag);
+            if (existingSha && existingSha !== context.sha) {
+              core.setFailed(
+                `tag ${tag} points to ${existingSha}, this run is ${context.sha}. ` +
+                  `Delete the tag (and any published release) or bump the version before re-dispatching.`,
+              );
+              return;
+            }
+
             const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               per_page: 100,
             });
             for (const r of releases.filter((x) => x.tag_name === tag && x.draft)) {
               await github.rest.repos.deleteRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner,
+                repo,
                 release_id: r.id,
               });
               core.info(`deleted stale draft ${r.id} for ${tag}`);
             }
+
             const { data: release } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               tag_name: tag,
               name: `Simple Chat v${version}`,
               body: "See the assets to download this version and install.",

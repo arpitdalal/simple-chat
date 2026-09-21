@@ -39,9 +39,28 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+  e2e:
+    name: playwright e2e (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser e2e
+        run: npm run test:e2e
+
   build:
     name: tauri build (${{ matrix.label }})
-    needs: [test]
+    needs: [test, e2e]
     strategy:
       fail-fast: false
       matrix:

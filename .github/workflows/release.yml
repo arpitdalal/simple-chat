@@ -227,7 +227,8 @@ jobs:
               repo,
               tag_name: tag,
               name: `Simple Chat v${version}`,
-              body: "See the assets to download this version and install.",
+              // Compare previous published tag → this SHA; fills body with commits/PRs.
+              generate_release_notes: true,
               draft: true,
               prerelease: false,
               target_commitish: context.sha,

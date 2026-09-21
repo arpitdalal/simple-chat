@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { hasApiKey } from "../lib/keys";
+import { hasApiKey, keyErrorMessage } from "../lib/keys";
 import {
   CATALOG,
   PROVIDER_LABELS,
@@ -27,6 +27,7 @@ export function ModelPicker({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState<ProviderId[]>([]);
+  const [probeError, setProbeError] = useState("");
   const [query, setQuery] = useState("");
   const [hi, setHi] = useState(0);
   const hiRef = useRef(0);
@@ -59,8 +60,9 @@ export function ModelPicker({
         for (const p of PROVIDERS) {
           if (await hasApiKey(p)) next.push(p);
         }
-      } catch {
-        // Keychain probe failed — treat as no keys rather than unhandled rejection.
+        setProbeError("");
+      } catch (err) {
+        setProbeError(keyErrorMessage(err));
       }
       setReady(next);
     })();
@@ -197,7 +199,7 @@ export function ModelPicker({
               {options.length === 0 ? (
                 <div className="model-menu-empty">
                   {ready.length === 0
-                    ? "Add an API key in Settings"
+                    ? probeError || "Add an API key in Settings"
                     : "No matching models"}
                 </div>
               ) : (

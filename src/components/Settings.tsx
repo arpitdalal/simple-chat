@@ -405,6 +405,7 @@ export function Settings({
       setStatus(`${PROVIDER_LABELS[provider]} key saved`);
     } catch (err) {
       const msg = keyErrorMessage(err);
+      setStatus("");
       setKeyError(msg);
       onNotifyRef.current?.(msg, "err");
     }
@@ -420,6 +421,7 @@ export function Settings({
       setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
     } catch (err) {
       const msg = keyErrorMessage(err);
+      setStatus("");
       setKeyError(msg);
       onNotifyRef.current?.(msg, "err");
     }

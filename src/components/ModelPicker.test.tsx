@@ -7,6 +7,8 @@ const hasApiKey = vi.fn();
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
+  keyErrorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
 }));
 
 describe("ModelPicker", () => {
@@ -88,5 +90,26 @@ describe("ModelPicker", () => {
     });
     // exact GPT-4o mini still matches "gpt-4o" substring — Gemini must be gone
     expect(within(list).queryByText("Gemini 3.8 Flash")).toBeNull();
+  });
+
+  it("shows keychain error instead of add-key hint when probe fails", async () => {
+    const user = userEvent.setup();
+    hasApiKey.mockRejectedValue(
+      new Error("Could not access the OS credential store"),
+    );
+    render(
+      <ModelPicker
+        provider="google"
+        modelId="gemini-3.8-flash"
+        onChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /gemini 3.8 flash/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Add an API key in Settings/)).toBeNull();
   });
 });

@@ -36,6 +36,8 @@ vi.mock("../lib/chat", () => ({
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: vi.fn(async () => true),
+  keyErrorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
 }));
 
 vi.mock("../lib/db", () => ({

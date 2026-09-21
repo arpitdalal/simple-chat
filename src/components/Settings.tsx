@@ -67,6 +67,8 @@ export function Settings({
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
   const recordingRef = useRef(false);
+  /** Bumped on key save/clear so a late initial probe cannot overwrite hasKey. */
+  const keyProbeGenRef = useRef(0);
   /** True once Record intends to clear — including while flush/clear are in flight. */
   const pausedForRecordRef = useRef(false);
   /** Bumped on unmount / new Record to cancel in-flight startRecording. */
@@ -85,9 +87,10 @@ export function Settings({
 
   useEffect(() => {
     let cancelled = false;
+    const gen = keyProbeGenRef.current;
     void (async () => {
       const s = await getSettings();
-      if (cancelled) return;
+      if (cancelled || gen !== keyProbeGenRef.current) return;
       setSettings(s);
       settingsRef.current = s;
       lastGoodHotkeyRef.current = s.hotkey.trim() || DEFAULT_HOTKEY;
@@ -106,7 +109,7 @@ export function Settings({
           if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
         }
       }
-      if (cancelled) return;
+      if (cancelled || gen !== keyProbeGenRef.current) return;
       setHasKey(hk);
       if (errMsg) {
         setKeyError(errMsg);
@@ -410,6 +413,7 @@ export function Settings({
   async function saveKey(provider: ProviderId) {
     const value = keys[provider].trim();
     if (!value) return;
+    keyProbeGenRef.current += 1;
     try {
       await setApiKey(provider, value);
       setKeys((k) => ({ ...k, [provider]: "" }));
@@ -426,6 +430,7 @@ export function Settings({
   }
 
   async function clearKey(provider: ProviderId) {
+    keyProbeGenRef.current += 1;
     try {
       await clearApiKey(provider);
       setKeys((k) => ({ ...k, [provider]: "" }));

@@ -45,11 +45,23 @@ jobs:
       - name: Build release binary
         working-directory: src-tauri
         run: |
+          # Opaque visible window for automation (merge at compile time).
           export TAURI_CONFIG="$(cat tauri.webdriver.conf.json)"
           cargo build --release --features webdriver
           ls -la target/release/simple-chat
-          # Sanity: frontend must be embedded (release binary ≫ empty stub).
           test "$(wc -c < target/release/simple-chat)" -gt 1000000
 
       - name: WebDriver IPC tests
-        run: npm run test:ipc
+        env:
+          RUST_LOG: info
+        run: npm run test:ipc 2>&1 | tee /tmp/wdio.log
+        # Surface app stderr URL probe even when tests fail
+        continue-on-error: true
+
+      - name: Dump wdio log tail
+        if: always()
+        run: |
+          tail -n 200 /tmp/wdio.log || true
+          # Fail the job if tests failed
+          grep -q "Spec Files:.*0 failed" /tmp/wdio.log
+

@@ -118,6 +118,11 @@ pub fn run() {
 
             show_main_window(app.handle());
 
+            #[cfg(feature = "webdriver")]
+            if let Some(w) = app.get_webview_window("main") {
+                eprintln!("[webdriver] main url={:?}", w.url());
+            }
+
             // Re-assert accessory after showing (dev builds sometimes bounce to regular).
             #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
             app.set_activation_policy(ActivationPolicy::Accessory);

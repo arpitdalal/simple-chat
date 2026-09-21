@@ -45,7 +45,16 @@ describe("tauri-driver IPC", () => {
       }
       core
         .invoke("has_api_key", { provider: "openai" })
-        .then((value) => done({ kind: "bool", value: Boolean(value) }))
+        .then((value) => {
+          if (typeof value !== "boolean") {
+            done({
+              kind: "err",
+              message: `expected boolean, got ${typeof value}`,
+            });
+            return;
+          }
+          done({ kind: "bool", value });
+        })
         .catch((err: unknown) => done({ kind: "err", message: String(err) }));
     });
 

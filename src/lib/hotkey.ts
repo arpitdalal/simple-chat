@@ -496,10 +496,16 @@ export function eventToAccelerator(e: KeyboardEvent): string | null {
   if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
 
   const parts: string[] = [];
-  // Prefer CommandOrControl so one setting works cross-platform when only Cmd/Ctrl is held.
-  if (e.metaKey || e.ctrlKey) parts.push("CommandOrControl");
+  // Hyper (Cmd+Ctrl together) needs both modifiers; CommandOrControl alone would match only one.
+  if (e.metaKey && e.ctrlKey) {
+    parts.push("Control");
+  } else if (e.metaKey || e.ctrlKey) {
+    // One setting works cross-platform when only Cmd or only Ctrl is held.
+    parts.push("CommandOrControl");
+  }
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
+  if (e.metaKey && e.ctrlKey) parts.push("Command");
 
   let key: string;
   if (e.code.startsWith("Key")) key = e.code.slice(3);

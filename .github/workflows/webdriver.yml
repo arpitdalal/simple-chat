@@ -1,4 +1,4 @@
-# Real Tauri IPC via tauri-driver (issue #11). Linux only — one platform is enough.
+# Real Tauri IPC WebDriver e2e (issue #11). Linux + xvfb; embedded WebDriver in-app.
 name: WebDriver
 
 on:
@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: System deps (Tauri + WebKitWebDriver + xvfb)
+      - name: System deps (Tauri + xvfb)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -21,7 +21,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            webkit2gtk-driver \
             xvfb
 
       - uses: dtolnay/rust-toolchain@stable
@@ -43,9 +42,6 @@ jobs:
       - name: Build release binary
         run: cargo build --release
         working-directory: src-tauri
-
-      - name: Install tauri-driver
-        run: cargo install tauri-driver --locked
 
       - name: WebDriver IPC tests
         run: xvfb-run -a npm run test:ipc

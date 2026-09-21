@@ -76,6 +76,12 @@ pub fn run() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
 
+            // Embedded WebDriver only when WDIO sets TAURI_WEBDRIVER_PORT (CI IPC e2e).
+            if std::env::var(tauri_plugin_wdio_webdriver::PORT_ENV_VAR).is_ok() {
+                app.handle()
+                    .plugin(tauri_plugin_wdio_webdriver::init())?;
+            }
+
             // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);

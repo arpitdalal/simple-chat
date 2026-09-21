@@ -1,10 +1,10 @@
 /**
- * Real Tauri ↔ webview IPC via tauri-driver (external WebDriver).
- * Linux/Windows only — macOS has no WKWebView tauri-driver.
+ * Real Tauri ↔ webview IPC via embedded WebDriver (tauri-plugin-wdio-webdriver).
+ * External tauri-driver + WebKitWebDriver on Linux breaks custom-protocol Origin/IPC.
  */
 describe("tauri-driver IPC", () => {
   it("loads the webview and round-trips a Rust command", async () => {
-    const empty = await $("*=Ask Anything");
+    const empty = await $("h1=Ask Anything");
     await empty.waitForExist({ timeout: 45_000 });
 
     type IpcResult = { ok: true; value: unknown } | { ok: false; error: string };

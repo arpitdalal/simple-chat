@@ -28,9 +28,8 @@ export const config: Options.Testrunner = {
       "@wdio/tauri-service",
       {
         appBinaryPath: appBinary,
-        // Issue #11: real tauri-driver (Windows/Linux), not Playwright mocks.
-        driverProvider: "external",
-        autoInstallTauriDriver: true,
+        // Embedded avoids Linux WebKitWebDriver Origin/IPC breakage (external tauri-driver).
+        driverProvider: "embedded",
       },
     ],
   ],

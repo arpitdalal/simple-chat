@@ -37,7 +37,7 @@ describe("tauri-driver IPC", () => {
         const text = await browser.execute(
           () => document.body?.innerText?.slice(0, 300) ?? "",
         );
-        return text.includes("Ask Anything");
+        return text.includes("Ask AI anything");
       },
       { timeout: 45_000, interval: 1_000 },
     );

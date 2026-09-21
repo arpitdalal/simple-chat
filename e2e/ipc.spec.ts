@@ -33,12 +33,11 @@ describe("tauri-driver IPC", () => {
     expect(diag.hasInvoke).toBe(true);
 
     await browser.waitUntil(
-      async () => {
-        const text = await browser.execute(
-          () => document.body?.innerText?.slice(0, 300) ?? "",
-        );
-        return text.includes("Ask AI anything");
-      },
+      async () =>
+        browser.execute(() => {
+          const ta = document.querySelector("textarea");
+          return Boolean(ta?.placeholder?.includes("Ask AI anything"));
+        }),
       { timeout: 45_000, interval: 1_000 },
     );
 

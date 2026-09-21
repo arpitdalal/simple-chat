@@ -6,6 +6,8 @@ Minimal, open-source AI companion for your desktop. Summon it with a keystroke, 
 
 Inspired by Raycast v2 charging for AI chat even with BYOK. Not everyone needs projects and advanced workspace features — sometimes you just want a hotkey chatbot on your own API key.
 
+![Simple Chat](docs/simple-chat.png)
+
 [Latest release](https://github.com/arpitdalal/simple-chat/releases/latest)
 
 ## Features

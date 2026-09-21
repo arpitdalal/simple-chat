@@ -27,8 +27,8 @@ Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` s
 
 ## CI / Release
 
-- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + Playwright, then `tauri-apps/tauri-action` builds for macOS (arm64 + x64), Windows (NSIS/MSI), Linux (AppImage + deb). Updater signing skipped on CI.
-- **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch) — same matrix, drafts a GitHub Release with bundles + updater `latest.json`. Needs secrets `TAURI_SIGNING_PRIVATE_KEY` and optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Publish the draft when ready. Linux updater consumes AppImage; deb is for apt-style installs.
+- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test` + Playwright, then `tauri-apps/tauri-action` builds for macOS (arm64 + x64), Windows (NSIS/MSI), Linux (AppImage + deb). Updater signing skipped on CI; macOS uses ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`).
+- **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch) — preflight secrets/versions → tests → draft GitHub Release → matrix upload (NSIS preferred in updater JSON) → deletes the draft if any platform fails. Publish the draft when ready. Needs `TAURI_SIGNING_PRIVATE_KEY` (+ optional password). Linux updater consumes AppImage; deb is for apt-style installs. macOS ships `.app` (updater) + DMG.
 
 ## Tests
 

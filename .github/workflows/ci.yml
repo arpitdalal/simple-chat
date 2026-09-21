@@ -8,8 +8,8 @@ on:
 
 jobs:
   test:
-    name: unit + e2e (browser)
-    runs-on: ubuntu-latest
+    name: unit + e2e (browser) + rust
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -18,10 +18,25 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
       - run: npm ci
 
       - name: Unit / component tests
         run: npm test
+
+      - name: Rust unit tests
+        working-directory: src-tauri
+        run: cargo test
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
@@ -31,6 +46,7 @@ jobs:
 
   build:
     name: tauri build (${{ matrix.label }})
+    needs: [test]
     strategy:
       fail-fast: false
       matrix:
@@ -74,8 +90,10 @@ jobs:
       - run: npm ci
 
       # createUpdaterArtifacts needs TAURI_SIGNING_PRIVATE_KEY — skip for PR builds.
+      # Ad-hoc macOS identity avoids Apple Silicon "damaged" downloads without a Developer ID.
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: "-"
         with:
           args: ${{ matrix.args }} --config ${{ github.workspace }}/.github/tauri.ci.conf.json

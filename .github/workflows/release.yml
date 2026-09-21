@@ -1,6 +1,7 @@
 # Draft GitHub Release + platform bundles via tauri-action (issue #1).
 # Trigger: tag v* matching package version, or manual dispatch.
 # Requires repo secret TAURI_SIGNING_PRIVATE_KEY (updater .sig + latest.json).
+# Draft stays unpublished until a human publishes (Tauri docs pattern; avoids /latest mid-build).
 name: Release
 
 on:
@@ -10,7 +11,123 @@ on:
   workflow_dispatch:
 
 jobs:
+  preflight:
+    name: secrets + version guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require updater signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
+            echo "Set repo secret TAURI_SIGNING_PRIVATE_KEY before releasing"
+            exit 1
+          }
+
+      - name: Assert package / tauri / tag versions align
+        id: versions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const app = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          if (app !== pkg) {
+            console.error(`version drift: tauri.conf=${app} package.json=${pkg}`);
+            process.exit(1);
+          }
+          const event = process.env.EVENT_NAME;
+          const ref = process.env.REF_NAME;
+          if (event === "push" && ref.startsWith("v")) {
+            const tag = ref.slice(1);
+            if (tag !== app) {
+              console.error(`tag ${ref} != app version ${app}`);
+              process.exit(1);
+            }
+          }
+          console.log(`version=${app}`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${app}\n`);
+          NODE
+
+  test:
+    name: unit + e2e (browser) + rust
+    needs: [preflight]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Rust unit tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run test:e2e
+
+  create-release:
+    name: create draft release
+    needs: [preflight, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const tag = `v${version}`;
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Simple Chat v${version}`,
+              body: "See the assets to download this version and install.",
+              draft: true,
+              prerelease: false,
+              target_commitish: context.sha,
+            });
+            return release.id;
+
   publish-tauri:
+    name: tauri build (${{ matrix.label }})
+    needs: [preflight, create-release]
     permissions:
       contents: write
     strategy:
@@ -55,25 +172,59 @@ jobs:
 
       - run: npm ci
 
-      - name: Assert tag matches app version
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          app="$(jq -r .version src-tauri/tauri.conf.json)"
-          pkg="$(jq -r .version package.json)"
-          echo "tag=$tag app=$app package.json=$pkg"
-          test "$tag" = "$app" && test "$tag" = "$pkg"
-
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "-"
         with:
-          tagName: v__VERSION__
-          releaseName: Simple Chat v__VERSION__
-          releaseBody: See the assets to download this version and install.
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          updaterJsonPreferNsis: true
+          retryAttempts: 3
           args: ${{ matrix.args }}
+
+      - name: Assert required bundles exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="src-tauri/target"
+          case "${{ matrix.label }}" in
+            macos-*)
+              # Cross-target builds land under target/<triple>/release/bundle
+              find "$root" -path '*/release/bundle/dmg/*.dmg' | grep -q .
+              find "$root" -path '*/release/bundle/macos/*.app.tar.gz' | grep -q .
+              find "$root" -path '*/release/bundle/macos/*.app.tar.gz.sig' | grep -q .
+              ;;
+            linux-*)
+              find "$root" -path '*/release/bundle/appimage/*.AppImage' | grep -q .
+              find "$root" -path '*/release/bundle/deb/*.deb' | grep -q .
+              find "$root" -path '*/release/bundle/appimage/*.AppImage.sig' | grep -q .
+              ;;
+            windows-*)
+              find "$root" -path '*/release/bundle/nsis/*.exe' | grep -q .
+              find "$root" -path '*/release/bundle/msi/*.msi' | grep -q .
+              find "$root" -path '*/release/bundle/nsis/*.exe.sig' | grep -q .
+              ;;
+          esac
+
+  cleanup-failed-draft:
+    name: delete incomplete draft on failure
+    if: failure() && needs.create-release.result == 'success'
+    needs: [create-release, publish-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            const release_id = Number(process.env.RELEASE_ID);
+            await github.rest.repos.deleteRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id,
+            });
+            console.log(`deleted incomplete draft release ${release_id}`);

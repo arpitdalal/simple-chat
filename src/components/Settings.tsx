@@ -67,7 +67,7 @@ export function Settings({
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
   const recordingRef = useRef(false);
-  /** Bumped on key save/clear so a late initial probe cannot overwrite hasKey. */
+  /** Bumped on key save/clear / unmount so a late probe cannot overwrite hasKey. */
   const keyProbeGenRef = useRef(0);
   /** True once Record intends to clear — including while flush/clear are in flight. */
   const pausedForRecordRef = useRef(false);
@@ -78,6 +78,32 @@ export function Settings({
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+
+  async function probeKeys(gen: number, opts?: { notify?: boolean }) {
+    const hk: Record<ProviderId, boolean> = {
+      openai: false,
+      anthropic: false,
+      google: false,
+    };
+    let errMsg = "";
+    for (const p of PROVIDERS) {
+      try {
+        hk[p] = await hasApiKey(p);
+      } catch (err) {
+        errMsg = keyErrorMessage(err);
+        // Unreadable entry still exists — show Clear without treating as usable.
+        if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
+      }
+    }
+    if (gen !== keyProbeGenRef.current) return;
+    setHasKey(hk);
+    if (errMsg) {
+      setKeyError(errMsg);
+      if (opts?.notify) onNotifyRef.current?.(errMsg, "err");
+    } else {
+      setKeyError("");
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -94,32 +120,11 @@ export function Settings({
       setSettings(s);
       settingsRef.current = s;
       lastGoodHotkeyRef.current = s.hotkey.trim() || DEFAULT_HOTKEY;
-      const hk: Record<ProviderId, boolean> = {
-        openai: false,
-        anthropic: false,
-        google: false,
-      };
-      let errMsg = "";
-      for (const p of PROVIDERS) {
-        try {
-          hk[p] = await hasApiKey(p);
-        } catch (err) {
-          errMsg = keyErrorMessage(err);
-          // Unreadable entry still exists — show Clear without treating as usable.
-          if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
-        }
-      }
-      if (cancelled || gen !== keyProbeGenRef.current) return;
-      setHasKey(hk);
-      if (errMsg) {
-        setKeyError(errMsg);
-        onNotifyRef.current?.(errMsg, "err");
-      } else {
-        setKeyError("");
-      }
+      await probeKeys(gen, { notify: true });
     })();
     return () => {
       cancelled = true;
+      keyProbeGenRef.current += 1;
     };
   }, []);
 
@@ -414,13 +419,14 @@ export function Settings({
     const value = keys[provider].trim();
     if (!value) return;
     keyProbeGenRef.current += 1;
+    const gen = keyProbeGenRef.current;
     try {
       await setApiKey(provider, value);
       setKeys((k) => ({ ...k, [provider]: "" }));
-      setHasKey((h) => ({ ...h, [provider]: true }));
       setKeyEpoch((n) => n + 1);
-      setKeyError("");
       setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+      // Refresh all providers — keep Clear/errors for untouched keys accurate.
+      await probeKeys(gen);
     } catch (err) {
       const msg = keyErrorMessage(err);
       setStatus("");
@@ -431,13 +437,13 @@ export function Settings({
 
   async function clearKey(provider: ProviderId) {
     keyProbeGenRef.current += 1;
+    const gen = keyProbeGenRef.current;
     try {
       await clearApiKey(provider);
       setKeys((k) => ({ ...k, [provider]: "" }));
-      setHasKey((h) => ({ ...h, [provider]: false }));
       setKeyEpoch((n) => n + 1);
-      setKeyError("");
       setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+      await probeKeys(gen);
     } catch (err) {
       const msg = keyErrorMessage(err);
       setStatus("");

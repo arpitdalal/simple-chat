@@ -25,7 +25,12 @@ class MemoryDatabase {
     const q = query.replace(/\s+/g, " ").trim();
     const args = parseArgs(q, bindValues);
 
-    if (q.startsWith("CREATE ") || q.startsWith("CREATE INDEX") || q.startsWith("ALTER ")) {
+    if (
+      q.startsWith("CREATE ") ||
+      q.startsWith("CREATE INDEX") ||
+      q.startsWith("ALTER ") ||
+      q.startsWith("PRAGMA ")
+    ) {
       return { rowsAffected: 0 };
     }
 
@@ -119,6 +124,23 @@ class MemoryDatabase {
   async select<T extends Row[]>(query: string, bindValues: unknown[] = []): Promise<T> {
     const q = query.replace(/\s+/g, " ").trim();
     const args = bindValues;
+
+    if (/^PRAGMA journal_mode/i.test(q)) {
+      return [{ journal_mode: "wal" }] as unknown as T;
+    }
+
+    if (/pragma_table_info\(['"]?chats['"]?\)/i.test(q)) {
+      return [
+        { name: "id" },
+        { name: "title" },
+        { name: "model_id" },
+        { name: "provider" },
+        { name: "created_at" },
+        { name: "updated_at" },
+        { name: "preview" },
+        { name: "pinned" },
+      ] as unknown as T;
+    }
 
     if (q.includes("FROM settings")) {
       return [...settings.entries()].map(([key, value]) => ({ key, value })) as T;

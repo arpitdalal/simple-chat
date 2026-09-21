@@ -47,55 +47,43 @@ let dbPromise: Promise<Database> | null = null;
 
 export function getDb() {
   if (!dbPromise) {
-    dbPromise = Database.load("sqlite:simple-chat.db").then(async (db) => {
-      await migrate(db);
-      return db;
-    });
+    dbPromise = Database.load("sqlite:simple-chat.db")
+      .then(async (db) => {
+        await prepareDb(db);
+        return db;
+      })
+      .catch((err) => {
+        dbPromise = null;
+        throw err;
+      });
   }
   return dbPromise;
 }
 
-async function migrate(db: Database) {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY NOT NULL,
-      value TEXT NOT NULL
-    );
-  `);
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS chats (
-      id TEXT PRIMARY KEY NOT NULL,
-      title TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      preview TEXT NOT NULL DEFAULT ''
-    );
-  `);
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY NOT NULL,
-      chat_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
-    );
-  `);
-  await db.execute(
-    `CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);`,
+/**
+ * Connection setup after load (migrations run in Rust via tauri-plugin-sql).
+ * WAL cannot live in sqlx migrations — SQLite rejects journal_mode inside a txn.
+ */
+export async function prepareDb(db: Database) {
+  await db.execute("PRAGMA journal_mode=WAL;");
+  const modeRows = await db.select<{ journal_mode: string }[]>(
+    "PRAGMA journal_mode;",
   );
-  await db.execute(
-    `CREATE INDEX IF NOT EXISTS idx_chats_updated ON chats(updated_at DESC);`,
+  const mode = String(modeRows[0]?.journal_mode ?? "").toLowerCase();
+  if (mode !== "wal") {
+    throw new Error(
+      `SQLite journal_mode is ${mode || "unknown"}, expected wal`,
+    );
+  }
+
+  // Bridge: DBs created by the old JS CREATE (no pinned) before formal migrations.
+  const cols = await db.select<{ name: string }[]>(
+    "SELECT name FROM pragma_table_info('chats')",
   );
-  // Soft migrate: pinned column
-  try {
+  if (!cols.some((c) => c.name === "pinned")) {
     await db.execute(
       `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
     );
-  } catch {
-    /* already exists */
   }
 }
 

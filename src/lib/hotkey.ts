@@ -164,10 +164,10 @@ function clampOrigin(
   pos: { x: number; y: number },
   workPos: { x: number; y: number },
   workSize: { width: number; height: number },
-  winSize: { width: number; height: number },
+  winSize: { width: number; height: number } | null,
 ): { x: number; y: number } {
-  const w = winSize.width > 0 ? winSize.width : 0;
-  const h = winSize.height > 0 ? winSize.height : 0;
+  const w = winSize && winSize.width > 0 ? winSize.width : 0;
+  const h = winSize && winSize.height > 0 ? winSize.height : 0;
   let x = pos.x;
   let y = pos.y;
   if (w > 0) {
@@ -176,7 +176,11 @@ function clampOrigin(
       workPos.x + Math.max(0, workSize.width - w),
     );
   } else {
-    x = workPos.x;
+    // Unknown size — clamp the origin as a point; don't snap to top-left.
+    x = Math.min(
+      Math.max(x, workPos.x),
+      workPos.x + Math.max(0, workSize.width - 1),
+    );
   }
   if (h > 0) {
     y = Math.min(
@@ -184,7 +188,10 @@ function clampOrigin(
       workPos.y + Math.max(0, workSize.height - h),
     );
   } else {
-    y = workPos.y;
+    y = Math.min(
+      Math.max(y, workPos.y),
+      workPos.y + Math.max(0, workSize.height - 1),
+    );
   }
   return { x: Math.round(x), y: Math.round(y) };
 }
@@ -209,11 +216,11 @@ async function clampWindowIntoWorkArea(win: Window, mon: Monitor) {
         width: mon.workArea.size.width / s,
         height: mon.workArea.size.height / s,
       };
-      let size = { width: 0, height: 0 };
+      let size: { width: number; height: number } | null = null;
       try {
         size = await outerSizeLogical(win);
       } catch {
-        /* origin-only clamp */
+        /* origin-as-point clamp below */
       }
       const logicalPos = {
         x: pos.x / srcScale,
@@ -223,11 +230,11 @@ async function clampWindowIntoWorkArea(win: Window, mon: Monitor) {
       if (x === Math.round(logicalPos.x) && y === Math.round(logicalPos.y)) return;
       await win.setPosition(new LogicalPosition(x, y));
     } else {
-      let size = { width: 0, height: 0 };
+      let size: { width: number; height: number } | null = null;
       try {
         size = await outerSizeForMonitor(win, mon);
       } catch {
-        /* origin-only clamp */
+        /* origin-as-point clamp below */
       }
       const { x, y } = clampOrigin(
         pos,

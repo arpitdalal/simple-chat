@@ -239,6 +239,16 @@ describe("hotkey window actions", () => {
     );
   });
 
+  it("positionMainWindowForShow keeps origin when size fails but origin is on-screen", async () => {
+    setPreferLogicalMonitorFramesForTests(false);
+    currentMonitor.mockResolvedValue(primary);
+    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    outerSize.mockRejectedValue(new Error("hidden size"));
+    cursorPosition.mockResolvedValue({ x: 200, y: 200 });
+    await positionMainWindowForShow();
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
   it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     currentMonitor.mockResolvedValue(primary);

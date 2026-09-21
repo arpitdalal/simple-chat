@@ -418,14 +418,16 @@ export function Settings({
   async function saveKey(provider: ProviderId) {
     const value = keys[provider].trim();
     if (!value) return;
+    // Invalidate in-flight probes (mount / other mutations) before awaiting keyring.
     keyProbeGenRef.current += 1;
-    const gen = keyProbeGenRef.current;
     try {
       await setApiKey(provider, value);
       setKeys((k) => ({ ...k, [provider]: "" }));
       setKeyEpoch((n) => n + 1);
       setStatus(`${PROVIDER_LABELS[provider]} key saved`);
-      // Refresh all providers — keep Clear/errors for untouched keys accurate.
+      // Claim the latest gen after the write so a slower sibling mutation
+      // cannot leave this provider stuck without Clear.
+      const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
     } catch (err) {
       const msg = keyErrorMessage(err);
@@ -437,12 +439,12 @@ export function Settings({
 
   async function clearKey(provider: ProviderId) {
     keyProbeGenRef.current += 1;
-    const gen = keyProbeGenRef.current;
     try {
       await clearApiKey(provider);
       setKeys((k) => ({ ...k, [provider]: "" }));
       setKeyEpoch((n) => n + 1);
       setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+      const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
     } catch (err) {
       const msg = keyErrorMessage(err);

@@ -23,7 +23,12 @@ npm run check
 npm run tauri:dev
 ```
 
-Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` set to the private key contents or a file path — pubkey is in `src-tauri/tauri.conf.json`. Endpoint is GitHub Releases `latest.json` (publish once #1 CI lands). Linux updater packages are AppImage-only (`tauri.linux.conf.json`).
+Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` set to the private key contents or a file path — pubkey is in `src-tauri/tauri.conf.json`. Endpoint is GitHub Releases `latest.json`.
+
+## CI / Release
+
+- **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + Playwright, then `tauri-apps/tauri-action` builds for macOS (arm64 + x64), Windows (NSIS/MSI), Linux (AppImage + deb). Updater signing skipped on CI.
+- **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch) — same matrix, drafts a GitHub Release with bundles + updater `latest.json`. Needs secrets `TAURI_SIGNING_PRIVATE_KEY` and optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Publish the draft when ready. Linux updater consumes AppImage; deb is for apt-style installs.
 
 ## Tests
 

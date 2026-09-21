@@ -8,6 +8,7 @@ import {
 import { LogicalPosition, PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
   availableMonitors,
+  currentMonitor,
   cursorPosition,
   getCurrentWindow,
   primaryMonitor,
@@ -147,37 +148,6 @@ export async function monitorForPoint(
 export async function monitorForCursor(): Promise<Monitor | null> {
   const cursor = await cursorPosition();
   return monitorForPoint(cursor.x, cursor.y);
-}
-
-/**
- * Monitor for a physical desktop point (e.g. window outer center).
- * Always uses physical AABBs — outerPosition/outerSize are physical even on macOS,
- * where cursor hit-testing prefers logical frames.
- */
-export async function monitorForPhysicalPoint(
-  x: number,
-  y: number,
-): Promise<Monitor | null> {
-  const monitors = await availableMonitors();
-  if (!monitors.length) return primaryMonitor();
-
-  const physicalHits = monitors.filter((m) => containsPoint(m, x, y));
-  if (physicalHits.length === 1) return physicalHits[0];
-
-  const pool = physicalHits.length > 0 ? physicalHits : monitors;
-  return pool.reduce((best, m) =>
-    distanceSqToPhysical(m, x, y) < distanceSqToPhysical(best, x, y) ? m : best,
-  );
-}
-
-function distanceSqToPhysical(mon: Monitor, x: number, y: number): number {
-  const { x: left, y: top } = mon.position;
-  const { width, height } = mon.size;
-  const dx =
-    x < left ? left - x : x >= left + width ? x - (left + width - 1) : 0;
-  const dy =
-    y < top ? top - y : y >= top + height ? y - (top + height - 1) : 0;
-  return dx * dx + dy * dy;
 }
 
 function sameMonitor(a: Monitor, b: Monitor): boolean {
@@ -324,6 +294,7 @@ export async function centerOnCursorMonitor(win: Window = getCurrentWindow()) {
 /**
  * Recenter only when the cursor is on a different monitor than the window.
  * Same-monitor summon keeps the user's last position (hide keeps geometry).
+ * Uses currentMonitor() so mixed-DPI overlapping AABBs don't false-match.
  */
 export async function positionMainWindowForShow(
   win: Window = getCurrentWindow(),
@@ -332,13 +303,7 @@ export async function positionMainWindowForShow(
     const cursorMon = await monitorForCursor();
     let winMon: Monitor | null = null;
     try {
-      const pos = await win.outerPosition();
-      const size = await win.outerSize();
-      const cx = pos.x + Math.floor(size.width / 2);
-      const cy = pos.y + Math.floor(size.height / 2);
-      winMon = await monitorForPhysicalPoint(cx, cy);
-      // Nearest-monitor fallback is not "on" that display — force recenter.
-      if (winMon && !containsPoint(winMon, cx, cy)) winMon = null;
+      winMon = await currentMonitor();
     } catch {
       winMon = null;
     }

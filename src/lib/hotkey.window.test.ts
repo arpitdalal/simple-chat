@@ -5,13 +5,13 @@ const show = vi.fn();
 const setFocus = vi.fn();
 const isVisible = vi.fn();
 const outerSize = vi.fn();
-const outerPosition = vi.fn();
 const setPosition = vi.fn();
 const center = vi.fn();
 const scaleFactor = vi.fn();
 const cursorPosition = vi.fn();
 const availableMonitors = vi.fn();
 const primaryMonitor = vi.fn();
+const currentMonitor = vi.fn();
 const register = vi.fn();
 const unregister = vi.fn();
 const unregisterAll = vi.fn();
@@ -50,7 +50,6 @@ vi.mock("@tauri-apps/api/window", () => ({
     setFocus,
     isVisible,
     outerSize,
-    outerPosition,
     setPosition,
     center,
     scaleFactor,
@@ -58,6 +57,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   cursorPosition: (...a: unknown[]) => cursorPosition(...a),
   availableMonitors: (...a: unknown[]) => availableMonitors(...a),
   primaryMonitor: (...a: unknown[]) => primaryMonitor(...a),
+  currentMonitor: (...a: unknown[]) => currentMonitor(...a),
 }));
 
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
@@ -129,9 +129,8 @@ describe("hotkey window actions", () => {
     isRegistered.mockResolvedValue(false);
     invoke.mockResolvedValue(undefined);
     outerSize.mockResolvedValue({ width: 800, height: 600 });
-    // Default: window sits on primary — cursor tests that put the pointer on
-    // secondary still recenter (cross-monitor summon).
-    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    // Default: window on primary — cursor-on-secondary tests still recenter.
+    currentMonitor.mockResolvedValue(primary);
     scaleFactor.mockResolvedValue(1);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
     availableMonitors.mockResolvedValue([primary, secondary]);
@@ -179,21 +178,18 @@ describe("hotkey window actions", () => {
 
   it("positionMainWindowForShow keeps place when cursor is on the same monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
-    // Window center ~ (500, 400) on primary; cursor also on primary.
-    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    currentMonitor.mockResolvedValue(primary);
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();
     expect(setPosition).not.toHaveBeenCalled();
     expect(center).not.toHaveBeenCalled();
   });
 
-  it("positionMainWindowForShow on macOS uses physical AABBs for window monitor", async () => {
-    // Mixed-DPI: window outer coords are physical; cursor path prefers logical.
+  it("positionMainWindowForShow trusts currentMonitor on mixed-DPI overlap", async () => {
+    // Physical AABBs overlap; runtime says external — must not false-match primary.
     setPreferLogicalMonitorFramesForTests(true);
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
-    // Physical center 3200 is only inside external1x [1512,3432), not retina [0,3024).
-    outerPosition.mockResolvedValue({ x: 2800, y: 200 });
-    outerSize.mockResolvedValue({ width: 800, height: 600 });
+    currentMonitor.mockResolvedValue(external1x);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
     await positionMainWindowForShow();
     expect(setPosition).not.toHaveBeenCalled();
@@ -202,20 +198,15 @@ describe("hotkey window actions", () => {
   it("positionMainWindowForShow recenters across mixed-DPI monitors on macOS", async () => {
     setPreferLogicalMonitorFramesForTests(true);
     availableMonitors.mockResolvedValue([retinaPrimary, external1x]);
-    // Window on retina (physical center ~1512, inside [0,3024) only as unique… also
-    // overlaps external starting 1512 — use deep-left center unique to retina.
-    outerPosition.mockResolvedValue({ x: 100, y: 200 });
-    outerSize.mockResolvedValue({ width: 800, height: 600 }); // center 500,500
+    currentMonitor.mockResolvedValue(retinaPrimary);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 }); // logical → external
     await positionMainWindowForShow();
     expect(setPosition).toHaveBeenCalled();
   });
 
-  it("positionMainWindowForShow recenters when window center is off any monitor", async () => {
+  it("positionMainWindowForShow recenters when currentMonitor is null", async () => {
     setPreferLogicalMonitorFramesForTests(false);
-    // Gap between primary and secondary; nearest is primary, cursor also primary.
-    outerPosition.mockResolvedValue({ x: 1900, y: -800 });
-    outerSize.mockResolvedValue({ width: 40, height: 40 }); // center 1920,-780
+    currentMonitor.mockResolvedValue(null);
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await positionMainWindowForShow();
     expect(setPosition).toHaveBeenCalled();
@@ -223,7 +214,7 @@ describe("hotkey window actions", () => {
 
   it("positionMainWindowForShow recenters when cursor is on another monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
-    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    currentMonitor.mockResolvedValue(primary);
     cursorPosition.mockResolvedValue({ x: 2000, y: 100 });
     await positionMainWindowForShow();
     expect(setPosition).toHaveBeenCalledWith(
@@ -238,7 +229,7 @@ describe("hotkey window actions", () => {
   it("toggleMainWindow preserves position when already on cursor monitor", async () => {
     setPreferLogicalMonitorFramesForTests(false);
     isVisible.mockResolvedValue(false);
-    outerPosition.mockResolvedValue({ x: 100, y: 100 });
+    currentMonitor.mockResolvedValue(primary);
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await toggleMainWindow();
     expect(setPosition).not.toHaveBeenCalled();

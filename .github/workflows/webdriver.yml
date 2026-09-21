@@ -29,11 +29,27 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Allow Dock / GUI for WebDriver (LSUIElement blanks webview under automation)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src-tauri/Info.plist")
+          text = p.read_text()
+          text = text.replace("<key>LSUIElement</key>\n\t<true/>", "<key>LSUIElement</key>\n\t<false/>")
+          if "<true/>" in text.split("LSUIElement")[1][:40]:
+              raise SystemExit("failed to clear LSUIElement")
+          p.write_text(text)
+          print(p.read_text())
+          PY
+
       - name: Build release binary
         working-directory: src-tauri
         run: |
           export TAURI_CONFIG="$(cat tauri.webdriver.conf.json)"
           cargo build --release --features webdriver
+          ls -la target/release/simple-chat
+          # Sanity: frontend must be embedded (release binary ≫ empty stub).
+          test "$(wc -c < target/release/simple-chat)" -gt 1000000
 
       - name: WebDriver IPC tests
         run: npm run test:ipc

@@ -55,8 +55,12 @@ export function ModelPicker({
   useEffect(() => {
     void (async () => {
       const next: ProviderId[] = [];
-      for (const p of PROVIDERS) {
-        if (await hasApiKey(p)) next.push(p);
+      try {
+        for (const p of PROVIDERS) {
+          if (await hasApiKey(p)) next.push(p);
+        }
+      } catch {
+        // Keychain probe failed — treat as no keys rather than unhandled rejection.
       }
       setReady(next);
     })();

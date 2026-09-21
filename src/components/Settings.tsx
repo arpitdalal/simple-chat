@@ -5,7 +5,12 @@ import {
   deleteChatsOlderThan,
   type AppSettings,
 } from "../lib/db";
-import { hasApiKey, setApiKey, clearApiKey } from "../lib/keys";
+import {
+  hasApiKey,
+  setApiKey,
+  clearApiKey,
+  keyErrorMessage,
+} from "../lib/keys";
 import { PROVIDER_LABELS, PROVIDERS, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -53,6 +58,7 @@ export function Settings({
   const [recordBusy, setRecordBusy] = useState(false);
   const [hotkeyDraft, setHotkeyDraft] = useState<string | null>(null);
   const [hotkeyError, setHotkeyError] = useState("");
+  const [keyError, setKeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
   const [updateBusy, setUpdateBusy] = useState(false);
   const updateCheckGenRef = useRef(0);
@@ -88,8 +94,15 @@ export function Settings({
         anthropic: false,
         google: false,
       };
-      for (const p of PROVIDERS) hk[p] = await hasApiKey(p);
-      setHasKey(hk);
+      try {
+        for (const p of PROVIDERS) hk[p] = await hasApiKey(p);
+        setHasKey(hk);
+        setKeyError("");
+      } catch (err) {
+        const msg = keyErrorMessage(err);
+        setKeyError(msg);
+        onNotifyRef.current?.(msg, "err");
+      }
     })();
   }, []);
 
@@ -383,19 +396,33 @@ export function Settings({
   async function saveKey(provider: ProviderId) {
     const value = keys[provider].trim();
     if (!value) return;
-    await setApiKey(provider, value);
-    setKeys((k) => ({ ...k, [provider]: "" }));
-    setHasKey((h) => ({ ...h, [provider]: true }));
-    setKeyEpoch((n) => n + 1);
-    setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+    try {
+      await setApiKey(provider, value);
+      setKeys((k) => ({ ...k, [provider]: "" }));
+      setHasKey((h) => ({ ...h, [provider]: true }));
+      setKeyEpoch((n) => n + 1);
+      setKeyError("");
+      setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+    } catch (err) {
+      const msg = keyErrorMessage(err);
+      setKeyError(msg);
+      onNotifyRef.current?.(msg, "err");
+    }
   }
 
   async function clearKey(provider: ProviderId) {
-    await clearApiKey(provider);
-    setKeys((k) => ({ ...k, [provider]: "" }));
-    setHasKey((h) => ({ ...h, [provider]: false }));
-    setKeyEpoch((n) => n + 1);
-    setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+    try {
+      await clearApiKey(provider);
+      setKeys((k) => ({ ...k, [provider]: "" }));
+      setHasKey((h) => ({ ...h, [provider]: false }));
+      setKeyEpoch((n) => n + 1);
+      setKeyError("");
+      setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+    } catch (err) {
+      const msg = keyErrorMessage(err);
+      setKeyError(msg);
+      onNotifyRef.current?.(msg, "err");
+    }
   }
 
   if (!settings) return <div className="settings-panel">Loading…</div>;
@@ -443,6 +470,7 @@ export function Settings({
             </div>
           </div>
         ))}
+        {keyError && <p className="hint error-text">{keyError}</p>}
       </section>
 
       <section>

@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...a: unknown[]) => invoke(...a),
 }));
 
-import { clearApiKey, getApiKey, hasApiKey, setApiKey } from "./keys";
+import { clearApiKey, getApiKey, hasApiKey, keyErrorMessage, setApiKey } from "./keys";
 
 describe("keys client", () => {
   beforeEach(() => {
@@ -35,5 +35,11 @@ describe("keys client", () => {
     expect(await getApiKey("google")).toBe("secret");
     invoke.mockResolvedValueOnce(true);
     expect(await hasApiKey("google")).toBe(true);
+  });
+
+  it("keyErrorMessage reads Error, string, and other", () => {
+    expect(keyErrorMessage(new Error("store locked"))).toBe("store locked");
+    expect(keyErrorMessage("plain")).toBe("plain");
+    expect(keyErrorMessage(42)).toBe("42");
   });
 });

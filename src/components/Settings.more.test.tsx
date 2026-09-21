@@ -20,6 +20,8 @@ vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
+  keyErrorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
 }));
 
 vi.mock("../lib/db", () => ({

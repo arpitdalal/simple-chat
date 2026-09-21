@@ -15,6 +15,8 @@ vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
+  keyErrorMessage: (err: unknown) =>
+    err instanceof Error ? err.message : String(err),
 }));
 
 vi.mock("../lib/db", () => ({
@@ -61,6 +63,7 @@ describe("Settings", () => {
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
     setSetting.mockResolvedValue(undefined);
+    setApiKey.mockResolvedValue(undefined);
     clearApiKey.mockResolvedValue(undefined);
   });
 
@@ -72,6 +75,66 @@ describe("Settings", () => {
     expect(clearBtns.length).toBeGreaterThanOrEqual(1);
     await user.click(clearBtns[0]);
     await waitFor(() => expect(clearApiKey).toHaveBeenCalledWith("google"));
+  });
+
+  it("surfaces keychain errors when saving a key fails", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockRejectedValue(
+      new Error(
+        "Could not access the OS credential store. Unlock or repair Keychain / Credential Manager / Secret Service, then try again.",
+      ),
+    );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    await user.type(inputs[0], "sk-test");
+    await user.tab();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("OS credential store"),
+      "err",
+    );
+    expect(screen.queryByText(/key saved/i)).toBeNull();
+  });
+
+  it("surfaces keychain errors when clearing a key fails", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    clearApiKey.mockRejectedValue(new Error("Credential store error (locked)"));
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    await waitFor(() => expect(screen.getByText(/Google/)).toBeInTheDocument());
+    const clearBtns = await screen.findAllByRole("button", { name: "Clear" });
+    await user.click(clearBtns[0]);
+    await waitFor(() =>
+      expect(screen.getByText(/Credential store error/)).toBeInTheDocument(),
+    );
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("Credential store error"),
+      "err",
+    );
+    expect(screen.getByText(/Google · saved/)).toBeInTheDocument();
+  });
+
+  it("surfaces keychain errors when probing saved keys fails", async () => {
+    const onNotify = vi.fn();
+    hasApiKey.mockRejectedValue(
+      new Error("Could not access the OS credential store (NoDefaultStore)"),
+    );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} onNotify={onNotify} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not access the OS credential store/),
+      ).toBeInTheDocument(),
+    );
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("OS credential store"),
+      "err",
+    );
   });
 
   it("does not show a web search toggle", async () => {

@@ -33,6 +33,11 @@ describe("generateChatTitle", () => {
     expect(await generateChatTitle("google", long)).toBe(`${"a".repeat(48)}…`);
   });
 
+  it("falls back when keychain getApiKey rejects", async () => {
+    getApiKey.mockRejectedValue(new Error("Could not access the OS credential store"));
+    expect(await generateChatTitle("openai", "hello world")).toBe("hello world");
+  });
+
   it("uses model title when generateText succeeds", async () => {
     getApiKey.mockResolvedValue("k");
     generateText.mockResolvedValue({ text: '  "Domain Tips"  ' });

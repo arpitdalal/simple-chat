@@ -1,0 +1,23 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Simple Chat",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "visible": true,
+        "skipTaskbar": false,
+        "decorations": true,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": false,
+        "hiddenTitle": false,
+        "titleBarStyle": "Visible",
+        "backgroundColor": [255, 255, 255, 255]
+      }
+    ]
+  }
+}

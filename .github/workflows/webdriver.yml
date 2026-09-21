@@ -30,8 +30,11 @@ jobs:
         run: npm run build
 
       - name: Build release binary
-        run: cargo build --release --features webdriver
+        shell: bash
         working-directory: src-tauri
+        run: |
+          export TAURI_CONFIG="$(cat tauri.webdriver.conf.json)"
+          cargo build --release --features webdriver
 
       - name: WebDriver IPC tests
         run: npm run test:ipc

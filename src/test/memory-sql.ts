@@ -215,10 +215,15 @@ class MemoryDatabase {
       const chatId = String(args[0]);
       const limitMatch = q.match(/LIMIT \$(\d+)/);
       const limit = limitMatch ? Number(args[Number(limitMatch[1]) - 1]) : 50;
+      // Mirror SQL `ORDER BY created_at DESC, rowid DESC`: among equal
+      // created_at, higher insertion index first — then db.ts reverse()s
+      // the page so ties end up ascending rowid like prod SQLite.
       return messages
-        .filter((m) => m.chat_id === chatId)
-        .sort((a, b) => b.created_at - a.created_at || 0)
-        .slice(0, limit) as unknown as T;
+        .map((m, i) => ({ m, i }))
+        .filter(({ m }) => m.chat_id === chatId)
+        .sort((a, b) => b.m.created_at - a.m.created_at || b.i - a.i)
+        .slice(0, limit)
+        .map(({ m }) => m) as unknown as T;
     }
 
     if (q.includes("FROM messages")) {

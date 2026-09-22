@@ -54,6 +54,22 @@ describe("db (memory sql integration)", () => {
     expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300"]);
   });
 
+  it("orders equal created_at by rowid (stable queue order)", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    // Same millisecond for all — insertion order must survive both directions
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    await addMessage(chat.id, "user", "t1");
+    await addMessage(chat.id, "user", "t2");
+    await addMessage(chat.id, "user", "t3");
+    vi.spyOn(Date, "now").mockRestore();
+
+    const all = await listMessages(chat.id);
+    expect(all.map((m) => m.content)).toEqual(["t1", "t2", "t3"]);
+
+    const recent = await listRecentMessages(chat.id, 3);
+    expect(recent.map((m) => m.content)).toEqual(["t1", "t2", "t3"]);
+  });
+
   it("deletes chat and persists settings", async () => {
     const chat = await createChat("openai", "gpt-4o");
     await deleteChat(chat.id);

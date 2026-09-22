@@ -173,6 +173,15 @@ export function ChatView({
     for (const ac of turnCancelsRef.current.get(chatId) ?? []) ac.abort();
   }
 
+  /** Dequeue guard — only this turn's own token (never a stale stream slot). */
+  function throwIfTurnAborted(turnAc: AbortController) {
+    if (turnAc.signal.aborted) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+  }
+
   function dropPendingSend(chatId: string, tempId: string) {
     const pend = pendingSendsRef.current.get(chatId) ?? [];
     pendingSendsRef.current.set(
@@ -424,19 +433,8 @@ export function ChatView({
     stickBottom.current = true;
     const ac = slot.ac;
 
-    const modelMessages: ModelMessage[] = history.map((m) => ({
-      role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    }));
-    if (lastUserContent !== undefined && modelMessages.length > 0) {
-      modelMessages[modelMessages.length - 1] = {
-        role: "user",
-        content: lastUserContent as never,
-      };
-    }
-
-    const appendAssistant = async (full: string) => {
-      const assistant = await addMessage(chatId, "assistant", full);
+    const appendAssistant = async (content: string) => {
+      const assistant = await addMessage(chatId, "assistant", content);
       noteLocalAdd(chatId, assistant);
       if (viewingIdRef.current === chatId) {
         const limit =
@@ -448,17 +446,26 @@ export function ChatView({
           // Place the reply directly after the user turn it answers — later
           // optimistic sends may already sit below while this stream ran.
           const i = m.findIndex((x) => x.id === anchorUserId);
+          if (i !== -1) {
+            return trimRecentMessages(
+              [...m.slice(0, i + 1), assistant, ...m.slice(i + 1)],
+              limit,
+            );
+          }
+          // Anchor missing (hide-trim / race): insert by time, never blindly
+          // at the tail below newer optimistic sends.
+          const at = m.findIndex((x) => x.created_at > assistant.created_at);
           const next =
-            i === -1
+            at === -1
               ? [...m, assistant]
-              : [...m.slice(0, i + 1), assistant, ...m.slice(i + 1)];
+              : [...m.slice(0, at), assistant, ...m.slice(at)];
           return trimRecentMessages(next, limit);
         });
         if (wouldTrim) setHasMore(true);
       }
       // Preview update is best-effort — don't re-enter append on metadata failure
       try {
-        await updateChat(chatId, { preview: full.slice(0, 120) });
+        await updateChat(chatId, { preview: content.slice(0, 120) });
       } catch {
         /* ignore */
       }
@@ -469,6 +476,39 @@ export function ChatView({
     let assistantSaved = false;
     let streamed = false;
     try {
+      // Stop may have landed while we were still persisting — must throw
+      // inside try so finally clears the slot (else busy/Stop wedge).
+      if (ac.signal.aborted) {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+
+      // Bound context — a full-transcript load per queued turn would regress
+      // main's in-memory window and can blow provider limits.
+      const windowed = trimRecentMessages(history, MAX_CACHED_MESSAGES);
+      const modelMessages: ModelMessage[] = windowed.map((m) => ({
+        role: m.role as "user" | "assistant" | "system",
+        content: m.content,
+      }));
+      if (lastUserContent !== undefined) {
+        // History may omit the just-persisted user row (recent-page race);
+        // the model must always see this turn's user content last.
+        const endsWithAnchor =
+          history.length > 0 && history[history.length - 1]?.id === anchorUserId;
+        if (endsWithAnchor && modelMessages.length > 0) {
+          modelMessages[modelMessages.length - 1] = {
+            role: "user",
+            content: lastUserContent as never,
+          };
+        } else {
+          modelMessages.push({
+            role: "user",
+            content: lastUserContent as never,
+          });
+        }
+      }
+
       await streamChat({
         provider: chatSnap.provider as ProviderId,
         modelId: chatSnap.model_id,
@@ -605,21 +645,17 @@ export function ChatView({
           ];
 
     let userPersisted = false;
+    let userPersistedId: string | null = null;
     let reachedStream = false;
     const sendGen = releaseGenRef.current;
     try {
       await getChatQueue(chatId).run(async () => {
-        // Stop clicked while this turn was still persisting / queued
-        if (
-          turnAc.signal.aborted ||
-          streamsRef.current.get(chatId)?.ac.signal.aborted
-        ) {
-          const err = new Error("aborted");
-          err.name = "AbortError";
-          throw err;
-        }
+        // Only this turn's token — a stale aborted slot from Stop must not
+        // cancel a fresh send that raced into the queue window.
+        throwIfTurnAborted(turnAc);
         const userMsg = await addMessage(chatId, "user", displayText);
         userPersisted = true;
+        userPersistedId = userMsg.id;
         noteLocalAdd(chatId, userMsg);
         dropPendingSend(chatId, tempId);
         if (viewingIdRef.current === chatId) {
@@ -639,8 +675,9 @@ export function ChatView({
         // already titled this chat after chatSnap was captured.
         const freshChat = await getChat(chatId);
         if (!freshChat) {
+          // Distinct from AbortError so the user is told; drop the temp row.
           const err = new Error("Chat was deleted.");
-          err.name = "AbortError";
+          (err as Error & { code?: string }).code = "CHAT_DELETED";
           throw err;
         }
         if (freshChat.title === "New Chat" && text) {
@@ -658,15 +695,19 @@ export function ChatView({
             });
           }
           onChatUpdated();
-          // Title gen inside the queue so it cannot clobber a later updateChat
+          // Await title gen here (abortable) so a hung call cannot sit in a
+          // detached FIFO op keeping Stop busy forever. Write stays in this
+          // same queue op — no second enqueue after Stop.
           const title = await generateChatTitle(
             chatSnap.provider as ProviderId,
             text,
+            turnAc.signal,
           );
+          throwIfTurnAborted(turnAc);
           await updateChat(chatId, { title });
           if (viewingIdRef.current === chatId) {
             onChatMeta({
-              ...(await getChat(chatId)) ?? freshChat,
+              ...((await getChat(chatId)) ?? freshChat),
               title,
               preview: text.slice(0, 120),
             });
@@ -674,9 +715,11 @@ export function ChatView({
           onChatUpdated();
         }
 
-        // Fresh from DB so a prior turn's reply is included even if this
-        // send was queued while an earlier stream was still running.
-        const history = await listMessages(chatId);
+        // Bounded recent page (not full table) so each queued turn stays cheap.
+        const history = await listRecentMessages(
+          chatId,
+          MAX_CACHED_MESSAGES,
+        );
         reachedStream = true;
         await streamReply(
           chatSnap,
@@ -691,6 +734,22 @@ export function ChatView({
       // Placeholder slot never reached streamReply — drop it so busy can clear
       if (ownsSlot && !reachedStream) {
         streamsRef.current.delete(chatId);
+      }
+      const deleted = (e as Error & { code?: string }).code === "CHAT_DELETED";
+      if (deleted) {
+        // Compensation: chat vanished mid-send — drop local optimistic row
+        localAddsRef.current.delete(chatId);
+        pendingSendsRef.current.delete(chatId);
+        if (viewingIdRef.current === chatId) {
+          setMessages((m) =>
+            m.filter(
+              (x) => x.id !== tempId && (!userPersistedId || x.id !== userPersistedId),
+            ),
+          );
+        }
+        onNotify((e as Error).message || String(e), "err");
+        onChatUpdated();
+        return;
       }
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
@@ -730,18 +789,13 @@ export function ChatView({
     const chatId = chat.id;
     const chatSnap = chat;
     let reachedStream = false;
+    // Regenerate has no pre-stream slot yet — cancel via a fresh turn token
+    // so Stop between enqueue and streamReply still lands.
+    const turnAc = new AbortController();
+    pushTurnCancel(chatId, turnAc);
     try {
       await getChatQueue(chatId).run(async () => {
-        if (
-          streamsRef.current.get(chatId)?.ac.signal.aborted ||
-          turnCancelsRef.current
-            .get(chatId)
-            ?.some((ac) => ac.signal.aborted)
-        ) {
-          const err = new Error("aborted");
-          err.name = "AbortError";
-          throw err;
-        }
+        throwIfTurnAborted(turnAc);
         const startGen = releaseGenRef.current;
         const all = await listMessages(chatId);
         const idx = all.findIndex((m) => m.id === userMessageId);
@@ -774,9 +828,9 @@ export function ChatView({
             setBusy(true);
             setViewingStream({ anchor: userMessageId, text: "" });
           }
-          // AC now so Stop works before streamChat starts
+          // Reuse turnAc so Stop works before streamChat starts
           streamsRef.current.set(chatId, {
-            ac: new AbortController(),
+            ac: turnAc,
             anchor: userMessageId,
             text: "",
           });
@@ -784,7 +838,7 @@ export function ChatView({
         if (viewing) stickBottom.current = true;
 
         reachedStream = true;
-        await streamReply(chatSnap, keep, userMessageId);
+        await streamReply(chatSnap, keep, userMessageId, undefined, turnAc);
       });
     } catch (e) {
       // streamReply notifies for stream errors; only notify if we never got there
@@ -792,6 +846,7 @@ export function ChatView({
         onNotify((e as Error).message || String(e), "err");
       }
     } finally {
+      clearTurnCancel(chatId, turnAc);
       settleChatBusy(chatId);
     }
   }

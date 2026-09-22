@@ -214,6 +214,11 @@ describe("ChatView", () => {
     const user = userEvent.setup();
     streamChat.mockImplementation(
       async (opts: { abortSignal?: AbortSignal; onToken: (t: string) => void }) => {
+        if (opts.abortSignal?.aborted) {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          throw err;
+        }
         opts.onToken("partial");
         await new Promise((_r, reject) => {
           opts.abortSignal?.addEventListener("abort", () => {
@@ -903,11 +908,13 @@ describe("ChatView", () => {
       opts.onToken(`reply-${streamCalls.length}`);
       if (streamCalls.length === 1) {
         await new Promise((_r, reject) => {
-          opts.abortSignal?.addEventListener("abort", () => {
+          const abort = () => {
             const err = new Error("aborted");
             err.name = "AbortError";
             reject(err);
-          });
+          };
+          if (opts.abortSignal?.aborted) abort();
+          else opts.abortSignal?.addEventListener("abort", abort, { once: true });
         });
       }
     });
@@ -945,8 +952,10 @@ describe("ChatView", () => {
     });
     expect(streamCalls.length).toBe(1);
     expect(screen.queryByText(/aborted/i)).toBeNull();
-    // Queued optimistic row stays (user message already accepted)
-    expect(screen.getByText("queued")).toBeInTheDocument();
+    // Abort before persist → temp row removed, draft restored to composer
+    const list = document.querySelector(".messages")!;
+    expect(list.textContent).not.toContain("queued");
+    await waitFor(() => expect(box).toHaveValue("queued"));
   });
 
   it("regenerate notifies when the message is no longer in the chat", async () => {
@@ -980,9 +989,8 @@ describe("ChatView", () => {
     expect(streamChat).not.toHaveBeenCalled();
   });
 
-  it("keeps optimistic pending sends after the reply they raced", async () => {
+  it("keeps optimistic pending sends after a history reload race", async () => {
     const user = userEvent.setup();
-    // Reply with created_at after the second paint — pending must stay last
     const stored: Message[] = [];
     addMessage.mockImplementation(async (chatId, role, content) => {
       const m = msg({
@@ -990,17 +998,17 @@ describe("ChatView", () => {
         chat_id: chatId,
         role,
         content,
-        created_at: Date.now() + (role === "assistant" ? 0 : -5000),
+        // Persisted reply is *older* than the second paint — sort would lie
+        created_at: role === "assistant" ? Date.now() - 10_000 : Date.now(),
       });
       stored.push(m);
       return m;
     });
     listMessages.mockImplementation(async () => [...stored]);
-    listRecentMessages.mockImplementation(async () => {
-      // Racing history load mid-stream: reply is in page, pending u2 is not
-      const page = stored.filter((m) => m.role !== "user" || m.content !== "second");
-      return [...page];
-    });
+    // Racing load while "second" is still unpersisted: page lacks it
+    listRecentMessages.mockImplementation(async () =>
+      stored.filter((m) => m.content !== "second"),
+    );
 
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -1009,34 +1017,31 @@ describe("ChatView", () => {
     streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
       opts.onToken("reply-one");
       await gate;
-      // Race: reload history while first reply still streaming
-      listRecentMessages.mockResolvedValue([
-        ...stored.filter((m) => m.role === "assistant" || m.content === "first"),
-      ]);
-      // Force a remount-style reload by switching away and back is heavy;
-      // instead the test only asserts order after second paint below.
     });
 
-    render(
-      <ChatView
-        chat={chat}
-        onChatUpdated={vi.fn()}
-        onChatMeta={vi.fn()}
-        onNew={vi.fn()}
-        onBranch={vi.fn(async () => {})}
-        onNotify={vi.fn()}
-        focusNonce={1}
-      />,
-    );
+    const other: Chat = { ...chat, id: "c2", title: "Other" };
+    const props = {
+      onChatUpdated: vi.fn(),
+      onChatMeta: vi.fn(),
+      onNew: vi.fn(),
+      onBranch: vi.fn(async () => {}),
+      onNotify: vi.fn(),
+      focusNonce: 1,
+    };
+    const { rerender } = render(<ChatView chat={chat} {...props} />);
     const box = await screen.findByPlaceholderText("Ask AI anything…");
     await user.type(box, "first");
     await user.keyboard("{Enter}");
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
 
-    // Second optimistic send while first streams — created_at may precede reply
     await user.type(box, "second");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(screen.getByText("second")).toBeInTheDocument());
+
+    // Leave mid-stream so the load effect re-runs mergeHistory on return
+    rerender(<ChatView chat={other} {...props} focusNonce={2} />);
+    rerender(<ChatView chat={chat} {...props} focusNonce={3} />);
+    await waitFor(() => expect(screen.getByText("first")).toBeInTheDocument());
 
     await act(async () => {
       release();
@@ -1046,12 +1051,13 @@ describe("ChatView", () => {
     );
     await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
 
-    // Second user row stays after the first reply even if its created_at is older
+    // mergeHistory must keep pending "second" after the reload + reply
     const texts = Array.from(
       document.querySelectorAll(".msg-content"),
     ).map((el) => el.textContent ?? "");
     const replyIdx = texts.findIndex((t) => t.includes("reply-one"));
     const secondIdx = texts.findIndex((t) => t.includes("second"));
+    expect(replyIdx).toBeGreaterThanOrEqual(0);
     expect(secondIdx).toBeGreaterThan(replyIdx);
   });
 

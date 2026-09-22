@@ -68,6 +68,14 @@ describe("db (memory sql integration)", () => {
 
     const recent = await listRecentMessages(chat.id, 3);
     expect(recent.map((m) => m.content)).toEqual(["t1", "t2", "t3"]);
+
+    // Older page must use the same rowid tie-break (created_at < before)
+    const older = await listOlderMessages(chat.id, 1_001, 10);
+    expect(older.map((m) => m.content)).toEqual(["t1", "t2", "t3"]);
+
+    // LIMIT cutting a tie group takes the high-rowid rows first (pre-reverse)
+    const olderLimited = await listOlderMessages(chat.id, 1_001, 2);
+    expect(olderLimited.map((m) => m.content)).toEqual(["t2", "t3"]);
   });
 
   it("deletes chat and persists settings", async () => {

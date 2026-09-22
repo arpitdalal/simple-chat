@@ -12,6 +12,7 @@ const listMessages = vi.fn();
 const deleteMessagesAfter = vi.fn();
 const updateChat = vi.fn();
 const getChat = vi.fn();
+const clearChatMessages = vi.fn();
 
 const hiddenListeners = vi.hoisted(() => new Set<() => void>());
 
@@ -53,6 +54,7 @@ vi.mock("../lib/db", () => ({
   deleteMessagesAfter: (...a: unknown[]) => deleteMessagesAfter(...a),
   updateChat: (...a: unknown[]) => updateChat(...a),
   getChat: (...a: unknown[]) => getChat(...a),
+  clearChatMessages: (...a: unknown[]) => clearChatMessages(...a),
 }));
 
 import { ChatView } from "./ChatView";
@@ -98,6 +100,7 @@ describe("ChatView", () => {
       preview: "Ask AI anything…",
     }));
     generateChatTitle.mockResolvedValue("Auto Title");
+    clearChatMessages.mockResolvedValue(undefined);
     addMessage.mockImplementation(async (chatId, role, content) => {
       const m = msg({ id: crypto.randomUUID(), chat_id: chatId, role, content });
       const list = stored.get(chatId) ?? [];
@@ -956,6 +959,54 @@ describe("ChatView", () => {
     const list = document.querySelector(".messages")!;
     expect(list.textContent).not.toContain("queued");
     await waitFor(() => expect(box).toHaveValue("queued"));
+  });
+
+  it("drops the turn and mops messages when the chat is deleted mid-send", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    let gate!: () => void;
+    const blocked = new Promise<void>((r) => {
+      gate = r;
+    });
+    let sendCount = 0;
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      sendCount += 1;
+      opts.onToken("partial");
+      if (sendCount === 1) await blocked;
+    });
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={onNotify}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "one");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("one")).toBeInTheDocument());
+
+    // Chat vanishes while stream 1 is live; queue still holds "two"
+    getChat.mockResolvedValue(null);
+    await user.type(box, "two");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("two")).toBeInTheDocument());
+
+    await act(async () => {
+      gate();
+    });
+    // Chat gone: no second stream, compensation mops any persisted rows
+    await waitFor(() => expect(onNotify).toHaveBeenCalledWith("Chat was deleted.", "err"));
+    expect(sendCount).toBe(1);
+    expect(streamChat).toHaveBeenCalledTimes(1);
+    expect(clearChatMessages).toHaveBeenCalledWith("c1");
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   });
 
   it("regenerate notifies when the message is no longer in the chat", async () => {

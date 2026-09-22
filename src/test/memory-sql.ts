@@ -202,10 +202,14 @@ class MemoryDatabase {
       const chatId = String(args[0]);
       const before = Number(args[1]);
       const limit = Number(args[2] ?? 40);
+      // Mirror SQL `ORDER BY created_at DESC, rowid DESC` (db.ts reverse()s
+      // the page): among equal created_at, higher insertion index first.
       return messages
-        .filter((m) => m.chat_id === chatId && m.created_at < before)
-        .sort((a, b) => b.created_at - a.created_at)
-        .slice(0, limit) as unknown as T;
+        .map((m, i) => ({ m, i }))
+        .filter(({ m }) => m.chat_id === chatId && m.created_at < before)
+        .sort((a, b) => b.m.created_at - a.m.created_at || b.i - a.i)
+        .slice(0, limit)
+        .map(({ m }) => m) as unknown as T;
     }
 
     if (

@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ModelMessage } from "ai";
 import {
   addMessage,
+  clearChatMessages,
   deleteMessagesAfter,
   getChat,
   listMessages,
@@ -434,6 +435,13 @@ export function ChatView({
     const ac = slot.ac;
 
     const appendAssistant = async (content: string) => {
+      // Re-check before insert — chat may have been deleted mid-stream.
+      const still = await getChat(chatId);
+      if (!still) {
+        const err = new Error("Chat was deleted.");
+        (err as Error & { code?: string }).code = "CHAT_DELETED";
+        throw err;
+      }
       const assistant = await addMessage(chatId, "assistant", content);
       noteLocalAdd(chatId, assistant);
       if (viewingIdRef.current === chatId) {
@@ -536,6 +544,10 @@ export function ChatView({
       await appendAssistant(full);
       assistantSaved = true;
     } catch (e) {
+      // Domain signal for the caller (send/regenerate) to compensate + notify.
+      if ((e as Error & { code?: string }).code === "CHAT_DELETED") {
+        throw e;
+      }
       const aborted = (e as Error).name === "AbortError";
       if (!aborted && streamed && !assistantSaved && full) {
         // Stream finished — retry persist once; success = no error toast
@@ -653,6 +665,15 @@ export function ChatView({
         // Only this turn's token — a stale aborted slot from Stop must not
         // cancel a fresh send that raced into the queue window.
         throwIfTurnAborted(turnAc);
+        // Live chat check before any persist — a queued turn must not insert
+        // an orphan row into a chat deleted while it waited.
+        const freshChat = await getChat(chatId);
+        if (!freshChat) {
+          // Distinct from AbortError so the user is told.
+          const err = new Error("Chat was deleted.");
+          (err as Error & { code?: string }).code = "CHAT_DELETED";
+          throw err;
+        }
         const userMsg = await addMessage(chatId, "user", displayText);
         userPersisted = true;
         userPersistedId = userMsg.id;
@@ -671,15 +692,6 @@ export function ChatView({
           }
         }
 
-        // Eligibility from live DB state — a prior queued turn may have
-        // already titled this chat after chatSnap was captured.
-        const freshChat = await getChat(chatId);
-        if (!freshChat) {
-          // Distinct from AbortError so the user is told; drop the temp row.
-          const err = new Error("Chat was deleted.");
-          (err as Error & { code?: string }).code = "CHAT_DELETED";
-          throw err;
-        }
         if (freshChat.title === "New Chat" && text) {
           const provisional =
             text.slice(0, 48) + (text.length > 48 ? "…" : "");
@@ -738,6 +750,8 @@ export function ChatView({
       const deleted = (e as Error & { code?: string }).code === "CHAT_DELETED";
       if (deleted) {
         // Compensation: chat vanished mid-send — drop local optimistic row
+        // and mop any rows this turn (or a racing peer) already persisted
+        // into a chat that no longer exists (UUID ids are never reused).
         localAddsRef.current.delete(chatId);
         pendingSendsRef.current.delete(chatId);
         if (viewingIdRef.current === chatId) {
@@ -746,6 +760,11 @@ export function ChatView({
               (x) => x.id !== tempId && (!userPersistedId || x.id !== userPersistedId),
             ),
           );
+        }
+        try {
+          await clearChatMessages(chatId);
+        } catch {
+          /* best-effort — chat may already be gone from every surface */
         }
         onNotify((e as Error).message || String(e), "err");
         onChatUpdated();
@@ -841,6 +860,17 @@ export function ChatView({
         await streamReply(chatSnap, keep, userMessageId, undefined, turnAc);
       });
     } catch (e) {
+      const deleted = (e as Error & { code?: string }).code === "CHAT_DELETED";
+      if (deleted) {
+        try {
+          await clearChatMessages(chatId);
+        } catch {
+          /* best-effort mop of any mid-stream insert */
+        }
+        onNotify((e as Error).message || String(e), "err");
+        onChatUpdated();
+        return;
+      }
       // streamReply notifies for stream errors; only notify if we never got there
       if ((e as Error).name !== "AbortError" && !reachedStream) {
         onNotify((e as Error).message || String(e), "err");

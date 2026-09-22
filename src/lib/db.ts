@@ -275,7 +275,8 @@ export async function deleteChatsOlderThan(days: number) {
 export async function listMessages(chatId: string): Promise<Message[]> {
   const db = await getDb();
   return db.select<Message[]>(
-    "SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at ASC",
+    // rowid breaks created_at ties so queued turns keep a stable order
+    "SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at ASC, rowid ASC",
     [chatId],
   );
 }
@@ -287,7 +288,7 @@ export async function listRecentMessages(
 ): Promise<Message[]> {
   const db = await getDb();
   const rows = await db.select<Message[]>(
-    `SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    `SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT $2`,
     [chatId, limit],
   );
   return rows.reverse();
@@ -303,7 +304,7 @@ export async function listOlderMessages(
   const rows = await db.select<Message[]>(
     `SELECT * FROM messages
      WHERE chat_id = $1 AND created_at < $2
-     ORDER BY created_at DESC LIMIT $3`,
+     ORDER BY created_at DESC, rowid DESC LIMIT $3`,
     [chatId, beforeCreatedAt, limit],
   );
   return rows.reverse();

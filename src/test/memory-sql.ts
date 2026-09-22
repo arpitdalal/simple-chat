@@ -208,12 +208,16 @@ class MemoryDatabase {
         .slice(0, limit) as unknown as T;
     }
 
-    if (q.includes("FROM messages") && q.includes("ORDER BY created_at DESC LIMIT")) {
+    if (
+      q.includes("FROM messages") &&
+      q.includes("ORDER BY created_at DESC")
+    ) {
       const chatId = String(args[0]);
-      const limit = Number(args[1] ?? 50);
+      const limitMatch = q.match(/LIMIT \$(\d+)/);
+      const limit = limitMatch ? Number(args[Number(limitMatch[1]) - 1]) : 50;
       return messages
         .filter((m) => m.chat_id === chatId)
-        .sort((a, b) => b.created_at - a.created_at)
+        .sort((a, b) => b.created_at - a.created_at || 0)
         .slice(0, limit) as unknown as T;
     }
 

@@ -895,6 +895,166 @@ describe("ChatView", () => {
     expect(reply2Idx).toBeGreaterThan(secondIdx);
   });
 
+  it("Stop cancels a queued second send before it streams", async () => {
+    const user = userEvent.setup();
+    const streamCalls: Array<{ onToken: (t: string) => void }> = [];
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      streamCalls.push(opts);
+      opts.onToken(`reply-${streamCalls.length}`);
+      if (streamCalls.length === 1) {
+        await new Promise((_r, reject) => {
+          opts.abortSignal?.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+      }
+    });
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "first");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("first")).toBeInTheDocument());
+
+    await user.type(box, "queued");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("queued")).toBeInTheDocument());
+    expect(streamCalls.length).toBe(1);
+
+    // Stop aborts the live stream AND the turn still waiting in the FIFO
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop" })).toBeNull(),
+    );
+    // Give the queue a chance to (incorrectly) start turn 2
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(streamCalls.length).toBe(1);
+    expect(screen.queryByText(/aborted/i)).toBeNull();
+    // Queued optimistic row stays (user message already accepted)
+    expect(screen.getByText("queued")).toBeInTheDocument();
+  });
+
+  it("regenerate notifies when the message is no longer in the chat", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    const u1 = msg({ id: "u1", role: "user", content: "prompt" });
+    const a1 = msg({ id: "a1", role: "assistant", content: "old answer" });
+    listRecentMessages.mockResolvedValue([u1, a1]);
+    listMessages.mockResolvedValue([u1, a1]);
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={onNotify}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("old answer")).toBeInTheDocument());
+    listMessages.mockResolvedValue([]);
+    await user.click(screen.getAllByRole("button", { name: "Regenerate" })[0]);
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(
+        "That message is no longer in this chat.",
+        "err",
+      ),
+    );
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps optimistic pending sends after the reply they raced", async () => {
+    const user = userEvent.setup();
+    // Reply with created_at after the second paint — pending must stay last
+    const stored: Message[] = [];
+    addMessage.mockImplementation(async (chatId, role, content) => {
+      const m = msg({
+        id: crypto.randomUUID(),
+        chat_id: chatId,
+        role,
+        content,
+        created_at: Date.now() + (role === "assistant" ? 0 : -5000),
+      });
+      stored.push(m);
+      return m;
+    });
+    listMessages.mockImplementation(async () => [...stored]);
+    listRecentMessages.mockImplementation(async () => {
+      // Racing history load mid-stream: reply is in page, pending u2 is not
+      const page = stored.filter((m) => m.role !== "user" || m.content !== "second");
+      return [...page];
+    });
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      opts.onToken("reply-one");
+      await gate;
+      // Race: reload history while first reply still streaming
+      listRecentMessages.mockResolvedValue([
+        ...stored.filter((m) => m.role === "assistant" || m.content === "first"),
+      ]);
+      // Force a remount-style reload by switching away and back is heavy;
+      // instead the test only asserts order after second paint below.
+    });
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "first");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+
+    // Second optimistic send while first streams — created_at may precede reply
+    await user.type(box, "second");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("second")).toBeInTheDocument());
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "reply-one"),
+    );
+    await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
+
+    // Second user row stays after the first reply even if its created_at is older
+    const texts = Array.from(
+      document.querySelectorAll(".msg-content"),
+    ).map((el) => el.textContent ?? "");
+    const replyIdx = texts.findIndex((t) => t.includes("reply-one"));
+    const secondIdx = texts.findIndex((t) => t.includes("second"));
+    expect(secondIdx).toBeGreaterThan(replyIdx);
+  });
+
   it("streams a new chat's send while another chat's reply is in flight", async () => {
     const user = userEvent.setup();
     const gates: Record<string, (() => void) | undefined> = {};

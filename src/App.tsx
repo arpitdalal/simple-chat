@@ -13,15 +13,20 @@ import {
   getSettings,
   listChats,
   listMessages,
+  messageCount,
   openOrCreateChat,
+  setDefaultModel,
   setSetting,
   updateChat,
   type AppSettings,
   type Chat,
 } from "./lib/db";
 import type { ProviderId } from "./lib/models";
+import { pickDefaultModel } from "./lib/models";
+import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
-import { isEmptyNewChat } from "./lib/chats";
+import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
+import { createQueue, type Queue } from "./lib/queue";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -47,12 +52,140 @@ function App() {
   const [updating, setUpdating] = useState(false);
   /** Install succeeded; only quit/reopen left — do not re-offer Install. */
   const [restartRequired, setRestartRequired] = useState(false);
+  /** null = not probed yet (unknown — do not block send). */
+  const [readyProviders, setReadyProviders] = useState<ProviderId[] | null>(
+    null,
+  );
+  /** Derived from nav queue pending count — no separate lock flags. */
+  const [navBusy, setNavBusy] = useState(false);
+  /** Derived from keychain queue pending count (OS prompts included). */
+  const [keyBusy, setKeyBusy] = useState(false);
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
   const updateCheckGenRef = useRef(0);
   const updatingRef = useRef(false);
   const restartRequiredRef = useRef(false);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
+  /** Sync ref before setState so queued key-sync sees the id without waiting a render. */
+  function setActiveIdNow(id: string | null) {
+    activeIdRef.current = id;
+    setActiveId(id);
+  }
+  /** Cancel generation for nav tasks (newChat / key sync). */
+  const navGenRef = useRef(0);
+  /** Claims the latest readiness probe so a stale one cannot clobber UI. */
+  const readyGenRef = useRef(0);
+  /** Bumped when Settings onSaved — persistDefaults CAS observes user edits. */
+  const settingsGenRef = useRef(0);
+  /** True while a key sync is queued/running (or was cancelled mid-flight). */
+  const keySyncWantedRef = useRef(false);
+  /** Latest Settings debounce flush — drain target while Settings is open. */
+  const settingsFlushRef = useRef<(() => Promise<void>) | null>(null);
+
+  // One FIFO for all nav work. busy ⇔ pending > 0 (queued or running).
+  const navQueueRef = useRef<Queue | null>(null);
+  if (navQueueRef.current === null) navQueueRef.current = createQueue();
+  const navQueue = navQueueRef.current;
+
+  useEffect(() => {
+    const unsubNav = navQueue.subscribe(() => setNavBusy(navQueue.isBusy()));
+    const unsubKey = subscribeKeyBusy(() => setKeyBusy(isKeyOpBusy()));
+    setNavBusy(navQueue.isBusy());
+    setKeyBusy(isKeyOpBusy());
+    return () => {
+      unsubNav();
+      unsubKey();
+    };
+  }, [navQueue]);
+
+  /**
+   * Enqueue nav work. Cancel = bump navGen — queued tasks no-op at dequeue;
+   * running tasks stop at the next isCancelled() check. No epoch locks.
+   */
+  function runNav<T>(
+    op: (isCancelled: () => boolean) => Promise<T>,
+  ): Promise<T | undefined> {
+    const gen = navGenRef.current;
+    const isCancelled = () => gen !== navGenRef.current;
+    return navQueue.run(async () => {
+      if (isCancelled()) return undefined;
+      return op(isCancelled);
+    });
+  }
+
+  /**
+   * Invalidate in-flight newChat/key-sync. If a key sync was wanted,
+   * re-enqueue it under the fresh gen so defaults/align still finish.
+   */
+  function cancelNav() {
+    navGenRef.current += 1;
+    if (keySyncWantedRef.current) scheduleKeySync();
+  }
+
+  /** Apply a probe result only when it is still the latest claim. */
+  function claimReady(list: ProviderId[] | null) {
+    readyGenRef.current += 1;
+    setReadyProviders(list);
+  }
+
+  /**
+   * Probe → retarget defaults (CAS) → align active empty chat.
+   * Serialized on the nav queue with newChat — never interleaves.
+   */
+  function scheduleKeySync() {
+    keySyncWantedRef.current = true;
+    const genAtEnqueue = navGenRef.current;
+    void runNav(async (isCancelled) => {
+      try {
+        const readyGen = ++readyGenRef.current;
+        const { ready, ok } = await listReadyProviders();
+        if (isCancelled()) return;
+        if (readyGen === readyGenRef.current) {
+          setReadyProviders(ok ? ready : null);
+        }
+        // Store locked — unknown readiness; skip destructive align.
+        if (!ok) return;
+
+        const s = await getSettings();
+        if (isCancelled()) return;
+        const settingsGen = settingsGenRef.current;
+        const picked = pickDefaultModel(ready, {
+          provider: s.default_provider,
+          modelId: s.default_model,
+        });
+        const next = picked
+          ? await persistDefaults(picked, s, settingsGen)
+          : s;
+        if (isCancelled()) return;
+
+        const alignTo = pickDefaultModel(ready, {
+          provider: next.default_provider,
+          modelId: next.default_model,
+        });
+        const id = activeIdRef.current;
+        if (!id) return;
+        const chat = await getChat(id);
+        if (isCancelled() || !chat || activeIdRef.current !== id) return;
+        if (!isEmptyNewChat(chat)) return;
+
+        const aligned = await alignEmptyChat(chat, alignTo, ready);
+        if (isCancelled()) return;
+        if (activeIdRef.current === aligned.id) {
+          setActive(aligned);
+          if (aligned !== chat) await refreshChats();
+        }
+      } catch (err) {
+        console.error("key sync failed", err);
+        notify((err as Error)?.message || String(err), "err");
+      } finally {
+        if (navGenRef.current === genAtEnqueue) {
+          keySyncWantedRef.current = false;
+        }
+      }
+    });
+  }
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -66,14 +199,82 @@ function App() {
     setToast({ text, kind });
   }, []);
 
+  const persistDefaults = useCallback(
+    async (
+      picked: { provider: ProviderId; modelId: string },
+      current: AppSettings,
+      settingsGen?: number,
+    ): Promise<AppSettings> => {
+      if (
+        picked.provider === current.default_provider &&
+        picked.modelId === current.default_model
+      ) {
+        return current;
+      }
+      if (settingsGen != null && settingsGen !== settingsGenRef.current) {
+        return getSettings();
+      }
+      const saved = await setDefaultModel(picked.provider, picked.modelId, {
+        provider: current.default_provider,
+        modelId: current.default_model,
+      });
+      if (settingsGen != null && settingsGen !== settingsGenRef.current) {
+        return getSettings();
+      }
+      setSettings(saved);
+      return saved;
+    },
+    [],
+  );
+
+  const alignEmptyChat = useCallback(
+    async (
+      chat: Chat,
+      picked: { provider: ProviderId; modelId: string } | null,
+      ready: readonly ProviderId[],
+    ): Promise<Chat> => {
+      if (!picked || !isEmptyNewChat(chat)) return chat;
+      if (!emptyChatNeedsRetarget(chat, ready)) return chat;
+      if ((await messageCount(chat.id)) !== 0) return chat;
+      if (
+        chat.provider === picked.provider &&
+        chat.model_id === picked.modelId
+      ) {
+        return chat;
+      }
+      await updateChat(chat.id, {
+        provider: picked.provider,
+        model_id: picked.modelId,
+      });
+      return {
+        ...chat,
+        provider: picked.provider,
+        model_id: picked.modelId,
+      };
+    },
+    [],
+  );
+
+  const openSettings = useCallback(() => {
+    cancelNav();
+    setShowSettings(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onProvidersReady = useCallback((list: ProviderId[] | null) => {
+    claimReady(list);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const selectChat = useCallback(
     async (id: string) => {
+      cancelNav();
       setShowSettings(false);
       if (activeId === id) {
         focusComposer();
         return;
       }
-      setActiveId(id);
+      setActiveIdNow(id);
       const toDelete = chats.filter(
         (c) => c.id !== id && isEmptyNewChat(c),
       );
@@ -82,34 +283,108 @@ function App() {
         await refreshChats();
       }
       focusComposer();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [activeId, chats, focusComposer, refreshChats],
   );
 
   const newChat = useCallback(async () => {
     if (!settings) return;
-    const existing = chats.find(isEmptyNewChat);
-    if (existing) {
-      setActiveId(existing.id);
-      setActive(existing);
-      setShowSettings(false);
-      focusComposer();
-      return;
+    try {
+      await runNav(async (isCancelled) => {
+        // Drain Settings debounce so a just-picked default is visible.
+        try {
+          await settingsFlushRef.current?.();
+        } catch (err) {
+          // Persist failure must not block New Chat — defaults may be stale.
+          console.error("settings flush failed", err);
+        }
+        if (isCancelled()) return;
+
+        const readyGen = ++readyGenRef.current;
+        const { ready, ok } = await listReadyProviders();
+        if (isCancelled()) return;
+        if (readyGen === readyGenRef.current) {
+          setReadyProviders(ok ? ready : null);
+        }
+        const readyList = ok ? ready : [];
+
+        const s = await getSettings();
+        if (isCancelled()) return;
+        const settingsGen = settingsGenRef.current;
+        const picked = pickDefaultModel(readyList, {
+          provider: s.default_provider,
+          modelId: s.default_model,
+        });
+        const nextSettings = picked
+          ? await persistDefaults(picked, s, settingsGen)
+          : s;
+        if (isCancelled()) return;
+        const alignTo = pickDefaultModel(readyList, {
+          provider: nextSettings.default_provider,
+          modelId: nextSettings.default_model,
+        });
+
+        const liveChats = await listChats();
+        if (isCancelled()) return;
+        const existing = liveChats.find(isEmptyNewChat);
+        if (existing) {
+          const aligned = await alignEmptyChat(existing, alignTo, readyList);
+          if (isCancelled()) return;
+          setActiveIdNow(aligned.id);
+          setActive(aligned);
+          setShowSettings(false);
+          if (aligned !== existing) await refreshChats();
+          else setChats(liveChats);
+          focusComposer();
+          return;
+        }
+        if (active) {
+          const freshActive = await getChat(active.id);
+          if (isCancelled()) return;
+          if (freshActive && isEmptyNewChat(freshActive)) {
+            const aligned = await alignEmptyChat(
+              freshActive,
+              alignTo,
+              readyList,
+            );
+            if (isCancelled()) return;
+            setActive(aligned);
+            setShowSettings(false);
+            if (aligned !== freshActive) await refreshChats();
+            else setChats(liveChats);
+            focusComposer();
+            return;
+          }
+        }
+        const chat = await createChat(
+          (alignTo?.provider ?? nextSettings.default_provider) as ProviderId,
+          alignTo?.modelId ?? nextSettings.default_model,
+        );
+        if (isCancelled()) {
+          await deleteChat(chat.id);
+          return;
+        }
+        setActiveIdNow(chat.id);
+        setActive(chat);
+        setShowSettings(false);
+        await refreshChats();
+        focusComposer();
+      });
+    } catch (err) {
+      console.error("new chat failed", err);
+      notify((err as Error)?.message || String(err), "err");
     }
-    if (active && isEmptyNewChat(active)) {
-      focusComposer();
-      return;
-    }
-    const chat = await createChat(
-      settings.default_provider as ProviderId,
-      settings.default_model,
-    );
-    setActiveId(chat.id);
-    setActive(chat);
-    setShowSettings(false);
-    await refreshChats();
-    focusComposer();
-  }, [settings, chats, active, focusComposer, refreshChats]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    settings,
+    active,
+    focusComposer,
+    refreshChats,
+    persistDefaults,
+    alignEmptyChat,
+    notify,
+  ]);
 
   useEffect(() => {
     pendingUpdateRef.current = pendingUpdate;
@@ -122,7 +397,6 @@ function App() {
   }, [restartRequired]);
 
   function adoptUpdate(update: AvailableUpdate) {
-    // Don't replace or dismiss the in-flight installer / restart-required banner.
     if (updatingRef.current || restartRequiredRef.current) {
       update.dismiss();
       return;
@@ -133,9 +407,13 @@ function App() {
     });
   }
 
+  // Boot: never await the keychain — OS prompts must not block setReady.
+  // Defaults/empty-chat align run after UI is up via scheduleKeySync.
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       const s = await getSettings();
+      if (cancelled) return;
       setSettings(s);
       await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
       try {
@@ -150,13 +428,16 @@ function App() {
       }
 
       const chat = await openOrCreateChat(s);
+      if (cancelled) return;
       await setSetting("last_opened_at", Date.now());
       await setSetting("last_chat_id", chat.id);
-      setActiveId(chat.id);
+      setActiveIdNow(chat.id);
       setActive(chat);
       await refreshChats();
+      if (cancelled) return;
       setReady(true);
       focusComposer();
+      scheduleKeySync();
       const gen = ++updateCheckGenRef.current;
       void checkForAppUpdate().then((result) => {
         if (gen !== updateCheckGenRef.current) {
@@ -167,10 +448,13 @@ function App() {
       });
     })();
     return () => {
+      cancelled = true;
+      navGenRef.current += 1;
       updateCheckGenRef.current += 1;
       pendingUpdateRef.current?.dismiss();
       pendingUpdateRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshChats, focusComposer, notify]);
 
   useEffect(() => {
@@ -251,19 +535,20 @@ function App() {
       }
       if (mod(e) && e.key === ",") {
         e.preventDefault();
-        setShowSettings(true);
+        openSettings();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [chats, showSettings, newChat, selectChat]);
+  }, [chats, showSettings, newChat, selectChat, openSettings]);
 
   async function handleDelete(id: string) {
+    cancelNav();
     await deleteChat(id);
     if (activeId === id) {
       const next = (await listChats())[0];
       if (next) {
-        setActiveId(next.id);
+        setActiveIdNow(next.id);
         setActive(next);
       } else if (settings) {
         await newChat();
@@ -274,6 +559,7 @@ function App() {
   }
 
   async function handleClear(id: string) {
+    cancelNav();
     await clearChatMessages(id);
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();
@@ -288,10 +574,11 @@ function App() {
 
   async function handleBranch(throughMessageId: string) {
     if (!activeId) return;
+    cancelNav();
     try {
       const branched = await branchChat(activeId, throughMessageId);
       setShowSettings(false);
-      setActiveId(branched.id);
+      setActiveIdNow(branched.id);
       setActive(branched);
       await refreshChats();
       focusComposer();
@@ -336,6 +623,14 @@ function App() {
     return <div className="boot">Starting Simple Chat…</div>;
   }
 
+  const sendLocked = navBusy || keyBusy;
+  const hasProviderKey =
+    readyProviders === null
+      ? null
+      : active
+        ? readyProviders.includes(active.provider as ProviderId)
+        : readyProviders.length > 0;
+
   return (
     <div className={`app ${sidebarOpen ? "sidebar-open" : "sidebar-closed"}`}>
       <div
@@ -366,7 +661,7 @@ function App() {
             onSelect={(id) => void selectChat(id)}
             onNew={() => void newChat()}
             onToggleSidebar={() => setSidebarOpen(false)}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={openSettings}
             settingsActive={showSettings}
             onRename={(id, title) => {
               void updateChat(id, { title }).then(refreshChats);
@@ -386,11 +681,17 @@ function App() {
         {showSettings ? (
           <div className="chat-stage settings-stage glass-panel">
             <Settings
-              onClose={() => setShowSettings(false)}
+              onClose={() => {
+                setShowSettings(false);
+                scheduleKeySync();
+              }}
               onSaved={(s) => {
+                settingsGenRef.current += 1;
                 setSettings(s);
                 void refreshChats();
               }}
+              onKeysChanged={scheduleKeySync}
+              flushRef={settingsFlushRef}
               onNotify={notify}
               onUpdateFound={adoptUpdate}
               updateLocked={updating || restartRequired}
@@ -405,6 +706,13 @@ function App() {
             onBranch={handleBranch}
             onNotify={notify}
             focusNonce={composerFocus}
+            hasProviderKey={hasProviderKey}
+            noKeysConfigured={
+              readyProviders !== null && readyProviders.length === 0
+            }
+            sendLocked={sendLocked}
+            onNeedKey={openSettings}
+            onProvidersReady={onProvidersReady}
           />
         )}
       </div>

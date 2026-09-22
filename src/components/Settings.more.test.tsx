@@ -8,6 +8,7 @@ const setApiKey = vi.fn();
 const clearApiKey = vi.fn();
 const getSettings = vi.fn();
 const setSetting = vi.fn();
+const setDefaultModel = vi.fn();
 const applyHotkey = vi.fn();
 const clearHotkey = vi.fn();
 const setAlwaysOnTop = vi.fn();
@@ -18,6 +19,21 @@ let focusHandler: ((e: { payload: boolean }) => void) | null = null;
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
+  listReadyProviders: async () => {
+    const ready: string[] = [];
+    const failed: string[] = [];
+    for (const p of ["openai", "anthropic", "google"] as const) {
+      try {
+        const has = await hasApiKey(p);
+        if (has) ready.push(p);
+      } catch {
+        failed.push(p);
+      }
+    }
+    return failed.length
+      ? { ready, ok: false, failed, error: "probe failed" }
+      : { ready, ok: true };
+  },
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
   keyErrorMessage: (err: unknown) =>
@@ -27,6 +43,7 @@ vi.mock("../lib/keys", () => ({
 vi.mock("../lib/db", () => ({
   getSettings: () => getSettings(),
   setSetting: (...a: unknown[]) => setSetting(...a),
+  setDefaultModel: (...a: unknown[]) => setDefaultModel(...a),
   deleteChatsOlderThan: vi.fn(),
 }));
 
@@ -76,6 +93,10 @@ describe("Settings behaviors", () => {
     clearHotkey.mockResolvedValue(undefined);
     getActiveHotkey.mockReturnValue("CommandOrControl+Shift+Space");
     setSetting.mockResolvedValue(undefined);
+    setDefaultModel.mockImplementation(async (provider: string, modelId: string) => {
+      const s = await getSettings();
+      return { ...s, default_provider: provider, default_model: modelId };
+    });
   });
 
   it("accepts a typed accelerator when Record cannot hear OS-owned combos", async () => {
@@ -389,6 +410,34 @@ describe("Settings behaviors", () => {
     await waitFor(() => expect(setApiKey).toHaveBeenCalled());
   });
 
+  it("shifts default model to the provider of a newly saved key", async () => {
+    const user = userEvent.setup();
+    getSettings.mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "openai",
+      default_model: "gpt-5.6-luna",
+      last_opened_at: 0,
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+    });
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockImplementation(async () => {
+      hasApiKey.mockImplementation(async (p: string) => p === "google");
+    });
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    // openai, anthropic, google
+    await user.type(inputs[2], "AIza-test");
+    await user.tab();
+    await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(setDefaultModel).toHaveBeenCalledWith("google", "gemini-3.8-flash"),
+    );
+  });
+
   it("updates resume minutes", async () => {
     const user = userEvent.setup();
     render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
@@ -416,8 +465,7 @@ describe("Settings behaviors", () => {
     );
     await user.click(gpt4o!);
     await waitFor(() =>
-      expect(setSetting).toHaveBeenCalledWith("default_model", "gpt-4o"),
+      expect(setDefaultModel).toHaveBeenCalledWith("openai", "gpt-4o"),
     );
-    expect(setSetting).toHaveBeenCalledWith("default_provider", "openai");
   });
 });

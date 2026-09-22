@@ -61,9 +61,12 @@ vi.mock("./lib/updater", () => ({
 
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
+  listReadyProviders: vi.fn(async () => ({ ready: ["google"], ok: true })),
   setApiKey: vi.fn(),
   clearApiKey: vi.fn(),
   getApiKey: vi.fn(async () => "test-key"),
+  isKeyOpBusy: vi.fn(() => false),
+  subscribeKeyBusy: vi.fn(() => () => {}),
   keyErrorMessage: (err: unknown) =>
     err instanceof Error ? err.message : String(err),
 }));
@@ -88,6 +91,17 @@ vi.mock("./lib/db", () => ({
     hotkey: "CommandOrControl+Shift+Space",
   })),
   setSetting: vi.fn(),
+  setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
+    resume_minutes: 5,
+    always_on_top: false,
+    show_tray: true,
+    default_provider: provider,
+    default_model: modelId,
+    last_opened_at: Date.now(),
+    last_chat_id: null,
+    web_search: true,
+    hotkey: "CommandOrControl+Shift+Space",
+  })),
   listChats: vi.fn(async () => chatsStore.get()),
   getChat: vi.fn(async (id: string) =>
     chatsStore.get().find((c) => c.id === id) ?? null,
@@ -111,6 +125,7 @@ vi.mock("./lib/db", () => ({
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
   updateChat: vi.fn(),
+  messageCount: vi.fn(async () => 0),
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),
   listOlderMessages: vi.fn(async () => []),
@@ -123,10 +138,15 @@ import App from "./App";
 import { applyHotkey } from "./lib/hotkey";
 
 describe("App UX", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     chatsStore.reset();
     vi.mocked(applyHotkey).mockReset();
     vi.mocked(applyHotkey).mockResolvedValue(undefined);
+    const { listReadyProviders } = await import("./lib/keys");
+    vi.mocked(listReadyProviders).mockResolvedValue({
+      ready: ["google"],
+      ok: true,
+    });
     openOrCreateChat.mockClear();
     openOrCreateChat.mockImplementation(async () => {
       if (chatsStore.get().length === 0) {
@@ -168,6 +188,65 @@ describe("App UX", () => {
     expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument();
     expect(screen.getByText("Simple Chat")).toBeInTheDocument();
     expect(screen.queryByText(/^Web$/)).toBeNull();
+  });
+
+  it("disables composer when no API keys are present", async () => {
+    const { listReadyProviders } = await import("./lib/keys");
+    vi.mocked(listReadyProviders).mockResolvedValue({ ready: [], ok: true });
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        screen.getByPlaceholderText("Add key to start chatting"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("retargets empty chat to a keyed provider on boot", async () => {
+    const { listReadyProviders } = await import("./lib/keys");
+    const { getSettings, updateChat, messageCount } = await import("./lib/db");
+    vi.mocked(listReadyProviders).mockResolvedValue({
+      ready: ["google"],
+      ok: true,
+    });
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "openai",
+      default_model: "gpt-5.6-luna",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+    });
+    const empty: Chat = {
+      id: "empty-openai",
+      title: "New Chat",
+      model_id: "gpt-5.6-luna",
+      provider: "openai",
+      created_at: 1,
+      updated_at: 1,
+      preview: "Ask AI anything…",
+      pinned: 0,
+    };
+    chatsStore.set([empty]);
+    openOrCreateChat.mockResolvedValueOnce(empty);
+    vi.mocked(messageCount).mockResolvedValue(0);
+    vi.mocked(updateChat).mockImplementation(async (id, patch) => {
+      const cur = chatsStore.get().find((c) => c.id === id);
+      if (!cur) return;
+      chatsStore.set(
+        chatsStore.get().map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      );
+    });
+
+    render(<App />);
+    await waitFor(() =>
+      expect(updateChat).toHaveBeenCalledWith("empty-openai", {
+        provider: "google",
+        model_id: expect.stringMatching(/^gemini/),
+      }),
+    );
   });
 
   it("discards empty New Chat when selecting another thread", async () => {

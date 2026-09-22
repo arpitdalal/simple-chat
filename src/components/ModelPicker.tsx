@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { hasApiKey, keyErrorMessage } from "../lib/keys";
+import { listReadyProviders } from "../lib/keys";
 import {
   CATALOG,
   PROVIDER_LABELS,
-  PROVIDERS,
   resolveModel,
   type ModelDef,
   type ProviderId,
@@ -16,6 +15,12 @@ type Props = {
   onChange: (provider: ProviderId, modelId: string) => void;
   disabled?: boolean;
   refreshKey?: number;
+  /** App already knows zero keys — show empty CTA before local probe finishes. */
+  knownNoKeys?: boolean;
+  /** When no providers have keys, trigger opens Settings instead of the menu. */
+  onNeedKey?: () => void;
+  /** Fired after probe: ready list, or null when store is unreadable. */
+  onReady?: (ready: ProviderId[] | null) => void;
 };
 
 export function ModelPicker({
@@ -24,9 +29,13 @@ export function ModelPicker({
   onChange,
   disabled,
   refreshKey = 0,
+  knownNoKeys = false,
+  onNeedKey,
+  onReady,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState<ProviderId[]>([]);
+  const [probed, setProbed] = useState(false);
   const [probeError, setProbeError] = useState("");
   const [query, setQuery] = useState("");
   const [hi, setHi] = useState(0);
@@ -36,6 +45,8 @@ export function ModelPicker({
   const menuRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: 0, bottom: 0 });
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
 
   const options = useMemo(() => {
     return CATALOG.filter((m) => {
@@ -56,18 +67,20 @@ export function ModelPicker({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const next: ProviderId[] = [];
-      let errMsg = "";
-      for (const p of PROVIDERS) {
-        try {
-          if (await hasApiKey(p)) next.push(p);
-        } catch (err) {
-          errMsg = keyErrorMessage(err);
-        }
-      }
+      const { ready: next, ok, error } = await listReadyProviders();
       if (cancelled) return;
-      setProbeError(errMsg);
+      setProbeError(error ?? "");
+      if (!ok) {
+        // Store locked after a prior success — drop stale ready list; keep label
+        // via probed=false → resolveModel(provider, modelId).
+        setReady([]);
+        setProbed(false);
+        onReadyRef.current?.(null);
+        return;
+      }
       setReady(next);
+      setProbed(true);
+      onReadyRef.current?.(next);
     })();
     return () => {
       cancelled = true;
@@ -139,7 +152,15 @@ export function ModelPicker({
     };
   }, [open, onChange]);
 
-  const current = resolveModel(provider, modelId);
+  const keyed = ready.includes(provider as ProviderId);
+  const current = keyed ? resolveModel(provider, modelId) : null;
+  const showEmptyCta =
+    !probeError && (probed ? ready.length === 0 : knownNoKeys);
+  const triggerLabel = showEmptyCta
+    ? "Add API key"
+    : !probed
+      ? resolveModel(provider, modelId).label
+      : (current?.label ?? "Select model");
 
   function pick(m: ModelDef) {
     onChange(m.provider, m.id);
@@ -148,6 +169,10 @@ export function ModelPicker({
 
   function toggle() {
     if (disabled) return;
+    if (showEmptyCta && onNeedKey) {
+      onNeedKey();
+      return;
+    }
     if (!open && btnRef.current) {
       const r = btnRef.current.getBoundingClientRect();
       setPos({
@@ -167,11 +192,13 @@ export function ModelPicker({
         className="model-trigger"
         disabled={disabled}
         onClick={toggle}
-        title="Select model"
+        title={
+          showEmptyCta ? "Add an API key in Settings" : "Select model"
+        }
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="model-trigger-label">{current.label}</span>
+        <span className="model-trigger-label">{triggerLabel}</span>
         <span className="model-trigger-chevron" aria-hidden>
           ▾
         </span>

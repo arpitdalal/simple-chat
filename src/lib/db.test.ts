@@ -12,6 +12,7 @@ import {
   listOlderMessages,
   listMessages,
   setSetting,
+  setDefaultModel,
   getSettings,
   updateChat,
   branchChat,
@@ -111,5 +112,65 @@ describe("db (memory sql integration)", () => {
     await addMessage(chat.id, "user", "three", 30);
     await deleteMessagesAfter(chat.id, a.id);
     expect((await listMessages(chat.id)).map((m) => m.content)).toEqual(["one"]);
+  });
+
+  it("setDefaultModel CAS skips when live defaults already moved", async () => {
+    await setDefaultModel("openai", "gpt-5.6-luna");
+    await setDefaultModel("anthropic", "claude-haiku-4-5");
+    const stale = await setDefaultModel("google", "gemini-3.8-flash", {
+      provider: "openai",
+      modelId: "gpt-5.6-luna",
+    });
+    expect(stale.default_provider).toBe("anthropic");
+    expect(stale.default_model).toBe("claude-haiku-4-5");
+    const live = await getSettings();
+    expect(live.default_provider).toBe("anthropic");
+    expect(live.default_model).toBe("claude-haiku-4-5");
+  });
+
+  it("setDefaultModel writes provider and model in one statement", async () => {
+    await setDefaultModel("openai", "gpt-5.6-luna");
+    const { default: Database } = await import("../test/memory-sql");
+    const db = await Database.load();
+    const realExecute = db.execute.bind(db);
+    const calls: unknown[][] = [];
+    db.execute = async (query: string, bindValues: unknown[] = []) => {
+      const q = query.replace(/\s+/g, " ").trim();
+      if (q.includes("INSERT INTO settings")) calls.push([...bindValues]);
+      return realExecute(query, bindValues);
+    };
+    await setDefaultModel("google", "gemini-3.8-flash");
+    db.execute = realExecute;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual([
+      "default_provider",
+      JSON.stringify("google"),
+      "default_model",
+      JSON.stringify("gemini-3.8-flash"),
+    ]);
+    const after = await getSettings();
+    expect(after.default_provider).toBe("google");
+    expect(after.default_model).toBe("gemini-3.8-flash");
+  });
+
+  it("setDefaultModel leaves prior defaults if the upsert fails", async () => {
+    await setDefaultModel("openai", "gpt-5.6-luna");
+    const { default: Database } = await import("../test/memory-sql");
+    const db = await Database.load();
+    const realExecute = db.execute.bind(db);
+    db.execute = async (query: string, bindValues: unknown[] = []) => {
+      const q = query.replace(/\s+/g, " ").trim();
+      if (q.includes("INSERT INTO settings") && bindValues.length >= 4) {
+        throw new Error("disk full");
+      }
+      return realExecute(query, bindValues);
+    };
+    await expect(
+      setDefaultModel("google", "gemini-3.8-flash"),
+    ).rejects.toThrow(/disk full/);
+    db.execute = realExecute;
+    const live = await getSettings();
+    expect(live.default_provider).toBe("openai");
+    expect(live.default_model).toBe("gpt-5.6-luna");
   });
 });

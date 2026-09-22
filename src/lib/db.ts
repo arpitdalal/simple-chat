@@ -88,6 +88,10 @@ export async function prepareDb(db: Database) {
 }
 
 export async function getSettings(): Promise<AppSettings> {
+  return runSettingsWrite(() => readSettings());
+}
+
+async function readSettings(): Promise<AppSettings> {
   const db = await getDb();
   const rows = await db.select<{ key: string; value: string }[]>(
     "SELECT key, value FROM settings",
@@ -105,7 +109,16 @@ export async function getSettings(): Promise<AppSettings> {
   return settings;
 }
 
-export async function setSetting<K extends keyof AppSettings>(
+/** Serialize settings writes so App/Settings defaults cannot interleave mid-pair. */
+let settingsWriteTail: Promise<unknown> = Promise.resolve();
+
+function runSettingsWrite<T>(op: () => Promise<T>): Promise<T> {
+  const next = settingsWriteTail.catch(() => undefined).then(op);
+  settingsWriteTail = next;
+  return next as Promise<T>;
+}
+
+async function writeSetting<K extends keyof AppSettings>(
   key: K,
   value: AppSettings[K],
 ) {
@@ -115,6 +128,57 @@ export async function setSetting<K extends keyof AppSettings>(
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [key, JSON.stringify(value)],
   );
+}
+
+export async function setSetting<K extends keyof AppSettings>(
+  key: K,
+  value: AppSettings[K],
+) {
+  return runSettingsWrite(() => writeSetting(key, value));
+}
+
+/**
+ * Write default provider+model together. If `onlyIf` is set, skip when live
+ * defaults already differ (Settings won the race).
+ */
+export async function setDefaultModel(
+  provider: string,
+  modelId: string,
+  onlyIf?: { provider: string; modelId: string },
+): Promise<AppSettings> {
+  return runSettingsWrite(async () => {
+    const live = await readSettings();
+    if (
+      onlyIf &&
+      (live.default_provider !== onlyIf.provider ||
+        live.default_model !== onlyIf.modelId)
+    ) {
+      return live;
+    }
+    if (
+      live.default_provider === provider &&
+      live.default_model === modelId
+    ) {
+      return live;
+    }
+    // One execute — pool-safe atomic upsert (BEGIN/COMMIT across executes is not).
+    const db = await getDb();
+    await db.execute(
+      `INSERT INTO settings (key, value) VALUES ($1, $2), ($3, $4)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [
+        "default_provider",
+        JSON.stringify(provider),
+        "default_model",
+        JSON.stringify(modelId),
+      ],
+    );
+    return {
+      ...live,
+      default_provider: provider,
+      default_model: modelId,
+    };
+  });
 }
 
 export async function listChats(): Promise<Chat[]> {

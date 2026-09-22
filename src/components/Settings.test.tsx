@@ -8,11 +8,27 @@ const setApiKey = vi.fn();
 const clearApiKey = vi.fn();
 const getSettings = vi.fn();
 const setSetting = vi.fn();
+const setDefaultModel = vi.fn();
 const applyHotkey = vi.fn();
 const setAlwaysOnTop = vi.fn();
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
+  listReadyProviders: async () => {
+    const ready: string[] = [];
+    const failed: string[] = [];
+    for (const p of ["openai", "anthropic", "google"] as const) {
+      try {
+        const has = await hasApiKey(p);
+        if (has) ready.push(p);
+      } catch {
+        failed.push(p);
+      }
+    }
+    return failed.length
+      ? { ready, ok: false, failed, error: "probe failed" }
+      : { ready, ok: true };
+  },
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
   keyErrorMessage: (err: unknown) =>
@@ -22,6 +38,7 @@ vi.mock("../lib/keys", () => ({
 vi.mock("../lib/db", () => ({
   getSettings: () => getSettings(),
   setSetting: (...a: unknown[]) => setSetting(...a),
+  setDefaultModel: (...a: unknown[]) => setDefaultModel(...a),
   deleteChatsOlderThan: vi.fn(),
 }));
 
@@ -63,6 +80,10 @@ describe("Settings", () => {
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
     setSetting.mockResolvedValue(undefined);
+    setDefaultModel.mockImplementation(async (provider: string, modelId: string) => {
+      const s = await getSettings();
+      return { ...s, default_provider: provider, default_model: modelId };
+    });
     setApiKey.mockResolvedValue(undefined);
     clearApiKey.mockResolvedValue(undefined);
   });

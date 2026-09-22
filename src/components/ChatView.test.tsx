@@ -36,6 +36,10 @@ vi.mock("../lib/chat", () => ({
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: vi.fn(async () => true),
+  listReadyProviders: vi.fn(async () => ({
+    ready: ["openai", "anthropic", "google"],
+    ok: true,
+  })),
   keyErrorMessage: (err: unknown) =>
     err instanceof Error ? err.message : String(err),
 }));

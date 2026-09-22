@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { isEmptyNewChat, resolveStartupMode } from "./chats";
+import {
+  emptyChatNeedsRetarget,
+  isEmptyNewChat,
+  resolveStartupMode,
+} from "./chats";
+
+describe("emptyChatNeedsRetarget", () => {
+  it("keeps chats whose provider is still keyed", () => {
+    expect(emptyChatNeedsRetarget({ provider: "openai" }, ["openai", "google"])).toBe(
+      false,
+    );
+  });
+  it("retargets when the provider key is gone", () => {
+    expect(emptyChatNeedsRetarget({ provider: "openai" }, ["google"])).toBe(true);
+  });
+});
 
 describe("isEmptyNewChat", () => {
   it("true for fresh New Chat placeholder", () => {

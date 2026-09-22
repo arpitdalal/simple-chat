@@ -71,10 +71,10 @@ class MemoryDatabase {
     }
 
     if (q.includes("INSERT INTO settings")) {
-      const key = String(args[0]);
-      const value = String(args[1]);
-      settings.set(key, value);
-      return { rowsAffected: 1 };
+      for (let i = 0; i + 1 < args.length; i += 2) {
+        settings.set(String(args[i]), String(args[i + 1]));
+      }
+      return { rowsAffected: Math.floor(args.length / 2) };
     }
 
     if (q.includes("INSERT INTO chats")) {

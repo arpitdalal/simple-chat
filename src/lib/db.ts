@@ -161,20 +161,18 @@ export async function setDefaultModel(
     ) {
       return live;
     }
+    // One execute — pool-safe atomic upsert (BEGIN/COMMIT across executes is not).
     const db = await getDb();
-    await db.execute("BEGIN");
-    try {
-      await writeSetting("default_provider", provider);
-      await writeSetting("default_model", modelId);
-      await db.execute("COMMIT");
-    } catch (err) {
-      try {
-        await db.execute("ROLLBACK");
-      } catch {
-        /* ignore rollback errors */
-      }
-      throw err;
-    }
+    await db.execute(
+      `INSERT INTO settings (key, value) VALUES ($1, $2), ($3, $4)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [
+        "default_provider",
+        JSON.stringify(provider),
+        "default_model",
+        JSON.stringify(modelId),
+      ],
+    );
     return {
       ...live,
       default_provider: provider,

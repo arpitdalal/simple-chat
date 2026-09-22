@@ -466,6 +466,8 @@ function App() {
   }
 
   async function handleClear(id: string) {
+    navGenRef.current += 1;
+    setNavBusy(false);
     await clearChatMessages(id);
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();

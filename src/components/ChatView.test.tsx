@@ -458,6 +458,183 @@ describe("ChatView", () => {
     await waitFor(() => expect(screen.getByText("older")).toBeInTheDocument());
   });
 
+  it("clears hasMore when older page is only boundary duplicates", async () => {
+    const existing = Array.from({ length: 50 }, (_, i) =>
+      msg({
+        id: `m${i}`,
+        role: i % 2 ? "assistant" : "user",
+        content: `msg-${i}`,
+        created_at: 1000,
+      }),
+    );
+    listRecentMessages.mockResolvedValue(existing);
+    // Inclusive cursor re-returns only rows already on screen
+    listOlderMessages.mockResolvedValue(existing.slice(0, 5));
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("msg-0")).toBeInTheDocument());
+
+    const scroller = document.querySelector(".messages") as HTMLDivElement;
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => 2000,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => 400,
+    });
+    scroller.scrollTop = 10;
+    scroller.dispatchEvent(new Event("scroll"));
+    await waitFor(() => expect(listOlderMessages).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Loading earlier messages…")).toBeNull();
+
+    // hasMore is false — a second top-scroll must not re-query
+    scroller.scrollTop = 10;
+    scroller.dispatchEvent(new Event("scroll"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(listOlderMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resurrect truncated rows after regenerate + history reload", async () => {
+    const user = userEvent.setup();
+    const u1 = msg({ id: "u1", role: "user", content: "prompt" });
+    const a1 = msg({ id: "a1", role: "assistant", content: "old answer" });
+    const u2 = msg({ id: "u2", role: "user", content: "follow-up" });
+    const a2 = msg({ id: "a2", role: "assistant", content: "answer-2" });
+    listRecentMessages.mockResolvedValue([u1, a1, u2, a2]);
+    listMessages.mockResolvedValue([u1, a1, u2, a2]);
+    // After regenerate the DB keeps only the keep prefix
+    listMessages.mockImplementation(async () => [u1, a1]);
+
+    const props = {
+      onChatUpdated: vi.fn(),
+      onChatMeta: vi.fn(),
+      onNew: vi.fn(),
+      onBranch: vi.fn(async () => {}),
+      onNotify: vi.fn(),
+      focusNonce: 1,
+    };
+    const other = { ...chat, id: "c2", title: "Other" };
+    const { rerender } = render(<ChatView chat={chat} {...props} />);
+    await waitFor(() => expect(screen.getByText("old answer")).toBeInTheDocument());
+
+    // Seed a localAdds row past the keep prefix (as a prior send would)
+    listRecentMessages.mockResolvedValue([u1, a1, u2, a2]);
+    await user.click(screen.getAllByRole("button", { name: "Regenerate" })[0]);
+    await waitFor(() => expect(deleteMessagesAfter).toHaveBeenCalledWith("c1", "u1"));
+
+    // Switch away and back — mergeHistory must not re-add truncated locals
+    listRecentMessages.mockResolvedValue([u1, a1]);
+    rerender(<ChatView chat={other} {...props} focusNonce={2} />);
+    rerender(<ChatView chat={chat} {...props} focusNonce={3} />);
+    await waitFor(() => expect(screen.getByText("old answer")).toBeInTheDocument());
+    expect(screen.queryByText("follow-up")).toBeNull();
+    expect(screen.queryByText("answer-2")).toBeNull();
+  });
+
+  it("skips onChatMeta when the chat is deleted before the title write", async () => {
+    const user = userEvent.setup();
+    const onChatMeta = vi.fn();
+    let titleCalls = 0;
+    generateChatTitle.mockImplementation(async () => {
+      titleCalls += 1;
+      return "Auto Title";
+    });
+    // First getChat (queue entry) succeeds; post-title re-read sees deletion
+    getChat.mockImplementation(async (id: string) => {
+      if (titleCalls > 0) return null;
+      return { ...chat, id, title: "New Chat", preview: "Ask AI anything…" };
+    });
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={onChatMeta}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "hello");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(generateChatTitle).toHaveBeenCalled());
+    await waitFor(() => expect(titleCalls).toBeGreaterThan(0));
+    // Title path may throw CHAT_DELETED after generate — must not re-activate
+    // with a final title (provisional meta before title-gen is allowed).
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onChatMeta).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Auto Title" }),
+    );
+  });
+
+  it("restores multiple Stop'd unpersisted drafts once the queue drains", async () => {
+    const user = userEvent.setup();
+    const streamCalls: Array<{ onToken: (t: string) => void }> = [];
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      streamCalls.push(opts);
+      opts.onToken(`reply-${streamCalls.length}`);
+      if (streamCalls.length === 1) {
+        await new Promise((_r, reject) => {
+          const abort = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (opts.abortSignal?.aborted) abort();
+          else opts.abortSignal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+    });
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "one");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("one")).toBeInTheDocument());
+
+    await user.type(box, "two");
+    await user.keyboard("{Enter}");
+    await user.type(box, "three");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("three")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop" })).toBeNull(),
+    );
+    // Both unpersisted drafts restored (joined), not silently dropped
+    await waitFor(() => expect(box).toHaveValue("two\nthree"));
+    expect(streamCalls.length).toBe(1);
+  });
+
   it("trims scrolled-up history and draft images on window hide", async () => {
     const existing = Array.from({ length: 50 }, (_, i) =>
       msg({

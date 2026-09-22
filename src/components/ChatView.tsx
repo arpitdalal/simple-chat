@@ -65,6 +65,8 @@ type Props = {
   onNeedKey?: () => void;
   /** ModelPicker probe result; null = credential store unknown. */
   onProvidersReady?: (ready: ProviderId[] | null) => void;
+  /** Bumped by App when a chat's messages were cleared externally. */
+  cleared?: { chatId: string; nonce: number } | null;
 };
 
 export function ChatView({
@@ -80,6 +82,7 @@ export function ChatView({
   sendLocked = false,
   onNeedKey,
   onProvidersReady,
+  cleared = null,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -115,6 +118,19 @@ export function ChatView({
   const pendingImageReadsRef = useRef(0);
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
+  /** Unpersisted drafts aborted by Stop — flushed together when the FIFO drains. */
+  const abortedDraftsRef = useRef<
+    Array<{ text: string; images: string[]; gen: number }>
+  >([]);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  // External clear wipes DB rows — drop local mirrors or mergeHistory resurrects them.
+  useEffect(() => {
+    if (!cleared?.nonce) return;
+    localAddsRef.current.delete(cleared.chatId);
+    pendingSendsRef.current.delete(cleared.chatId);
+    if (chat?.id === cleared.chatId) setReloadTick((t) => t + 1);
+  }, [cleared, chat?.id]);
 
   viewingIdRef.current = chat?.id ?? null;
   messagesRef.current = messages;
@@ -190,6 +206,57 @@ export function ChatView({
 
   function isChatDeleted(e: unknown): boolean {
     return (e as Error & { code?: string } | null)?.code === "CHAT_DELETED";
+  }
+
+  /**
+   * Shared post-turn path: CHAT_DELETED mop + notify gate.
+   * Returns true when the chat was deleted (caller should stop).
+   * FIFO teardown stays in the caller's finally.
+   */
+  async function settleTurn(
+    e: unknown,
+    chatId: string,
+    reachedStream: boolean,
+    extraDeleted?: () => void,
+  ): Promise<boolean> {
+    if (isChatDeleted(e)) {
+      localAddsRef.current.delete(chatId);
+      pendingSendsRef.current.delete(chatId);
+      extraDeleted?.();
+      try {
+        await clearChatMessages(chatId);
+      } catch {
+        /* best-effort — chat may already be gone from every surface */
+      }
+      onNotify((e as Error).message || String(e), "err");
+      onChatUpdated();
+      return true;
+    }
+    if ((e as Error).name !== "AbortError" && !reachedStream) {
+      onNotify((e as Error).message || String(e), "err");
+    }
+    return false;
+  }
+
+  /** Flush Stop'd unpersisted drafts once this chat's FIFO has fully drained. */
+  function flushAbortedDrafts(chatId: string) {
+    if (turnCancelsRef.current.get(chatId)?.length) return;
+    const drafts = abortedDraftsRef.current;
+    if (!drafts.length) return;
+    abortedDraftsRef.current = [];
+    if (
+      viewingIdRef.current !== chatId ||
+      (inputRef.current?.value ?? "") !== "" ||
+      imagesRef.current.length !== 0 ||
+      pendingImageReadsRef.current !== 0
+    ) {
+      return;
+    }
+    setInput(drafts.map((d) => d.text).join("\n"));
+    const allImages = drafts.flatMap((d) => d.images);
+    if (allImages.length && drafts.every((d) => d.gen === releaseGenRef.current)) {
+      setImages(allImages);
+    }
   }
 
   function dropPendingSend(chatId: string, tempId: string) {
@@ -290,7 +357,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [chat?.id]);
+  }, [chat?.id, reloadTick]);
 
   // Tray-resident: drop scrolled-up history + draft image data URLs on hide.
   useEffect(() => {
@@ -383,11 +450,15 @@ export function ChatView({
       // Inclusive cursor re-returns the boundary row(s) — drop by id.
       const seen = new Set(messages.map((m) => m.id));
       const fresh = older.filter((m) => !seen.has(m.id));
+      if (fresh.length === 0) {
+        // Inclusive cursor only returned rows already on screen — nothing older.
+        setHasMore(false);
+        return;
+      }
       setHasMore(
         older.length >= pageSize + boundary &&
           messages.length + older.length < MAX_CACHED_MESSAGES,
       );
-      if (fresh.length === 0) return;
       stickBottom.current = false;
       setMessages((m) => [...fresh, ...m]);
       requestAnimationFrame(() => {
@@ -452,8 +523,8 @@ export function ChatView({
         setBusy(true);
         setViewingStream({ anchor: anchorUserId, text: slot.text });
       });
+      stickBottom.current = true;
     }
-    stickBottom.current = true;
     const ac = slot.ac;
 
     const appendAssistant = async (content: string) => {
@@ -781,55 +852,36 @@ export function ChatView({
       if (ownsSlot && !reachedStream) {
         streamsRef.current.delete(chatId);
       }
-      const deleted = isChatDeleted(e);
-      if (deleted) {
-        // Compensation: chat vanished mid-send — drop local optimistic row
-        // and mop any rows this turn (or a racing peer) already persisted
-        // into a chat that no longer exists (UUID ids are never reused).
-        localAddsRef.current.delete(chatId);
-        pendingSendsRef.current.delete(chatId);
+      const deleted = await settleTurn(e, chatId, reachedStream, () => {
         if (viewingIdRef.current === chatId) {
           setMessages((m) =>
             m.filter(
-              (x) => x.id !== tempId && (!userPersistedId || x.id !== userPersistedId),
+              (x) =>
+                x.id !== tempId && (!userPersistedId || x.id !== userPersistedId),
             ),
           );
         }
-        try {
-          await clearChatMessages(chatId);
-        } catch {
-          /* best-effort — chat may already be gone from every surface */
-        }
-        onNotify((e as Error).message || String(e), "err");
-        onChatUpdated();
-        return;
-      }
+      });
+      if (deleted) return;
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
-        // Restore only if whole composer still empty — don't merge into a newer draft
-        if (
-          !userPersisted &&
-          (inputRef.current?.value ?? "") === "" &&
-          imagesRef.current.length === 0 &&
-          pendingImageReadsRef.current === 0
-        ) {
-          setInput(text);
-          // Hide bumps releaseGen and drops image data URLs — don't undo that
-          if (sendGen === releaseGenRef.current) {
-            setImages(imageParts);
-          }
+        if (!userPersisted) {
+          // Stop may abort several queued unpersisted turns — collect them and
+          // restore once the FIFO drains so the first restore doesn't block the rest.
+          abortedDraftsRef.current.push({
+            text,
+            images: imageParts,
+            gen: sendGen,
+          });
         }
         if (!streamsRef.current.has(chatId)) {
           setViewingStream(null);
         }
       }
-      // streamReply notifies for stream errors; only notify if we never got there
-      if ((e as Error).name !== "AbortError" && !reachedStream) {
-        onNotify((e as Error).message || String(e), "err");
-      }
     } finally {
       clearTurnCancel(chatId, turnAc);
       settleChatBusy(chatId);
+      flushAbortedDrafts(chatId);
     }
   }
 
@@ -879,7 +931,8 @@ export function ChatView({
         flushSync(() => {
           if (viewing) {
             setMessages([...visible, ...pending]);
-            if (visible.length < keep.length) setHasMore(true);
+            // Self-heal: truncation may leave nothing older than the page
+            setHasMore(visible.length < keep.length);
             setBusy(true);
             setViewingStream({ anchor: userMessageId, text: "" });
           }
@@ -896,24 +949,11 @@ export function ChatView({
         await streamReply(chatSnap, keep, userMessageId, undefined, turnAc);
       });
     } catch (e) {
-      const deleted = isChatDeleted(e);
-      if (deleted) {
-        try {
-          await clearChatMessages(chatId);
-        } catch {
-          /* best-effort mop of any mid-stream insert */
-        }
-        onNotify((e as Error).message || String(e), "err");
-        onChatUpdated();
-        return;
-      }
-      // streamReply notifies for stream errors; only notify if we never got there
-      if ((e as Error).name !== "AbortError" && !reachedStream) {
-        onNotify((e as Error).message || String(e), "err");
-      }
+      await settleTurn(e, chatId, reachedStream);
     } finally {
       clearTurnCancel(chatId, turnAc);
       settleChatBusy(chatId);
+      flushAbortedDrafts(chatId);
     }
   }
 

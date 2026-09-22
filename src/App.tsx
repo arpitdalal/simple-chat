@@ -60,6 +60,10 @@ function App() {
   const [navBusy, setNavBusy] = useState(false);
   /** Derived from keychain queue pending count (OS prompts included). */
   const [keyBusy, setKeyBusy] = useState(false);
+  /** Bumped when a chat's messages are cleared — ChatView drops local mirrors. */
+  const [cleared, setCleared] = useState<{ chatId: string; nonce: number } | null>(
+    null,
+  );
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -561,6 +565,9 @@ function App() {
   async function handleClear(id: string) {
     cancelNav();
     await clearChatMessages(id);
+    // Signal ChatView to drop localAdds/pendingSends for this chat — otherwise
+    // mergeHistory resurrects wiped rows on the next history load.
+    setCleared({ chatId: id, nonce: Date.now() });
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();
     focusComposer();
@@ -713,6 +720,7 @@ function App() {
             sendLocked={sendLocked}
             onNeedKey={openSettings}
             onProvidersReady={onProvidersReady}
+            cleared={cleared}
           />
         )}
       </div>

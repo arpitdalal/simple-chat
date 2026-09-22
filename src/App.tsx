@@ -93,6 +93,26 @@ function App() {
       ) {
         return current;
       }
+      if (
+        settingsGen != null &&
+        settingsGen !== settingsGenRef.current
+      ) {
+        return getSettings();
+      }
+      // Bail if Settings already moved defaults in the DB (may precede onSaved).
+      const live = await getSettings();
+      if (
+        live.default_provider !== current.default_provider ||
+        live.default_model !== current.default_model
+      ) {
+        return live;
+      }
+      if (
+        settingsGen != null &&
+        settingsGen !== settingsGenRef.current
+      ) {
+        return getSettings();
+      }
       await setSetting("default_provider", picked.provider);
       await setSetting("default_model", picked.modelId);
       if (
@@ -151,6 +171,16 @@ function App() {
     setReadyProviders(ready);
     return ready;
   }, []);
+
+  const openSettings = useCallback(() => {
+    navGenRef.current += 1;
+    setNavBusy(false);
+    setShowSettings(true);
+  }, []);
+
+  const onProvidersReady = useCallback(() => {
+    void refreshReadyKeys();
+  }, [refreshReadyKeys]);
 
   const selectChat = useCallback(
     async (id: string) => {
@@ -390,12 +420,12 @@ function App() {
       }
       if (mod(e) && e.key === ",") {
         e.preventDefault();
-        setShowSettings(true);
+        openSettings();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [chats, showSettings, newChat, selectChat]);
+  }, [chats, showSettings, newChat, selectChat, openSettings]);
 
   async function handleDelete(id: string) {
     navGenRef.current += 1;
@@ -509,7 +539,7 @@ function App() {
             onSelect={(id) => void selectChat(id)}
             onNew={() => void newChat()}
             onToggleSidebar={() => setSidebarOpen(false)}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={openSettings}
             settingsActive={showSettings}
             onRename={(id, title) => {
               void updateChat(id, { title }).then(refreshChats);
@@ -562,10 +592,15 @@ function App() {
                     activeIdRef.current === id &&
                     isEmptyNewChat(chat)
                   ) {
-                    const aligned = await alignEmptyChat(chat, picked);
-                    if (activeIdRef.current === aligned.id) {
-                      setActive(aligned);
-                      if (aligned !== chat) await refreshChats();
+                    setNavBusy(true);
+                    try {
+                      const aligned = await alignEmptyChat(chat, picked);
+                      if (activeIdRef.current === aligned.id) {
+                        setActive(aligned);
+                        if (aligned !== chat) await refreshChats();
+                      }
+                    } finally {
+                      setNavBusy(false);
                     }
                   }
                 })();
@@ -595,7 +630,8 @@ function App() {
               readyProviders !== null && readyProviders.length === 0
             }
             sendLocked={navBusy}
-            onNeedKey={() => setShowSettings(true)}
+            onNeedKey={openSettings}
+            onProvidersReady={onProvidersReady}
           />
         )}
       </div>

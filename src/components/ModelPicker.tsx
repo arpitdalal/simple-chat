@@ -18,6 +18,8 @@ type Props = {
   refreshKey?: number;
   /** When no providers have keys, trigger opens Settings instead of the menu. */
   onNeedKey?: () => void;
+  /** Fired after a successful probe finds (or clears) usable providers. */
+  onReady?: (ready: ProviderId[]) => void;
 };
 
 export function ModelPicker({
@@ -27,6 +29,7 @@ export function ModelPicker({
   disabled,
   refreshKey = 0,
   onNeedKey,
+  onReady,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState<ProviderId[]>([]);
@@ -40,6 +43,8 @@ export function ModelPicker({
   const menuRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: 0, bottom: 0 });
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
 
   const options = useMemo(() => {
     return CATALOG.filter((m) => {
@@ -80,6 +85,7 @@ export function ModelPicker({
       }
       setReady(next);
       setProbed(true);
+      onReadyRef.current?.(next);
     })();
     return () => {
       cancelled = true;

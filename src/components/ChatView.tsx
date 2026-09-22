@@ -52,6 +52,8 @@ type Props = {
   /** True while App is switching chats (e.g. New Chat probes) — block send. */
   sendLocked?: boolean;
   onNeedKey?: () => void;
+  /** ModelPicker recovered usable keys after a failed App-level probe. */
+  onProvidersReady?: () => void;
 };
 
 export function ChatView({
@@ -66,6 +68,7 @@ export function ChatView({
   noKeysConfigured = false,
   sendLocked = false,
   onNeedKey,
+  onProvidersReady,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -796,6 +799,7 @@ export function ChatView({
                 disabled={showStream}
                 onChange={(p, m) => void changeModel(p, m)}
                 onNeedKey={onNeedKey}
+                onReady={onProvidersReady}
               />
             ) : (
               <span className="model-label">{model?.label ?? "—"}</span>

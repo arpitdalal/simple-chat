@@ -37,6 +37,8 @@ type Props = {
   updateLocked?: boolean;
   /** After a key save/clear so App can retarget empty chats. */
   onKeysChanged?: () => void;
+  /** App registers a drain for pending debounced saves (e.g. before New Chat). */
+  flushRef?: { current: (() => Promise<void>) | null };
 };
 
 export function Settings({
@@ -46,6 +48,7 @@ export function Settings({
   onUpdateFound,
   updateLocked = false,
   onKeysChanged,
+  flushRef,
 }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
@@ -73,6 +76,7 @@ export function Settings({
   const persistGenRef = useRef(0);
   /** True when Defaults picker / syncDefaults intentionally changed provider+model. */
   const defaultsDirtyRef = useRef(false);
+  const flushPendingSavesRef = useRef<() => Promise<void>>(async () => {});
   const recordingRef = useRef(false);
   /** Bumped on key save/clear / unmount so a late probe cannot overwrite hasKey. */
   const keyProbeGenRef = useRef(0);
@@ -82,12 +86,19 @@ export function Settings({
   const recordGenRef = useRef(0);
   /** Settings snapshot deferred while recording; flushed when recording ends. */
   const deferredPersistRef = useRef<AppSettings | null>(null);
+  /** Serializes persist bodies so flush can await every in-flight write. */
+  const persistChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const persistImplRef = useRef<
+    (s: AppSettings, opts?: { allowDuringPause?: boolean }) => Promise<void>
+  >(async () => {});
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
   const onKeysChangedRef = useRef(onKeysChanged);
   onKeysChangedRef.current = onKeysChanged;
   const mountedRef = useRef(true);
+
+  // flushPendingSaves is stable (refs only); register once for App.
 
   async function probeKeys(
     gen: number,
@@ -394,7 +405,44 @@ export function Settings({
     }, 250);
   }
 
-  async function persist(
+  function persist(
+    s: AppSettings,
+    opts?: { allowDuringPause?: boolean },
+  ): Promise<void> {
+    const run = persistChainRef.current
+      .catch(() => undefined)
+      .then(() => persistImplRef.current(s, opts));
+    persistChainRef.current = run;
+    return run;
+  }
+
+  /**
+   * Drain the Settings debounce (and any in-flight persist) so callers that
+   * re-read the DB (e.g. New Chat) observe the latest defaults.
+   */
+  const flushPendingSaves = async (): Promise<void> => {
+    if (saveTimer.current && settingsRef.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      void persist(settingsRef.current);
+    } else if (deferredPersistRef.current) {
+      const deferred = deferredPersistRef.current;
+      deferredPersistRef.current = null;
+      void persist(deferred, { allowDuringPause: true });
+    }
+    await persistChainRef.current.catch(() => undefined);
+  };
+  flushPendingSavesRef.current = flushPendingSaves;
+
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = () => flushPendingSavesRef.current();
+    return () => {
+      flushRef.current = null;
+    };
+  }, [flushRef]);
+
+  persistImplRef.current = async function persistImpl(
     s: AppSettings,
     opts?: { allowDuringPause?: boolean },
   ) {
@@ -458,7 +506,18 @@ export function Settings({
       const saved = await setDefaultModel(s.default_provider, s.default_model);
       default_provider = saved.default_provider;
       default_model = saved.default_model;
-      if (gen === persistGenRef.current) defaultsDirtyRef.current = false;
+      // Clear dirty only when this snapshot is still what the UI shows —
+      // a newer Defaults edit that has not reached persist yet must stay dirty.
+      if (gen === persistGenRef.current) {
+        const cur = settingsRef.current;
+        if (
+          cur &&
+          cur.default_provider === s.default_provider &&
+          cur.default_model === s.default_model
+        ) {
+          defaultsDirtyRef.current = false;
+        }
+      }
     } else {
       const live = await getSettings();
       default_provider = live.default_provider;
@@ -470,7 +529,7 @@ export function Settings({
     await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
     onSaved({ ...s, hotkey, default_provider, default_model });
     setStatus(hotkeyOk ? "Saved" : "Saved (hotkey unchanged)");
-  }
+  };
 
   async function saveKey(provider: ProviderId) {
     const value = keys[provider].trim();

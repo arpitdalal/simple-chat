@@ -55,7 +55,7 @@ function App() {
   const [readyProviders, setReadyProviders] = useState<ProviderId[] | null>(
     null,
   );
-  /** True while newChat / key-align hold a nav lock — blocks send on old thread. */
+  /** True while newChat / key-align hold a nav lock — blocks send and model changes. */
   const [navBusy, setNavBusy] = useState(false);
 
   /** Currently offered update; dismiss before replace. */
@@ -74,13 +74,22 @@ function App() {
   const keysSyncTailRef = useRef(Promise.resolve());
   /** Ref-count so newChat and key-align can overlap without clearing each other's lock. */
   const navLockRef = useRef(0);
+  /**
+   * Epoch for nav-lock ownership. `resetNavLock` advances it so release
+   * closures from cancelled operations become no-ops and cannot decrement
+   * locks acquired by a newer operation after the reset.
+   */
+  const navLockEpochRef = useRef(0);
+  /** Latest Settings debounce flush — null while Settings is unmounted. */
+  const settingsFlushRef = useRef<(() => Promise<void>) | null>(null);
 
   function acquireNavLock(): () => void {
+    const epoch = navLockEpochRef.current;
     navLockRef.current += 1;
     setNavBusy(true);
     let released = false;
     return () => {
-      if (released) return;
+      if (released || epoch !== navLockEpochRef.current) return;
       released = true;
       navLockRef.current = Math.max(0, navLockRef.current - 1);
       if (navLockRef.current === 0) setNavBusy(false);
@@ -88,6 +97,7 @@ function App() {
   }
 
   function resetNavLock() {
+    navLockEpochRef.current += 1;
     navLockRef.current = 0;
     setNavBusy(false);
   }
@@ -226,6 +236,10 @@ function App() {
     const gen = ++navGenRef.current;
     const releaseNav = acquireNavLock();
     try {
+      // Drain any pending Settings debounce so a just-picked default is visible.
+      await settingsFlushRef.current?.();
+      if (gen !== navGenRef.current) return;
+
       // Probe directly — refreshReadyKeys shares readyGen with onProvidersReady,
       // so a ModelPicker mount probe would cancel New Chat mid-flight.
       const { ready, ok } = await listReadyProviders();
@@ -254,7 +268,10 @@ function App() {
         modelId: nextSettings.default_model,
       });
 
-      const existing = chats.find(isEmptyNewChat);
+      // Live query — React `chats`/`active` may still list a just-deleted placeholder.
+      const liveChats = await listChats();
+      if (gen !== navGenRef.current) return;
+      const existing = liveChats.find(isEmptyNewChat);
       if (existing) {
         const aligned = await alignEmptyChat(existing, alignTo, readyList);
         if (gen !== navGenRef.current) return;
@@ -262,18 +279,23 @@ function App() {
         setActive(aligned);
         setShowSettings(false);
         if (aligned !== existing) await refreshChats();
+        else setChats(liveChats);
         focusComposer();
         return;
       }
-      if (active && isEmptyNewChat(active)) {
-        const aligned = await alignEmptyChat(active, alignTo, readyList);
+      if (active) {
+        const freshActive = await getChat(active.id);
         if (gen !== navGenRef.current) return;
-        if (aligned !== active) {
+        if (freshActive && isEmptyNewChat(freshActive)) {
+          const aligned = await alignEmptyChat(freshActive, alignTo, readyList);
+          if (gen !== navGenRef.current) return;
           setActive(aligned);
-          await refreshChats();
+          setShowSettings(false);
+          if (aligned !== freshActive) await refreshChats();
+          else setChats(liveChats);
+          focusComposer();
+          return;
         }
-        focusComposer();
-        return;
       }
       const chat = await createChat(
         (alignTo?.provider ?? nextSettings.default_provider) as ProviderId,
@@ -293,7 +315,6 @@ function App() {
     }
   }, [
     settings,
-    chats,
     active,
     focusComposer,
     refreshChats,
@@ -625,42 +646,44 @@ function App() {
                   .catch(() => undefined)
                   .then(async () => {
                     if (gen !== keysSyncGenRef.current) return;
-                    // Probe here — not via refreshReadyKeys — so a ModelPicker
-                    // onReady cannot cancel this sync by bumping readyGen.
-                    const { ready, ok } = await listReadyProviders();
-                    if (gen !== keysSyncGenRef.current) return;
-                    readyGenRef.current += 1;
-                    if (!ok) {
-                      setReadyProviders(null);
-                      return;
-                    }
-                    setReadyProviders(ready);
-                    const s = await getSettings();
-                    if (gen !== keysSyncGenRef.current) return;
-                    const picked = pickDefaultModel(ready, {
-                      provider: s.default_provider,
-                      modelId: s.default_model,
-                    });
-                    const next = picked
-                      ? await persistDefaults(picked, s, settingsGen)
-                      : s;
-                    if (gen !== keysSyncGenRef.current) return;
-                    setSettings(next);
-                    const alignTo = pickDefaultModel(ready, {
-                      provider: next.default_provider,
-                      modelId: next.default_model,
-                    });
-                    const id = activeIdRef.current;
-                    if (!id) return;
-                    const chat = await getChat(id);
-                    if (gen !== keysSyncGenRef.current) return;
-                    if (
-                      chat &&
-                      activeIdRef.current === id &&
-                      isEmptyNewChat(chat)
-                    ) {
-                      const releaseNav = acquireNavLock();
-                      try {
+                    // Hold the nav lock from before readiness is published so
+                    // send/model changes cannot interleave with getChat + align.
+                    const releaseNav = acquireNavLock();
+                    try {
+                      // Probe here — not via refreshReadyKeys — so a ModelPicker
+                      // onReady cannot cancel this sync by bumping readyGen.
+                      const { ready, ok } = await listReadyProviders();
+                      if (gen !== keysSyncGenRef.current) return;
+                      readyGenRef.current += 1;
+                      if (!ok) {
+                        setReadyProviders(null);
+                        return;
+                      }
+                      setReadyProviders(ready);
+                      const s = await getSettings();
+                      if (gen !== keysSyncGenRef.current) return;
+                      const picked = pickDefaultModel(ready, {
+                        provider: s.default_provider,
+                        modelId: s.default_model,
+                      });
+                      const next = picked
+                        ? await persistDefaults(picked, s, settingsGen)
+                        : s;
+                      if (gen !== keysSyncGenRef.current) return;
+                      setSettings(next);
+                      const alignTo = pickDefaultModel(ready, {
+                        provider: next.default_provider,
+                        modelId: next.default_model,
+                      });
+                      const id = activeIdRef.current;
+                      if (!id) return;
+                      const chat = await getChat(id);
+                      if (gen !== keysSyncGenRef.current) return;
+                      if (
+                        chat &&
+                        activeIdRef.current === id &&
+                        isEmptyNewChat(chat)
+                      ) {
                         const aligned = await alignEmptyChat(
                           chat,
                           alignTo,
@@ -671,12 +694,13 @@ function App() {
                           setActive(aligned);
                           if (aligned !== chat) await refreshChats();
                         }
-                      } finally {
-                        releaseNav();
                       }
+                    } finally {
+                      releaseNav();
                     }
                   });
               }}
+              flushRef={settingsFlushRef}
               onNotify={notify}
               onUpdateFound={adoptUpdate}
               updateLocked={updating || restartRequired}

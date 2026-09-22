@@ -382,7 +382,10 @@ export function ChatView({
   }
 
   async function send() {
-    if (!chat || busy) return;
+    if (!chat || busy || blocked) {
+      if (setupNeeded) onNeedKey?.();
+      return;
+    }
     const chatId = chat.id;
     const chatSnap = chat;
     const text = input.trim();
@@ -492,7 +495,10 @@ export function ChatView({
   }
 
   async function regenerate(userMessageId: string) {
-    if (!chat || busy) return;
+    if (!chat || busy || blocked) {
+      if (setupNeeded) onNeedKey?.();
+      return;
+    }
     const chatId = chat.id;
     const chatSnap = chat;
     const startGen = releaseGenRef.current;
@@ -646,7 +652,7 @@ export function ChatView({
                           content={m!.content}
                           messageId={m!.id}
                           role={m!.role}
-                          canRegenerate={!busy}
+                          canRegenerate={!busy && !blocked}
                           onBranch={onBranch}
                           onRegenerate={(id) => void regenerate(id)}
                           onNotify={onNotify}

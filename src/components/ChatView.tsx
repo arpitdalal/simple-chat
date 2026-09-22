@@ -52,8 +52,8 @@ type Props = {
   /** True while App is switching chats (e.g. New Chat probes) — block send. */
   sendLocked?: boolean;
   onNeedKey?: () => void;
-  /** ModelPicker recovered usable keys after a failed App-level probe. */
-  onProvidersReady?: (ready: ProviderId[]) => void;
+  /** ModelPicker probe result; null = credential store unknown. */
+  onProvidersReady?: (ready: ProviderId[] | null) => void;
 };
 
 export function ChatView({

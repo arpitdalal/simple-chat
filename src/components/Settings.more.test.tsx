@@ -8,6 +8,7 @@ const setApiKey = vi.fn();
 const clearApiKey = vi.fn();
 const getSettings = vi.fn();
 const setSetting = vi.fn();
+const setDefaultModel = vi.fn();
 const applyHotkey = vi.fn();
 const clearHotkey = vi.fn();
 const setAlwaysOnTop = vi.fn();
@@ -41,6 +42,7 @@ vi.mock("../lib/keys", () => ({
 vi.mock("../lib/db", () => ({
   getSettings: () => getSettings(),
   setSetting: (...a: unknown[]) => setSetting(...a),
+  setDefaultModel: (...a: unknown[]) => setDefaultModel(...a),
   deleteChatsOlderThan: vi.fn(),
 }));
 
@@ -90,6 +92,10 @@ describe("Settings behaviors", () => {
     clearHotkey.mockResolvedValue(undefined);
     getActiveHotkey.mockReturnValue("CommandOrControl+Shift+Space");
     setSetting.mockResolvedValue(undefined);
+    setDefaultModel.mockImplementation(async (provider: string, modelId: string) => {
+      const s = await getSettings();
+      return { ...s, default_provider: provider, default_model: modelId };
+    });
   });
 
   it("accepts a typed accelerator when Record cannot hear OS-owned combos", async () => {
@@ -427,11 +433,7 @@ describe("Settings behaviors", () => {
     await user.tab();
     await waitFor(() => expect(setApiKey).toHaveBeenCalled());
     await waitFor(() =>
-      expect(setSetting).toHaveBeenCalledWith("default_provider", "google"),
-    );
-    expect(setSetting).toHaveBeenCalledWith(
-      "default_model",
-      "gemini-3.8-flash",
+      expect(setDefaultModel).toHaveBeenCalledWith("google", "gemini-3.8-flash"),
     );
   });
 
@@ -462,8 +464,7 @@ describe("Settings behaviors", () => {
     );
     await user.click(gpt4o!);
     await waitFor(() =>
-      expect(setSetting).toHaveBeenCalledWith("default_model", "gpt-4o"),
+      expect(setDefaultModel).toHaveBeenCalledWith("openai", "gpt-4o"),
     );
-    expect(setSetting).toHaveBeenCalledWith("default_provider", "openai");
   });
 });

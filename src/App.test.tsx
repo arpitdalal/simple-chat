@@ -89,6 +89,17 @@ vi.mock("./lib/db", () => ({
     hotkey: "CommandOrControl+Shift+Space",
   })),
   setSetting: vi.fn(),
+  setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
+    resume_minutes: 5,
+    always_on_top: false,
+    show_tray: true,
+    default_provider: provider,
+    default_model: modelId,
+    last_opened_at: Date.now(),
+    last_chat_id: null,
+    web_search: true,
+    hotkey: "CommandOrControl+Shift+Space",
+  })),
   listChats: vi.fn(async () => chatsStore.get()),
   getChat: vi.fn(async (id: string) =>
     chatsStore.get().find((c) => c.id === id) ?? null,

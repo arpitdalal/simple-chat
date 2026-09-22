@@ -15,6 +15,7 @@ import {
   listMessages,
   messageCount,
   openOrCreateChat,
+  setDefaultModel,
   setSetting,
   updateChat,
   type AppSettings,
@@ -99,35 +100,23 @@ function App() {
       ) {
         return getSettings();
       }
-      // Bail if Settings already moved defaults in the DB (may precede onSaved).
-      const live = await getSettings();
-      if (
-        live.default_provider !== current.default_provider ||
-        live.default_model !== current.default_model
-      ) {
-        return live;
-      }
-      if (
-        settingsGen != null &&
-        settingsGen !== settingsGenRef.current
-      ) {
-        return getSettings();
-      }
-      await setSetting("default_provider", picked.provider);
-      await setSetting("default_model", picked.modelId);
+      // Atomic pair write with CAS — skips if Settings already moved defaults.
+      const saved = await setDefaultModel(
+        picked.provider,
+        picked.modelId,
+        {
+          provider: current.default_provider,
+          modelId: current.default_model,
+        },
+      );
       if (
         settingsGen != null &&
         settingsGen !== settingsGenRef.current
       ) {
         return getSettings();
       }
-      const next = {
-        ...current,
-        default_provider: picked.provider,
-        default_model: picked.modelId,
-      };
-      setSettings(next);
-      return next;
+      setSettings(saved);
+      return saved;
     },
     [],
   );
@@ -178,10 +167,9 @@ function App() {
     setShowSettings(true);
   }, []);
 
-  // Apply ModelPicker's probe without calling refreshReadyKeys (that would
-  // cancel onKeysChanged). Bump readyGen so stale onClose/boot refreshes die;
-  // newChat probes listReadyProviders directly and is unaffected.
-  const onProvidersReady = useCallback((ready: ProviderId[]) => {
+  // Apply ModelPicker probe. null = store unknown (locked) — clear ready list.
+  // Bump readyGen so stale onClose/boot refreshes die; newChat probes directly.
+  const onProvidersReady = useCallback((ready: ProviderId[] | null) => {
     readyGenRef.current += 1;
     setReadyProviders(ready);
   }, []);
@@ -218,17 +206,16 @@ function App() {
       const { ready, ok } = await listReadyProviders();
       if (gen !== navGenRef.current) return;
       readyGenRef.current += 1;
-      if (!ok) {
-        setReadyProviders(null);
-        return;
-      }
-      setReadyProviders(ready);
+      // Store locked: keep unknown readiness but still open a chat from
+      // persisted defaults (same as boot).
+      const readyList = ok ? ready : [];
+      setReadyProviders(ok ? ready : null);
 
       // Defaults may have changed in Settings while probes ran.
       const s = await getSettings();
       if (gen !== navGenRef.current) return;
       const settingsGen = settingsGenRef.current;
-      const picked = pickDefaultModel(ready, {
+      const picked = pickDefaultModel(readyList, {
         provider: s.default_provider,
         modelId: s.default_model,
       });
@@ -237,7 +224,7 @@ function App() {
         : s;
       if (gen !== navGenRef.current) return;
       // Align from persisted defaults, not the pre-persist pick (gen may abort write).
-      const alignTo = pickDefaultModel(ready, {
+      const alignTo = pickDefaultModel(readyList, {
         provider: nextSettings.default_provider,
         modelId: nextSettings.default_model,
       });

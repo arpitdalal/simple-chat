@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   getSettings,
   setSetting,
+  setDefaultModel,
   deleteChatsOlderThan,
   type AppSettings,
 } from "../lib/db";
@@ -441,8 +442,7 @@ export function Settings({
     await setSetting("resume_minutes", s.resume_minutes);
     await setSetting("always_on_top", s.always_on_top);
     await setSetting("show_tray", s.show_tray);
-    await setSetting("default_provider", s.default_provider);
-    await setSetting("default_model", s.default_model);
+    await setDefaultModel(s.default_provider, s.default_model);
     await setSetting("web_search", true);
     await setSetting("hotkey", hotkey);
     if (gen !== persistGenRef.current) return;

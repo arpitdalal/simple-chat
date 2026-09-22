@@ -9,15 +9,29 @@ type Row = Record<string, unknown>;
 const settings = new Map<string, string>();
 let chats: Chat[] = [];
 let messages: Message[] = [];
+let tx: {
+  settings: Map<string, string>;
+  chats: Chat[];
+  messages: Message[];
+} | null = null;
 
 export function resetMemoryDb() {
   settings.clear();
   chats = [];
   messages = [];
+  tx = null;
 }
 
 function parseArgs(sql: string, args: unknown[] = []): unknown[] {
   return args;
+}
+
+function snapshot() {
+  return {
+    settings: new Map(settings),
+    chats: chats.map((c) => ({ ...c })),
+    messages: messages.map((m) => ({ ...m })),
+  };
 }
 
 class MemoryDatabase {
@@ -31,6 +45,28 @@ class MemoryDatabase {
       q.startsWith("ALTER ") ||
       q.startsWith("PRAGMA ")
     ) {
+      return { rowsAffected: 0 };
+    }
+
+    if (q === "BEGIN" || q.startsWith("BEGIN ")) {
+      if (tx) throw new Error("nested transaction");
+      tx = snapshot();
+      return { rowsAffected: 0 };
+    }
+
+    if (q === "COMMIT") {
+      tx = null;
+      return { rowsAffected: 0 };
+    }
+
+    if (q === "ROLLBACK") {
+      if (tx) {
+        settings.clear();
+        for (const [k, v] of tx.settings) settings.set(k, v);
+        chats = tx.chats;
+        messages = tx.messages;
+        tx = null;
+      }
       return { rowsAffected: 0 };
     }
 

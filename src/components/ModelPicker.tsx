@@ -19,8 +19,8 @@ type Props = {
   knownNoKeys?: boolean;
   /** When no providers have keys, trigger opens Settings instead of the menu. */
   onNeedKey?: () => void;
-  /** Fired after a successful probe finds (or clears) usable providers. */
-  onReady?: (ready: ProviderId[]) => void;
+  /** Fired after probe: ready list, or null when store is unreadable. */
+  onReady?: (ready: ProviderId[] | null) => void;
 };
 
 export function ModelPicker({
@@ -71,7 +71,11 @@ export function ModelPicker({
       if (cancelled) return;
       setProbeError(error ?? "");
       if (!ok) {
-        // Store locked — keep prior label; menu still opens to retry.
+        // Store locked after a prior success — drop stale ready list; keep label
+        // via probed=false → resolveModel(provider, modelId).
+        setReady([]);
+        setProbed(false);
+        onReadyRef.current?.(null);
         return;
       }
       setReady(next);
@@ -151,7 +155,7 @@ export function ModelPicker({
   const keyed = ready.includes(provider as ProviderId);
   const current = keyed ? resolveModel(provider, modelId) : null;
   const showEmptyCta =
-    knownNoKeys || (probed && ready.length === 0 && !probeError);
+    !probeError && (probed ? ready.length === 0 : knownNoKeys);
   const triggerLabel = showEmptyCta
     ? "Add API key"
     : !probed

@@ -174,4 +174,30 @@ describe("ModelPicker", () => {
     );
     expect(screen.getByRole("button", { name: /add api key/i })).toBeInTheDocument();
   });
+
+  it("failed re-probe clears ready and notifies onReady(null)", async () => {
+    const onReady = vi.fn();
+    listReadyProviders
+      .mockResolvedValueOnce({ ready: ["google"] as ProviderId[], ok: true })
+      .mockResolvedValueOnce({
+        ready: [],
+        ok: false,
+        error: "Could not access the OS credential store",
+      });
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        provider="google"
+        modelId="gemini-3.8-flash"
+        onChange={vi.fn()}
+        onReady={onReady}
+      />,
+    );
+    await waitFor(() => expect(onReady).toHaveBeenCalledWith(["google"]));
+    await user.click(screen.getByRole("button", { name: /gemini 3.8 flash/i }));
+    await waitFor(() => expect(onReady).toHaveBeenCalledWith(null));
+    expect(
+      screen.getByText(/Could not access the OS credential store/),
+    ).toBeInTheDocument();
+  });
 });

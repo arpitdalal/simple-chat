@@ -102,6 +102,19 @@ function App() {
     setNavBusy(false);
   }
 
+  /**
+   * User navigation invalidated in-flight newChat *and* key-change sync.
+   * Bumping keysSyncGen stops an unlocked sync from retargeting the newly
+   * selected chat; refreshReadyKeys covers readiness the cancelled sync
+   * would have published.
+   */
+  function cancelInFlightNav() {
+    navGenRef.current += 1;
+    keysSyncGenRef.current += 1;
+    resetNavLock();
+    void refreshReadyKeys();
+  }
+
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
   }, []);
@@ -197,8 +210,7 @@ function App() {
   }, []);
 
   const openSettings = useCallback(() => {
-    navGenRef.current += 1;
-    resetNavLock();
+    cancelInFlightNav();
     setShowSettings(true);
   }, []);
 
@@ -211,8 +223,7 @@ function App() {
 
   const selectChat = useCallback(
     async (id: string) => {
-      navGenRef.current += 1;
-      resetNavLock();
+      cancelInFlightNav();
       setShowSettings(false);
       if (activeId === id) {
         focusComposer();
@@ -495,8 +506,7 @@ function App() {
   }, [chats, showSettings, newChat, selectChat, openSettings]);
 
   async function handleDelete(id: string) {
-    navGenRef.current += 1;
-    resetNavLock();
+    cancelInFlightNav();
     await deleteChat(id);
     if (activeId === id) {
       const next = (await listChats())[0];
@@ -512,8 +522,7 @@ function App() {
   }
 
   async function handleClear(id: string) {
-    navGenRef.current += 1;
-    resetNavLock();
+    cancelInFlightNav();
     await clearChatMessages(id);
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();
@@ -528,8 +537,7 @@ function App() {
 
   async function handleBranch(throughMessageId: string) {
     if (!activeId) return;
-    navGenRef.current += 1;
-    resetNavLock();
+    cancelInFlightNav();
     try {
       const branched = await branchChat(activeId, throughMessageId);
       setShowSettings(false);
@@ -684,15 +692,24 @@ function App() {
                         activeIdRef.current === id &&
                         isEmptyNewChat(chat)
                       ) {
-                        const aligned = await alignEmptyChat(
-                          chat,
-                          alignTo,
-                          ready,
-                        );
-                        if (gen !== keysSyncGenRef.current) return;
-                        if (activeIdRef.current === aligned.id) {
-                          setActive(aligned);
-                          if (aligned !== chat) await refreshChats();
+                        // Navigation may have dropped our lock — retake it so
+                        // send/model changes cannot race alignEmptyChat.
+                        const releaseAlign = acquireNavLock();
+                        try {
+                          if (gen !== keysSyncGenRef.current) return;
+                          if (activeIdRef.current !== id) return;
+                          const aligned = await alignEmptyChat(
+                            chat,
+                            alignTo,
+                            ready,
+                          );
+                          if (gen !== keysSyncGenRef.current) return;
+                          if (activeIdRef.current === aligned.id) {
+                            setActive(aligned);
+                            if (aligned !== chat) await refreshChats();
+                          }
+                        } finally {
+                          releaseAlign();
                         }
                       }
                     } finally {

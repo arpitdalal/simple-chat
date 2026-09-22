@@ -8,6 +8,14 @@ export function isEmptyNewChat(c: Pick<Chat, "title" | "preview">): boolean {
   );
 }
 
+/** Retarget empty chats only when their provider lost its key — keep explicit model picks. */
+export function emptyChatNeedsRetarget(
+  chat: Pick<Chat, "provider">,
+  ready: readonly string[],
+): boolean {
+  return !ready.includes(chat.provider);
+}
+
 /** Resume last chat if opened within resume_minutes; else start fresh. */
 export function resolveStartupMode(
   settings: {

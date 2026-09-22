@@ -2,19 +2,20 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ModelPicker } from "./ModelPicker";
+import type { ProviderId } from "../lib/models";
 
-const hasApiKey = vi.fn();
+const listReadyProviders = vi.fn();
 
 vi.mock("../lib/keys", () => ({
-  hasApiKey: (p: string) => hasApiKey(p),
+  listReadyProviders: () => listReadyProviders(),
   keyErrorMessage: (err: unknown) =>
     err instanceof Error ? err.message : String(err),
 }));
 
 describe("ModelPicker", () => {
   beforeEach(() => {
-    hasApiKey.mockReset();
-    hasApiKey.mockImplementation(async (p: string) => p === "google");
+    listReadyProviders.mockReset();
+    listReadyProviders.mockResolvedValue({ ready: ["google"] as ProviderId[], ok: true });
   });
 
   it("only lists models for providers with API keys", async () => {
@@ -72,7 +73,10 @@ describe("ModelPicker", () => {
 
   it("filters models by typed query", async () => {
     const user = userEvent.setup();
-    hasApiKey.mockImplementation(async () => true);
+    listReadyProviders.mockResolvedValue({
+      ready: ["google", "openai", "anthropic"] as ProviderId[],
+      ok: true,
+    });
     render(
       <ModelPicker
         provider="google"
@@ -88,15 +92,16 @@ describe("ModelPicker", () => {
     await waitFor(() => {
       expect(within(list).getByText("GPT-4o")).toBeInTheDocument();
     });
-    // exact GPT-4o mini still matches "gpt-4o" substring — Gemini must be gone
     expect(within(list).queryByText("Gemini 3.8 Flash")).toBeNull();
   });
 
   it("shows keychain error instead of add-key hint when probe fails", async () => {
     const user = userEvent.setup();
-    hasApiKey.mockRejectedValue(
-      new Error("Could not access the OS credential store"),
-    );
+    listReadyProviders.mockResolvedValue({
+      ready: [],
+      ok: false,
+      error: "Could not access the OS credential store",
+    });
     render(
       <ModelPicker
         provider="google"
@@ -115,9 +120,10 @@ describe("ModelPicker", () => {
 
   it("keeps partial ready providers and still shows keychain error", async () => {
     const user = userEvent.setup();
-    hasApiKey.mockImplementation(async (p: string) => {
-      if (p === "openai") throw new Error("Could not access the OS credential store");
-      return p === "google";
+    listReadyProviders.mockResolvedValue({
+      ready: ["google"] as ProviderId[],
+      ok: true,
+      error: "Could not access the OS credential store",
     });
     render(
       <ModelPicker
@@ -133,5 +139,65 @@ describe("ModelPicker", () => {
       ).toBeInTheDocument(),
     );
     expect(within(screen.getByRole("listbox")).getByText("Gemini 3.8 Flash")).toBeInTheDocument();
+  });
+
+  it("shows Add API key and calls onNeedKey when no keys", async () => {
+    const user = userEvent.setup();
+    const onNeedKey = vi.fn();
+    listReadyProviders.mockResolvedValue({ ready: [], ok: true });
+    render(
+      <ModelPicker
+        provider="openai"
+        modelId="gpt-5.6-luna"
+        onChange={vi.fn()}
+        onNeedKey={onNeedKey}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /add api key/i })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: /add api key/i }));
+    expect(onNeedKey).toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("knownNoKeys shows Add API key before probe finishes", () => {
+    listReadyProviders.mockReturnValue(new Promise(() => {}));
+    render(
+      <ModelPicker
+        provider="openai"
+        modelId="gpt-5.6-luna"
+        onChange={vi.fn()}
+        knownNoKeys
+        onNeedKey={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /add api key/i })).toBeInTheDocument();
+  });
+
+  it("failed re-probe clears ready and notifies onReady(null)", async () => {
+    const onReady = vi.fn();
+    listReadyProviders
+      .mockResolvedValueOnce({ ready: ["google"] as ProviderId[], ok: true })
+      .mockResolvedValueOnce({
+        ready: [],
+        ok: false,
+        error: "Could not access the OS credential store",
+      });
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        provider="google"
+        modelId="gemini-3.8-flash"
+        onChange={vi.fn()}
+        onReady={onReady}
+      />,
+    );
+    await waitFor(() => expect(onReady).toHaveBeenCalledWith(["google"]));
+    await user.click(screen.getByRole("button", { name: /gemini 3.8 flash/i }));
+    await waitFor(() => expect(onReady).toHaveBeenCalledWith(null));
+    expect(
+      screen.getByText(/Could not access the OS credential store/),
+    ).toBeInTheDocument();
   });
 });

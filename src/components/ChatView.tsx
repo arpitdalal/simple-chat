@@ -45,6 +45,15 @@ type Props = {
   onBranch: (throughMessageId: string) => Promise<void>;
   onNotify: (text: string, kind?: ToastKind) => void;
   focusNonce: number;
+  /** False once probed and this chat's provider has no usable key. */
+  hasProviderKey?: boolean | null;
+  /** True when probe finished and no provider has a key. */
+  noKeysConfigured?: boolean;
+  /** True while App is switching chats (e.g. New Chat probes) — block send. */
+  sendLocked?: boolean;
+  onNeedKey?: () => void;
+  /** ModelPicker probe result; null = credential store unknown. */
+  onProvidersReady?: (ready: ProviderId[] | null) => void;
 };
 
 export function ChatView({
@@ -55,6 +64,11 @@ export function ChatView({
   onBranch,
   onNotify,
   focusNonce,
+  hasProviderKey = true,
+  noKeysConfigured = false,
+  sendLocked = false,
+  onNeedKey,
+  onProvidersReady,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -83,6 +97,11 @@ export function ChatView({
   messagesRef.current = messages;
   imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
+  // null = unknown (probe still running) — do not block. false = probed, no key.
+  const noKey = hasProviderKey === false;
+  // send() / regenerate() only — drafting stays enabled while queues are busy.
+  const blocked = noKey || sendLocked;
+  const setupNeeded = noKeysConfigured;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
 
@@ -372,7 +391,10 @@ export function ChatView({
   }
 
   async function send() {
-    if (!chat || busy) return;
+    if (!chat || busy || blocked) {
+      if (setupNeeded) onNeedKey?.();
+      return;
+    }
     const chatId = chat.id;
     const chatSnap = chat;
     const text = input.trim();
@@ -482,7 +504,10 @@ export function ChatView({
   }
 
   async function regenerate(userMessageId: string) {
-    if (!chat || busy) return;
+    if (!chat || busy || blocked) {
+      if (setupNeeded) onNeedKey?.();
+      return;
+    }
     const chatId = chat.id;
     const chatSnap = chat;
     const startGen = releaseGenRef.current;
@@ -636,7 +661,7 @@ export function ChatView({
                           content={m!.content}
                           messageId={m!.id}
                           role={m!.role}
-                          canRegenerate={!busy}
+                          canRegenerate={!busy && !blocked}
                           onBranch={onBranch}
                           onRegenerate={(id) => void regenerate(id)}
                           onNotify={onNotify}
@@ -714,8 +739,17 @@ export function ChatView({
             <button
               type="button"
               className="icon-btn"
-              onClick={() => fileRef.current?.click()}
-              title="Attach image"
+              onClick={() => {
+                if (setupNeeded) onNeedKey?.();
+                else if (!noKey) fileRef.current?.click();
+              }}
+              title={
+                setupNeeded
+                  ? "Add an API key in Settings"
+                  : noKey
+                    ? "Select a keyed model"
+                    : "Attach image"
+              }
             >
               +
             </button>
@@ -730,14 +764,32 @@ export function ChatView({
             <textarea
               ref={inputRef}
               value={input}
-              placeholder="Ask AI anything…"
+              placeholder={
+                setupNeeded
+                  ? "Add key to start chatting"
+                  : noKey
+                    ? "Select a model to chat"
+                    : sendLocked
+                      ? "Waiting for current operation…"
+                      : "Ask AI anything…"
+              }
               rows={MIN_LINES}
+              readOnly={noKey}
               onChange={(e) => setInput(e.target.value)}
-              onPaste={onPaste}
+              onPaste={noKey ? undefined : onPaste}
+              onClick={() => {
+                if (setupNeeded) onNeedKey?.();
+              }}
               onKeyDown={(e) => {
+                if (noKey) {
+                  if (e.key === "Tab") return;
+                  e.preventDefault();
+                  if (setupNeeded) onNeedKey?.();
+                  return;
+                }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void send();
+                  if (!sendLocked) void send();
                 }
               }}
             />
@@ -749,8 +801,11 @@ export function ChatView({
               <ModelPicker
                 provider={chat.provider}
                 modelId={chat.model_id}
-                disabled={showStream}
+                disabled={showStream || sendLocked}
+                knownNoKeys={noKeysConfigured}
                 onChange={(p, m) => void changeModel(p, m)}
+                onNeedKey={onNeedKey}
+                onReady={onProvidersReady}
               />
             ) : (
               <span className="model-label">{model?.label ?? "—"}</span>
@@ -766,7 +821,15 @@ export function ChatView({
                 Stop
               </button>
             ) : (
-              <span>Submit ↵</span>
+              <span>
+                {setupNeeded
+                  ? "Add key to start"
+                  : noKey
+                    ? "Select a model"
+                    : sendLocked
+                      ? "Waiting…"
+                      : "Submit ↵"}
+              </span>
             )}
           </div>
         </div>

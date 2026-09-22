@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOG,
   modelsForProvider,
+  pickDefaultModel,
   resolveModel,
   PROVIDERS,
 } from "./models";
@@ -37,5 +38,32 @@ describe("models catalog", () => {
   it("catalog ids are unique per provider", () => {
     const keys = CATALOG.map((m) => `${m.provider}:${m.id}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("pickDefaultModel returns null with no ready providers", () => {
+    expect(
+      pickDefaultModel([], { provider: "openai", modelId: "gpt-5.6-luna" }),
+    ).toBeNull();
+  });
+
+  it("pickDefaultModel keeps current when its provider is ready", () => {
+    expect(
+      pickDefaultModel(["openai", "google"], {
+        provider: "openai",
+        modelId: "gpt-4o",
+      }),
+    ).toEqual({ provider: "openai", modelId: "gpt-4o" });
+  });
+
+  it("pickDefaultModel shifts to first ready provider when current is not", () => {
+    expect(
+      pickDefaultModel(["google"], {
+        provider: "openai",
+        modelId: "gpt-5.6-luna",
+      }),
+    ).toEqual({
+      provider: "google",
+      modelId: modelsForProvider("google")[0]!.id,
+    });
   });
 });

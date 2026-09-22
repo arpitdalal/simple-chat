@@ -75,9 +75,12 @@ vi.mock("./lib/updater", () => ({
 
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
+  listReadyProviders: vi.fn(async () => ({ ready: ["google"], ok: true })),
   setApiKey: vi.fn(),
   clearApiKey: vi.fn(),
   getApiKey: vi.fn(async () => "k"),
+  isKeyOpBusy: vi.fn(() => false),
+  subscribeKeyBusy: vi.fn(() => () => {}),
   keyErrorMessage: (err: unknown) =>
     err instanceof Error ? err.message : String(err),
 }));
@@ -102,6 +105,17 @@ vi.mock("./lib/db", () => ({
     hotkey: "CommandOrControl+Shift+Space",
   })),
   setSetting: vi.fn(),
+  setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
+    resume_minutes: 5,
+    always_on_top: false,
+    show_tray: true,
+    default_provider: provider,
+    default_model: modelId,
+    last_opened_at: Date.now(),
+    last_chat_id: null,
+    web_search: true,
+    hotkey: "CommandOrControl+Shift+Space",
+  })),
   listChats: vi.fn(async () => chatsStore.get()),
   getChat: vi.fn(async (id: string) =>
     chatsStore.get().find((c) => c.id === id) ?? null,
@@ -112,6 +126,7 @@ vi.mock("./lib/db", () => ({
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
   updateChat: vi.fn(),
+  messageCount: vi.fn(async () => 0),
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),
   listOlderMessages: vi.fn(async () => []),

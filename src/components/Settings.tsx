@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   getSettings,
   setSetting,
+  setDefaultModel,
   deleteChatsOlderThan,
   type AppSettings,
 } from "../lib/db";
@@ -10,8 +11,9 @@ import {
   setApiKey,
   clearApiKey,
   keyErrorMessage,
+  listReadyProviders,
 } from "../lib/keys";
-import { PROVIDER_LABELS, PROVIDERS, type ProviderId } from "../lib/models";
+import { PROVIDER_LABELS, PROVIDERS, pickDefaultModel, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -33,6 +35,10 @@ type Props = {
   onUpdateFound?: (update: AvailableUpdate) => void;
   /** True while App is installing or needs manual restart. */
   updateLocked?: boolean;
+  /** After a key save/clear so App can retarget empty chats. */
+  onKeysChanged?: () => void;
+  /** App registers a drain for pending debounced saves (e.g. before New Chat). */
+  flushRef?: { current: (() => Promise<void>) | null };
 };
 
 export function Settings({
@@ -41,6 +47,8 @@ export function Settings({
   onNotify,
   onUpdateFound,
   updateLocked = false,
+  onKeysChanged,
+  flushRef,
 }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
@@ -66,6 +74,9 @@ export function Settings({
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
+  /** True when Defaults picker / syncDefaults intentionally changed provider+model. */
+  const defaultsDirtyRef = useRef(false);
+  const flushPendingSavesRef = useRef<() => Promise<void>>(async () => {});
   const recordingRef = useRef(false);
   /** Bumped on key save/clear / unmount so a late probe cannot overwrite hasKey. */
   const keyProbeGenRef = useRef(0);
@@ -75,15 +86,27 @@ export function Settings({
   const recordGenRef = useRef(0);
   /** Settings snapshot deferred while recording; flushed when recording ends. */
   const deferredPersistRef = useRef<AppSettings | null>(null);
+  /** Serializes persist bodies so flush can await every in-flight write. */
+  const persistChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const persistImplRef = useRef<
+    (
+      s: AppSettings,
+      opts?: { allowDuringPause?: boolean; flushDefaults?: boolean },
+    ) => Promise<void>
+  >(async () => {});
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+  const onKeysChangedRef = useRef(onKeysChanged);
+  onKeysChangedRef.current = onKeysChanged;
   const mountedRef = useRef(true);
+
+  // flushPendingSaves is stable (refs only); register once for App.
 
   async function probeKeys(
     gen: number,
     opts?: { notify?: boolean; retainError?: string },
-  ) {
+  ): Promise<Record<ProviderId, boolean> | null> {
     const hk: Record<ProviderId, boolean> = {
       openai: false,
       anthropic: false,
@@ -99,7 +122,7 @@ export function Settings({
         if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
       }
     }
-    if (!mountedRef.current || gen !== keyProbeGenRef.current) return;
+    if (!mountedRef.current || gen !== keyProbeGenRef.current) return null;
     setHasKey(hk);
     const displayErr = errMsg || opts?.retainError || "";
     if (displayErr) {
@@ -107,6 +130,33 @@ export function Settings({
       if (opts?.notify) onNotifyRef.current?.(displayErr, "err");
     } else {
       setKeyError("");
+    }
+    return hk;
+  }
+
+  /** Align default_provider/model with providers that have usable keys.
+   * Runs after key mutations even if Settings unmounted mid-write — App also
+   * refreshes via onKeysChanged; this keeps Settings' persist chain warm. */
+  async function syncDefaultsFromKeys() {
+    const { ready, failed } = await listReadyProviders();
+    const s = settingsRef.current;
+    if (!s) return;
+    // Current provider's lookup failed — unknown, keep the existing default.
+    if (failed?.includes(s.default_provider as ProviderId)) return;
+    const picked = pickDefaultModel(ready, {
+      provider: s.default_provider,
+      modelId: s.default_model,
+    });
+    if (
+      picked &&
+      (picked.provider !== s.default_provider ||
+        picked.modelId !== s.default_model)
+    ) {
+      // patch → setState is a no-op when unmounted; queueSave still persists.
+      patch({
+        default_provider: picked.provider,
+        default_model: picked.modelId,
+      });
     }
   }
 
@@ -339,6 +389,12 @@ export function Settings({
   }
 
   function patch(partial: Partial<AppSettings>) {
+    if (
+      partial.default_provider !== undefined ||
+      partial.default_model !== undefined
+    ) {
+      defaultsDirtyRef.current = true;
+    }
     setSettings((prev) => {
       if (!prev) return prev;
       const next = { ...prev, ...partial };
@@ -356,14 +412,71 @@ export function Settings({
     }, 250);
   }
 
-  async function persist(
+  function persist(
     s: AppSettings,
-    opts?: { allowDuringPause?: boolean },
+    opts?: { allowDuringPause?: boolean; flushDefaults?: boolean },
+  ): Promise<void> {
+    const run = persistChainRef.current
+      .catch(() => undefined)
+      .then(() => persistImplRef.current(s, opts));
+    persistChainRef.current = run;
+    return run;
+  }
+
+  /**
+   * Drain the Settings debounce (and any in-flight persist) so callers that
+   * re-read the DB (e.g. New Chat) observe the latest defaults. Defaults are
+   * written even while hotkey Record is active; the rest stays deferred.
+   */
+  const flushPendingSaves = async (): Promise<void> => {
+    if (saveTimer.current && settingsRef.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      void persist(settingsRef.current, { flushDefaults: true });
+    } else if (deferredPersistRef.current) {
+      const deferred = deferredPersistRef.current;
+      deferredPersistRef.current = null;
+      void persist(deferred, { allowDuringPause: true, flushDefaults: true });
+    }
+    // Propagate failures — callers (New Chat) must not assume defaults landed.
+    // persist() already recovers the chain for the next write.
+    await persistChainRef.current;
+  };
+  flushPendingSavesRef.current = flushPendingSaves;
+
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = () => flushPendingSavesRef.current();
+    return () => {
+      // Unmount queues bare persist(base) without awaiting it. Keep App’s
+      // drain pointed at that chain so New Chat can still wait for defaults.
+      flushRef.current = async () => {
+        await persistChainRef.current.catch(() => undefined);
+      };
+    };
+  }, [flushRef]);
+
+  persistImplRef.current = async function persistImpl(
+    s: AppSettings,
+    opts?: { allowDuringPause?: boolean; flushDefaults?: boolean },
   ) {
     if (
       recordingRef.current ||
       (pausedForRecordRef.current && !opts?.allowDuringPause)
     ) {
+      // A New Chat flush must make defaults durable now — a deferred-only
+      // return leaves getSettings() on the previous default until Record ends.
+      if (opts?.flushDefaults && defaultsDirtyRef.current) {
+        await setDefaultModel(s.default_provider, s.default_model);
+        const cur = settingsRef.current;
+        if (
+          cur &&
+          cur.default_provider === s.default_provider &&
+          cur.default_model === s.default_model
+        ) {
+          defaultsDirtyRef.current = false;
+        }
+      }
       deferredPersistRef.current = s;
       return;
     }
@@ -412,15 +525,38 @@ export function Settings({
     await setSetting("resume_minutes", s.resume_minutes);
     await setSetting("always_on_top", s.always_on_top);
     await setSetting("show_tray", s.show_tray);
-    await setSetting("default_provider", s.default_provider);
-    await setSetting("default_model", s.default_model);
+    // Skip defaults unless the Defaults UI dirtied them — a debounced flush of
+    // unrelated edits must not restore pre-key-change provider/model over App sync.
+    let default_provider = s.default_provider;
+    let default_model = s.default_model;
+    if (defaultsDirtyRef.current) {
+      const saved = await setDefaultModel(s.default_provider, s.default_model);
+      default_provider = saved.default_provider;
+      default_model = saved.default_model;
+      // Clear dirty only when this snapshot is still what the UI shows —
+      // a newer Defaults edit that has not reached persist yet must stay dirty.
+      if (gen === persistGenRef.current) {
+        const cur = settingsRef.current;
+        if (
+          cur &&
+          cur.default_provider === s.default_provider &&
+          cur.default_model === s.default_model
+        ) {
+          defaultsDirtyRef.current = false;
+        }
+      }
+    } else {
+      const live = await getSettings();
+      default_provider = live.default_provider;
+      default_model = live.default_model;
+    }
     await setSetting("web_search", true);
     await setSetting("hotkey", hotkey);
     if (gen !== persistGenRef.current) return;
     await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
-    onSaved({ ...s, hotkey });
+    onSaved({ ...s, hotkey, default_provider, default_model });
     setStatus(hotkeyOk ? "Saved" : "Saved (hotkey unchanged)");
-  }
+  };
 
   async function saveKey(provider: ProviderId) {
     const value = keys[provider].trim();
@@ -428,18 +564,25 @@ export function Settings({
     // Invalidate in-flight probes (mount / other mutations) before awaiting keyring.
     keyProbeGenRef.current += 1;
     try {
+      // Keychain queue keeps isKeyOpBusy true across overlapping saves —
+      // App locks send from subscribeKeyBusy, no start/end callbacks.
       await setApiKey(provider, value);
-      if (!mountedRef.current) return;
-      // Keep a newer draft typed while the OS prompt was pending.
-      setKeys((k) =>
-        k[provider].trim() === value ? { ...k, [provider]: "" } : k,
-      );
-      setKeyEpoch((n) => n + 1);
-      setStatus(`${PROVIDER_LABELS[provider]} key saved`);
-      // Claim the latest gen after the write so a slower sibling mutation
-      // cannot leave this provider stuck without Clear.
-      const gen = ++keyProbeGenRef.current;
-      await probeKeys(gen);
+      // App must refresh even if Close unmounted Settings mid-write.
+      onKeysChangedRef.current?.();
+      if (mountedRef.current) {
+        // Keep a newer draft typed while the OS prompt was pending.
+        setKeys((k) =>
+          k[provider].trim() === value ? { ...k, [provider]: "" } : k,
+        );
+        setKeyEpoch((n) => n + 1);
+        setStatus(`${PROVIDER_LABELS[provider]} key saved`);
+        // Claim the latest gen after the write so a slower sibling mutation
+        // cannot leave this provider stuck without Clear.
+        const gen = ++keyProbeGenRef.current;
+        await probeKeys(gen);
+      }
+      // Defaults sync even if Close unmounted mid-write (setState no-ops).
+      await syncDefaultsFromKeys();
     } catch (err) {
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
@@ -456,15 +599,18 @@ export function Settings({
     keyProbeGenRef.current += 1;
     try {
       await clearApiKey(provider);
-      if (!mountedRef.current) return;
-      // Keep a draft typed while the OS clear prompt was pending.
-      setKeys((k) =>
-        k[provider] === draftAtStart ? { ...k, [provider]: "" } : k,
-      );
-      setKeyEpoch((n) => n + 1);
-      setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
-      const gen = ++keyProbeGenRef.current;
-      await probeKeys(gen);
+      onKeysChangedRef.current?.();
+      if (mountedRef.current) {
+        // Keep a draft typed while the OS clear prompt was pending.
+        setKeys((k) =>
+          k[provider] === draftAtStart ? { ...k, [provider]: "" } : k,
+        );
+        setKeyEpoch((n) => n + 1);
+        setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
+        const gen = ++keyProbeGenRef.current;
+        await probeKeys(gen);
+      }
+      await syncDefaultsFromKeys();
     } catch (err) {
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);

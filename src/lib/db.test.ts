@@ -50,8 +50,9 @@ describe("db (memory sql integration)", () => {
     expect(recent[0].content).toBe("m400");
     expect(recent[1].content).toBe("m500");
 
+    // Inclusive cursor (`<=`) re-includes the boundary row; loadOlder dedups by id
     const older = await listOlderMessages(chat.id, recent[0].created_at, 10);
-    expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300"]);
+    expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300", "m400"]);
   });
 
   it("orders equal created_at by rowid (stable queue order)", async () => {
@@ -69,13 +70,23 @@ describe("db (memory sql integration)", () => {
     const recent = await listRecentMessages(chat.id, 3);
     expect(recent.map((m) => m.content)).toEqual(["t1", "t2", "t3"]);
 
-    // Older page must use the same rowid tie-break (created_at < before)
-    const older = await listOlderMessages(chat.id, 1_001, 10);
+    // Cursor is inclusive (`<=`) so a same-ms group can straddle the recent
+    // page boundary; loadOlder dedups by id. Ties still ordered by rowid.
+    const older = await listOlderMessages(chat.id, 1_000, 10);
     expect(older.map((m) => m.content)).toEqual(["t1", "t2", "t3"]);
 
     // LIMIT cutting a tie group takes the high-rowid rows first (pre-reverse)
-    const olderLimited = await listOlderMessages(chat.id, 1_001, 2);
+    const olderLimited = await listOlderMessages(chat.id, 1_000, 2);
     expect(olderLimited.map((m) => m.content)).toEqual(["t2", "t3"]);
+
+    // Strictly older timestamps remain reachable under the inclusive cursor
+    vi.spyOn(Date, "now").mockReturnValue(999);
+    await addMessage(chat.id, "user", "early");
+    vi.spyOn(Date, "now").mockRestore();
+    const withEarly = await listOlderMessages(chat.id, 1_000, 10);
+    expect(withEarly.map((m) => m.content)).toEqual(["early", "t1", "t2", "t3"]);
+    const onlyEarly = await listOlderMessages(chat.id, 999, 10);
+    expect(onlyEarly.map((m) => m.content)).toEqual(["early"]);
   });
 
   it("deletes chat and persists settings", async () => {

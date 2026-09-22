@@ -294,7 +294,7 @@ export async function listRecentMessages(
   return rows.reverse();
 }
 
-/** Older page before a timestamp (oldest→newest within page). */
+/** Older page before/at a timestamp (oldest→newest within page). */
 export async function listOlderMessages(
   chatId: string,
   beforeCreatedAt: number,
@@ -302,8 +302,10 @@ export async function listOlderMessages(
 ): Promise<Message[]> {
   const db = await getDb();
   const rows = await db.select<Message[]>(
+    // `<=` so a same-ms tie group can straddle the recent-page boundary;
+    // loadOlder dedups by id against what's already on screen.
     `SELECT * FROM messages
-     WHERE chat_id = $1 AND created_at < $2
+     WHERE chat_id = $1 AND created_at <= $2
      ORDER BY created_at DESC, rowid DESC LIMIT $3`,
     [chatId, beforeCreatedAt, limit],
   );

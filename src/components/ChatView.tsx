@@ -152,12 +152,11 @@ export function ChatView({
     localAddsRef.current.set(chatId, next);
   }
 
-  /** Register a per-turn AbortController; returns its index for cleanup. */
-  function pushTurnCancel(chatId: string, ac: AbortController): number {
+  /** Register a per-turn AbortController for Stop to cancel. */
+  function pushTurnCancel(chatId: string, ac: AbortController): void {
     const list = turnCancelsRef.current.get(chatId) ?? [];
     list.push(ac);
     turnCancelsRef.current.set(chatId, list);
-    return list.length - 1;
   }
 
   function clearTurnCancel(chatId: string, ac: AbortController) {
@@ -181,6 +180,16 @@ export function ChatView({
       err.name = "AbortError";
       throw err;
     }
+  }
+
+  function chatDeletedError(): Error {
+    const err = new Error("Chat was deleted.");
+    (err as Error & { code?: string }).code = "CHAT_DELETED";
+    return err;
+  }
+
+  function isChatDeleted(e: unknown): boolean {
+    return (e as Error & { code?: string } | null)?.code === "CHAT_DELETED";
   }
 
   function dropPendingSend(chatId: string, tempId: string) {
@@ -349,25 +358,38 @@ export function ChatView({
     const prevHeight = el?.scrollHeight ?? 0;
     const prevTop = el?.scrollTop ?? 0;
     const gen = releaseGenRef.current;
+    const startedChatId = chat.id;
     setLoadingOlder(true);
     try {
       const room = MAX_CACHED_MESSAGES - messages.length;
+      const pageSize = Math.min(MESSAGE_PAGE, room);
+      // Over-fetch past the boundary timestamp so LIMIT is not consumed by
+      // same-ms rows already on screen (inclusive cursor + DESC rowid).
+      const boundary = messages.filter(
+        (m) => m.created_at === messages[0].created_at,
+      ).length;
       const older = await listOlderMessages(
         chat.id,
         messages[0].created_at,
-        Math.min(MESSAGE_PAGE, room),
+        pageSize + boundary,
       );
       if (gen !== releaseGenRef.current) return;
+      // Identity guard: a slow fetch must not land in another chat's list
+      if (viewingIdRef.current !== startedChatId) return;
       if (older.length === 0) {
         setHasMore(false);
         return;
       }
+      // Inclusive cursor re-returns the boundary row(s) — drop by id.
+      const seen = new Set(messages.map((m) => m.id));
+      const fresh = older.filter((m) => !seen.has(m.id));
       setHasMore(
-        older.length >= Math.min(MESSAGE_PAGE, room) &&
+        older.length >= pageSize + boundary &&
           messages.length + older.length < MAX_CACHED_MESSAGES,
       );
+      if (fresh.length === 0) return;
       stickBottom.current = false;
-      setMessages((m) => [...older, ...m]);
+      setMessages((m) => [...fresh, ...m]);
       requestAnimationFrame(() => {
         if (!el || gen !== releaseGenRef.current) return;
         const delta = el.scrollHeight - prevHeight;
@@ -437,11 +459,7 @@ export function ChatView({
     const appendAssistant = async (content: string) => {
       // Re-check before insert — chat may have been deleted mid-stream.
       const still = await getChat(chatId);
-      if (!still) {
-        const err = new Error("Chat was deleted.");
-        (err as Error & { code?: string }).code = "CHAT_DELETED";
-        throw err;
-      }
+      if (!still) throw chatDeletedError();
       const assistant = await addMessage(chatId, "assistant", content);
       noteLocalAdd(chatId, assistant);
       if (viewingIdRef.current === chatId) {
@@ -460,13 +478,26 @@ export function ChatView({
               limit,
             );
           }
-          // Anchor missing (hide-trim / race): insert by time, never blindly
-          // at the tail below newer optimistic sends.
-          const at = m.findIndex((x) => x.created_at > assistant.created_at);
-          const next =
-            at === -1
-              ? [...m, assistant]
-              : [...m.slice(0, at), assistant, ...m.slice(at)];
+          // Anchor missing (hide-trim / race): insert after the last
+          // non-pending row so optimistic sends stay a forced tail.
+          const pendingIds = new Set(
+            (pendingSendsRef.current.get(chatId) ?? []).map((p) => p.id),
+          );
+          let at = m.length;
+          for (let j = m.length - 1; j >= 0; j--) {
+            if (!pendingIds.has(m[j].id)) {
+              at = j + 1;
+              break;
+            }
+          }
+          if (at === m.length) {
+            // No non-pending rows — fall back to time order among pending
+            const byTime = m.findIndex(
+              (x) => !pendingIds.has(x.id) && x.created_at > assistant.created_at,
+            );
+            at = byTime === -1 ? m.length : byTime;
+          }
+          const next = [...m.slice(0, at), assistant, ...m.slice(at)];
           return trimRecentMessages(next, limit);
         });
         if (wouldTrim) setHasMore(true);
@@ -545,7 +576,7 @@ export function ChatView({
       assistantSaved = true;
     } catch (e) {
       // Domain signal for the caller (send/regenerate) to compensate + notify.
-      if ((e as Error & { code?: string }).code === "CHAT_DELETED") {
+      if (isChatDeleted(e)) {
         throw e;
       }
       const aborted = (e as Error).name === "AbortError";
@@ -555,7 +586,8 @@ export function ChatView({
           await appendAssistant(full);
           assistantSaved = true;
           return;
-        } catch {
+        } catch (retryErr) {
+          if (isChatDeleted(retryErr)) throw retryErr;
           if (viewingIdRef.current === chatId) {
             setViewingStream({ anchor: anchorUserId, text: "" });
           }
@@ -569,7 +601,8 @@ export function ChatView({
         try {
           await appendAssistant(partial);
           assistantSaved = true;
-        } catch {
+        } catch (partialErr) {
+          if (isChatDeleted(partialErr)) throw partialErr;
           if (viewingIdRef.current === chatId) {
             setViewingStream({ anchor: anchorUserId, text: "" });
           }
@@ -670,9 +703,7 @@ export function ChatView({
         const freshChat = await getChat(chatId);
         if (!freshChat) {
           // Distinct from AbortError so the user is told.
-          const err = new Error("Chat was deleted.");
-          (err as Error & { code?: string }).code = "CHAT_DELETED";
-          throw err;
+          throw chatDeletedError();
         }
         const userMsg = await addMessage(chatId, "user", displayText);
         userPersisted = true;
@@ -717,9 +748,12 @@ export function ChatView({
           );
           throwIfTurnAborted(turnAc);
           await updateChat(chatId, { title });
-          if (viewingIdRef.current === chatId) {
+          // Re-read before meta so a delete in this window cannot re-activate
+          // a vanished chat via a stale snapshot fallback.
+          const titled = await getChat(chatId);
+          if (viewingIdRef.current === chatId && titled) {
             onChatMeta({
-              ...((await getChat(chatId)) ?? freshChat),
+              ...titled,
               title,
               preview: text.slice(0, 120),
             });
@@ -747,7 +781,7 @@ export function ChatView({
       if (ownsSlot && !reachedStream) {
         streamsRef.current.delete(chatId);
       }
-      const deleted = (e as Error & { code?: string }).code === "CHAT_DELETED";
+      const deleted = isChatDeleted(e);
       if (deleted) {
         // Compensation: chat vanished mid-send — drop local optimistic row
         // and mop any rows this turn (or a racing peer) already persisted
@@ -824,11 +858,13 @@ export function ChatView({
         }
 
         await deleteMessagesAfter(chatId, userMessageId);
-        // Truncation dropped any assistant rows this cache still holds
+        // Truncation dropped every local row past the keep prefix (user and
+        // assistant) — otherwise mergeHistory resurrects ghost rows next load.
+        const keepIds = new Set(all.slice(0, idx + 1).map((m) => m.id));
         localAddsRef.current.set(
           chatId,
-          (localAddsRef.current.get(chatId) ?? []).filter(
-            (m) => m.role !== "assistant",
+          (localAddsRef.current.get(chatId) ?? []).filter((m) =>
+            keepIds.has(m.id),
           ),
         );
         const keep = all.slice(0, idx + 1);
@@ -860,7 +896,7 @@ export function ChatView({
         await streamReply(chatSnap, keep, userMessageId, undefined, turnAc);
       });
     } catch (e) {
-      const deleted = (e as Error & { code?: string }).code === "CHAT_DELETED";
+      const deleted = isChatDeleted(e);
       if (deleted) {
         try {
           await clearChatMessages(chatId);

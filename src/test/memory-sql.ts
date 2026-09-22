@@ -198,15 +198,17 @@ class MemoryDatabase {
       return [{ n: messages.filter((m) => m.chat_id === chatId).length }] as unknown as T;
     }
 
-    if (q.includes("FROM messages") && q.includes("created_at <")) {
+    if (q.includes("FROM messages") && q.includes("created_at <=")) {
       const chatId = String(args[0]);
       const before = Number(args[1]);
       const limit = Number(args[2] ?? 40);
       // Mirror SQL `ORDER BY created_at DESC, rowid DESC` (db.ts reverse()s
       // the page): among equal created_at, higher insertion index first.
+      // `<=` matches prod so a same-ms tie group can straddle page bounds;
+      // loadOlder dedups by id against the recent page.
       return messages
         .map((m, i) => ({ m, i }))
-        .filter(({ m }) => m.chat_id === chatId && m.created_at < before)
+        .filter(({ m }) => m.chat_id === chatId && m.created_at <= before)
         .sort((a, b) => b.m.created_at - a.m.created_at || b.i - a.i)
         .slice(0, limit)
         .map(({ m }) => m) as unknown as T;

@@ -182,8 +182,10 @@ export function ChatView({
     void (async () => {
       const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
       if (cancelled) return;
+      // Re-read after await — sends may have landed while history loaded
+      const pendingNow = pendingSendsRef.current.get(chat.id) ?? pending;
       // Keep optimistic user sends that have not hit the DB yet
-      setMessages([...page, ...pending]);
+      setMessages([...page, ...pendingNow]);
       setHasMore(page.length >= MESSAGE_PAGE);
       stickBottom.current = true;
       requestAnimationFrame(() => {
@@ -479,9 +481,14 @@ export function ChatView({
 
     // Paint user + Thinking before any await — send is never blocked by a
     // stream on this or another chat; the per-chat queue serializes turns.
+    // Don't clobber an already-visible stream row with an empty anchor:
+    // a second send while one streams only appends the user message below.
+    const alreadyStreaming = streamsRef.current.has(chatId);
     flushSync(() => {
       setBusy(true);
-      setViewingStream({ anchor: tempId, text: "" });
+      if (!alreadyStreaming) {
+        setViewingStream({ anchor: tempId, text: "" });
+      }
       setInput("");
       setImages([]);
       setMessages((m) => [...m, tempMsg]);
@@ -615,13 +622,18 @@ export function ChatView({
             ? MESSAGE_PAGE
             : MAX_CACHED_MESSAGES;
         const visible = trimRecentMessages(keep, limit);
+        // Preserve optimistic user sends queued while regenerate ran
+        const pending = pendingSendsRef.current.get(chatId) ?? [];
+        const viewing = viewingIdRef.current === chatId;
         flushSync(() => {
-          setMessages(visible);
-          if (visible.length < keep.length) setHasMore(true);
-          setBusy(true);
-          setViewingStream({ anchor: userMessageId, text: "" });
+          if (viewing) {
+            setMessages([...visible, ...pending]);
+            if (visible.length < keep.length) setHasMore(true);
+            setBusy(true);
+            setViewingStream({ anchor: userMessageId, text: "" });
+          }
         });
-        stickBottom.current = true;
+        if (viewing) stickBottom.current = true;
 
         await streamReply(chatSnap, keep, userMessageId);
       });

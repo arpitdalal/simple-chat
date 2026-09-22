@@ -57,6 +57,11 @@ function App() {
   );
   /** True while newChat / key-align hold a nav lock — blocks send and model changes. */
   const [navBusy, setNavBusy] = useState(false);
+  /**
+   * True while Settings is mid keyring write (OS prompt may outlive the
+   * panel). OR’d into sendLocked so a send cannot race a clear/replace.
+   */
+  const [keyMutationBusy, setKeyMutationBusy] = useState(false);
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -734,6 +739,8 @@ function App() {
                 void refreshChats();
               }}
               onKeysChanged={scheduleKeySync}
+              onKeyMutationStart={() => setKeyMutationBusy(true)}
+              onKeyMutationEnd={() => setKeyMutationBusy(false)}
               flushRef={settingsFlushRef}
               onNotify={notify}
               onUpdateFound={adoptUpdate}
@@ -759,7 +766,7 @@ function App() {
             noKeysConfigured={
               readyProviders !== null && readyProviders.length === 0
             }
-            sendLocked={navBusy}
+            sendLocked={navBusy || keyMutationBusy}
             onNeedKey={openSettings}
             onProvidersReady={onProvidersReady}
           />

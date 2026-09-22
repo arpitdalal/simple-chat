@@ -409,6 +409,40 @@ describe("Settings behaviors", () => {
     await waitFor(() => expect(setApiKey).toHaveBeenCalled());
   });
 
+  it("holds the key mutation open until the keyring write settles", async () => {
+    const user = userEvent.setup();
+    const onKeyMutationStart = vi.fn();
+    const onKeyMutationEnd = vi.fn();
+    const onKeysChanged = vi.fn();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockImplementation(async () => {
+      await gate;
+    });
+    render(
+      <Settings
+        onClose={vi.fn()}
+        onSaved={onSaved}
+        onKeysChanged={onKeysChanged}
+        onKeyMutationStart={onKeyMutationStart}
+        onKeyMutationEnd={onKeyMutationEnd}
+      />,
+    );
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    await user.type(inputs[0], "sk-test");
+    await user.tab();
+    await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+    expect(onKeyMutationStart).toHaveBeenCalledTimes(1);
+    expect(onKeyMutationEnd).not.toHaveBeenCalled();
+    expect(onKeysChanged).not.toHaveBeenCalled();
+    release();
+    await waitFor(() => expect(onKeysChanged).toHaveBeenCalled());
+    await waitFor(() => expect(onKeyMutationEnd).toHaveBeenCalledTimes(1));
+  });
+
   it("shifts default model to the provider of a newly saved key", async () => {
     const user = userEvent.setup();
     getSettings.mockResolvedValue({

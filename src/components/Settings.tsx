@@ -37,6 +37,13 @@ type Props = {
   updateLocked?: boolean;
   /** After a key save/clear so App can retarget empty chats. */
   onKeysChanged?: () => void;
+  /**
+   * Before the OS keyring write so App can lock send while the prompt
+   * is up (Settings may already be unmounted when the write settles).
+   */
+  onKeyMutationStart?: () => void;
+  /** After the keyring write settles — pair with onKeyMutationStart. */
+  onKeyMutationEnd?: () => void;
   /** App registers a drain for pending debounced saves (e.g. before New Chat). */
   flushRef?: { current: (() => Promise<void>) | null };
 };
@@ -48,6 +55,8 @@ export function Settings({
   onUpdateFound,
   updateLocked = false,
   onKeysChanged,
+  onKeyMutationStart,
+  onKeyMutationEnd,
   flushRef,
 }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -99,6 +108,10 @@ export function Settings({
   onNotifyRef.current = onNotify;
   const onKeysChangedRef = useRef(onKeysChanged);
   onKeysChangedRef.current = onKeysChanged;
+  const onKeyMutationStartRef = useRef(onKeyMutationStart);
+  onKeyMutationStartRef.current = onKeyMutationStart;
+  const onKeyMutationEndRef = useRef(onKeyMutationEnd);
+  onKeyMutationEndRef.current = onKeyMutationEnd;
   const mountedRef = useRef(true);
 
   // flushPendingSaves is stable (refs only); register once for App.
@@ -557,10 +570,14 @@ export function Settings({
     if (!value) return;
     // Invalidate in-flight probes (mount / other mutations) before awaiting keyring.
     keyProbeGenRef.current += 1;
+    // Lock send before the OS prompt — Settings can unmount while it is up.
+    onKeyMutationStartRef.current?.();
     try {
       await setApiKey(provider, value);
       // App must refresh even if Close unmounted Settings mid-write.
       onKeysChangedRef.current?.();
+      // scheduleKeySync holds the nav lock; drop the mutation hold after.
+      onKeyMutationEndRef.current?.();
       if (!mountedRef.current) return;
       // Keep a newer draft typed while the OS prompt was pending.
       setKeys((k) =>
@@ -574,6 +591,7 @@ export function Settings({
       await probeKeys(gen);
       await syncDefaultsFromKeys();
     } catch (err) {
+      onKeyMutationEndRef.current?.();
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
       setStatus("");
@@ -587,9 +605,11 @@ export function Settings({
   async function clearKey(provider: ProviderId) {
     const draftAtStart = keys[provider];
     keyProbeGenRef.current += 1;
+    onKeyMutationStartRef.current?.();
     try {
       await clearApiKey(provider);
       onKeysChangedRef.current?.();
+      onKeyMutationEndRef.current?.();
       if (!mountedRef.current) return;
       // Keep a draft typed while the OS clear prompt was pending.
       setKeys((k) =>
@@ -601,6 +621,7 @@ export function Settings({
       await probeKeys(gen);
       await syncDefaultsFromKeys();
     } catch (err) {
+      onKeyMutationEndRef.current?.();
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
       setStatus("");

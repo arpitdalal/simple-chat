@@ -138,12 +138,17 @@ function App() {
     [],
   );
 
-  /** Latest ready list, or null if this probe was superseded. */
+  /** Latest ready list, or null if this probe was superseded / all probes failed. */
   const refreshReadyKeys = useCallback(async (): Promise<ProviderId[] | null> => {
     const gen = ++readyGenRef.current;
     const { ready, ok } = await listReadyProviders();
     if (gen !== readyGenRef.current) return null;
-    if (ok) setReadyProviders(ready);
+    if (!ok) {
+      // Don't keep a prior successful list when the store is locked.
+      setReadyProviders(null);
+      return null;
+    }
+    setReadyProviders(ready);
     return ready;
   }, []);
 

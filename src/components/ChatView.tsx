@@ -94,7 +94,7 @@ export function ChatView({
   messagesRef.current = messages;
   imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
-  const blocked = hasProviderKey === false || sendLocked;
+  const blocked = hasProviderKey !== true || sendLocked;
   const setupNeeded = noKeysConfigured;
 
   const rowCount = messages.length + (showStream ? 1 : 0);

@@ -53,7 +53,7 @@ type Props = {
   sendLocked?: boolean;
   onNeedKey?: () => void;
   /** ModelPicker recovered usable keys after a failed App-level probe. */
-  onProvidersReady?: () => void;
+  onProvidersReady?: (ready: ProviderId[]) => void;
 };
 
 export function ChatView({
@@ -796,7 +796,7 @@ export function ChatView({
               <ModelPicker
                 provider={chat.provider}
                 modelId={chat.model_id}
-                disabled={showStream}
+                disabled={showStream || sendLocked}
                 onChange={(p, m) => void changeModel(p, m)}
                 onNeedKey={onNeedKey}
                 onReady={onProvidersReady}

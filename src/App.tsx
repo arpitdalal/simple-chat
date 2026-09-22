@@ -178,9 +178,12 @@ function App() {
     setShowSettings(true);
   }, []);
 
-  const onProvidersReady = useCallback(() => {
-    void refreshReadyKeys();
-  }, [refreshReadyKeys]);
+  // Apply ModelPicker's probe directly — do not start refreshReadyKeys here;
+  // that would bump readyGen and cancel onKeysChanged mid-sync.
+  const onProvidersReady = useCallback((ready: ProviderId[]) => {
+    readyGenRef.current += 1;
+    setReadyProviders(ready);
+  }, []);
 
   const selectChat = useCallback(
     async (id: string) => {
@@ -245,7 +248,10 @@ function App() {
         (picked?.provider ?? nextSettings.default_provider) as ProviderId,
         picked?.modelId ?? nextSettings.default_model,
       );
-      if (gen !== navGenRef.current) return;
+      if (gen !== navGenRef.current) {
+        await deleteChat(chat.id);
+        return;
+      }
       setActiveId(chat.id);
       setActive(chat);
       setShowSettings(false);
@@ -571,8 +577,16 @@ function App() {
               onKeysChanged={() => {
                 void (async () => {
                   const gen = settingsGenRef.current;
-                  const ready = await refreshReadyKeys();
-                  if (ready == null || gen !== settingsGenRef.current) return;
+                  // Probe here — not via refreshReadyKeys — so a ModelPicker
+                  // onReady cannot cancel this sync by bumping readyGen.
+                  const { ready, ok } = await listReadyProviders();
+                  if (gen !== settingsGenRef.current) return;
+                  readyGenRef.current += 1;
+                  if (!ok) {
+                    setReadyProviders(null);
+                    return;
+                  }
+                  setReadyProviders(ready);
                   const s = await getSettings();
                   if (gen !== settingsGenRef.current) return;
                   const picked = pickDefaultModel(ready, {
@@ -592,6 +606,7 @@ function App() {
                     activeIdRef.current === id &&
                     isEmptyNewChat(chat)
                   ) {
+                    const navGen = navGenRef.current;
                     setNavBusy(true);
                     try {
                       const aligned = await alignEmptyChat(chat, picked);
@@ -600,7 +615,9 @@ function App() {
                         if (aligned !== chat) await refreshChats();
                       }
                     } finally {
-                      setNavBusy(false);
+                      if (navGen === navGenRef.current) {
+                        setNavBusy(false);
+                      }
                     }
                   }
                 })();

@@ -103,16 +103,92 @@ function App() {
   }
 
   /**
-   * User navigation invalidated in-flight newChat *and* key-change sync.
-   * Bumping keysSyncGen stops an unlocked sync from retargeting the newly
-   * selected chat; refreshReadyKeys covers readiness the cancelled sync
-   * would have published.
+   * Cancel in-flight newChat and any key-change sync, then schedule a full
+   * key sync. Cancelling alone leaves defaults un-persisted and the empty
+   * chat unaligned when navigation unmounts Settings mid-sync; re-running
+   * the sync (not just readiness) finishes that work under a fresh gen.
    */
   function cancelInFlightNav() {
     navGenRef.current += 1;
     keysSyncGenRef.current += 1;
     resetNavLock();
-    void refreshReadyKeys();
+    scheduleKeySync();
+  }
+
+  /**
+   * Probe readiness, retarget default provider/model if the key set changed,
+   * and align the active empty chat — serialized behind keysSyncTailRef so
+   * overlapping key mutations cannot retarget with a stale ready list.
+   */
+  function scheduleKeySync() {
+    const gen = ++keysSyncGenRef.current;
+    const settingsGen = settingsGenRef.current;
+    keysSyncTailRef.current = keysSyncTailRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (gen !== keysSyncGenRef.current) return;
+        // Hold the nav lock from before readiness is published so
+        // send/model changes cannot interleave with getChat + align.
+        const releaseNav = acquireNavLock();
+        try {
+          // Probe here — not via refreshReadyKeys — so a ModelPicker
+          // onReady cannot cancel this sync by bumping readyGen.
+          const { ready, ok } = await listReadyProviders();
+          if (gen !== keysSyncGenRef.current) return;
+          readyGenRef.current += 1;
+          if (!ok) {
+            setReadyProviders(null);
+            return;
+          }
+          setReadyProviders(ready);
+          const s = await getSettings();
+          if (gen !== keysSyncGenRef.current) return;
+          const picked = pickDefaultModel(ready, {
+            provider: s.default_provider,
+            modelId: s.default_model,
+          });
+          const next = picked
+            ? await persistDefaults(picked, s, settingsGen)
+            : s;
+          if (gen !== keysSyncGenRef.current) return;
+          setSettings(next);
+          const alignTo = pickDefaultModel(ready, {
+            provider: next.default_provider,
+            modelId: next.default_model,
+          });
+          const id = activeIdRef.current;
+          if (!id) return;
+          const chat = await getChat(id);
+          if (gen !== keysSyncGenRef.current) return;
+          if (
+            chat &&
+            activeIdRef.current === id &&
+            isEmptyNewChat(chat)
+          ) {
+            // Navigation may have dropped our lock — retake it so
+            // send/model changes cannot race alignEmptyChat.
+            const releaseAlign = acquireNavLock();
+            try {
+              if (gen !== keysSyncGenRef.current) return;
+              if (activeIdRef.current !== id) return;
+              const aligned = await alignEmptyChat(
+                chat,
+                alignTo,
+                ready,
+              );
+              if (gen !== keysSyncGenRef.current) return;
+              if (activeIdRef.current === aligned.id) {
+                setActive(aligned);
+                if (aligned !== chat) await refreshChats();
+              }
+            } finally {
+              releaseAlign();
+            }
+          }
+        } finally {
+          releaseNav();
+        }
+      });
   }
 
   const refreshChats = useCallback(async () => {
@@ -645,78 +721,7 @@ function App() {
                 setSettings(s);
                 void refreshChats();
               }}
-              onKeysChanged={() => {
-                const gen = ++keysSyncGenRef.current;
-                const settingsGen = settingsGenRef.current;
-                // Serialize + skip stale gens so an older alignEmptyChat cannot
-                // finish after a newer key clear and retarget to a removed provider.
-                keysSyncTailRef.current = keysSyncTailRef.current
-                  .catch(() => undefined)
-                  .then(async () => {
-                    if (gen !== keysSyncGenRef.current) return;
-                    // Hold the nav lock from before readiness is published so
-                    // send/model changes cannot interleave with getChat + align.
-                    const releaseNav = acquireNavLock();
-                    try {
-                      // Probe here — not via refreshReadyKeys — so a ModelPicker
-                      // onReady cannot cancel this sync by bumping readyGen.
-                      const { ready, ok } = await listReadyProviders();
-                      if (gen !== keysSyncGenRef.current) return;
-                      readyGenRef.current += 1;
-                      if (!ok) {
-                        setReadyProviders(null);
-                        return;
-                      }
-                      setReadyProviders(ready);
-                      const s = await getSettings();
-                      if (gen !== keysSyncGenRef.current) return;
-                      const picked = pickDefaultModel(ready, {
-                        provider: s.default_provider,
-                        modelId: s.default_model,
-                      });
-                      const next = picked
-                        ? await persistDefaults(picked, s, settingsGen)
-                        : s;
-                      if (gen !== keysSyncGenRef.current) return;
-                      setSettings(next);
-                      const alignTo = pickDefaultModel(ready, {
-                        provider: next.default_provider,
-                        modelId: next.default_model,
-                      });
-                      const id = activeIdRef.current;
-                      if (!id) return;
-                      const chat = await getChat(id);
-                      if (gen !== keysSyncGenRef.current) return;
-                      if (
-                        chat &&
-                        activeIdRef.current === id &&
-                        isEmptyNewChat(chat)
-                      ) {
-                        // Navigation may have dropped our lock — retake it so
-                        // send/model changes cannot race alignEmptyChat.
-                        const releaseAlign = acquireNavLock();
-                        try {
-                          if (gen !== keysSyncGenRef.current) return;
-                          if (activeIdRef.current !== id) return;
-                          const aligned = await alignEmptyChat(
-                            chat,
-                            alignTo,
-                            ready,
-                          );
-                          if (gen !== keysSyncGenRef.current) return;
-                          if (activeIdRef.current === aligned.id) {
-                            setActive(aligned);
-                            if (aligned !== chat) await refreshChats();
-                          }
-                        } finally {
-                          releaseAlign();
-                        }
-                      }
-                    } finally {
-                      releaseNav();
-                    }
-                  });
-              }}
+              onKeysChanged={scheduleKeySync}
               flushRef={settingsFlushRef}
               onNotify={notify}
               onUpdateFound={adoptUpdate}

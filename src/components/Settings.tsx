@@ -89,7 +89,10 @@ export function Settings({
   /** Serializes persist bodies so flush can await every in-flight write. */
   const persistChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const persistImplRef = useRef<
-    (s: AppSettings, opts?: { allowDuringPause?: boolean }) => Promise<void>
+    (
+      s: AppSettings,
+      opts?: { allowDuringPause?: boolean; flushDefaults?: boolean },
+    ) => Promise<void>
   >(async () => {});
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
@@ -407,7 +410,7 @@ export function Settings({
 
   function persist(
     s: AppSettings,
-    opts?: { allowDuringPause?: boolean },
+    opts?: { allowDuringPause?: boolean; flushDefaults?: boolean },
   ): Promise<void> {
     const run = persistChainRef.current
       .catch(() => undefined)
@@ -418,17 +421,18 @@ export function Settings({
 
   /**
    * Drain the Settings debounce (and any in-flight persist) so callers that
-   * re-read the DB (e.g. New Chat) observe the latest defaults.
+   * re-read the DB (e.g. New Chat) observe the latest defaults. Defaults are
+   * written even while hotkey Record is active; the rest stays deferred.
    */
   const flushPendingSaves = async (): Promise<void> => {
     if (saveTimer.current && settingsRef.current) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
-      void persist(settingsRef.current);
+      void persist(settingsRef.current, { flushDefaults: true });
     } else if (deferredPersistRef.current) {
       const deferred = deferredPersistRef.current;
       deferredPersistRef.current = null;
-      void persist(deferred, { allowDuringPause: true });
+      void persist(deferred, { allowDuringPause: true, flushDefaults: true });
     }
     await persistChainRef.current.catch(() => undefined);
   };
@@ -444,12 +448,25 @@ export function Settings({
 
   persistImplRef.current = async function persistImpl(
     s: AppSettings,
-    opts?: { allowDuringPause?: boolean },
+    opts?: { allowDuringPause?: boolean; flushDefaults?: boolean },
   ) {
     if (
       recordingRef.current ||
       (pausedForRecordRef.current && !opts?.allowDuringPause)
     ) {
+      // A New Chat flush must make defaults durable now — a deferred-only
+      // return leaves getSettings() on the previous default until Record ends.
+      if (opts?.flushDefaults && defaultsDirtyRef.current) {
+        await setDefaultModel(s.default_provider, s.default_model);
+        const cur = settingsRef.current;
+        if (
+          cur &&
+          cur.default_provider === s.default_provider &&
+          cur.default_model === s.default_model
+        ) {
+          defaultsDirtyRef.current = false;
+        }
+      }
       deferredPersistRef.current = s;
       return;
     }

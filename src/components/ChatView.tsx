@@ -98,7 +98,9 @@ export function ChatView({
   imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
   // null = unknown (probe still running) — do not block. false = probed, no key.
-  const blocked = hasProviderKey === false || sendLocked;
+  const noKey = hasProviderKey === false;
+  // send() / regenerate() only — drafting stays enabled while queues are busy.
+  const blocked = noKey || sendLocked;
   const setupNeeded = noKeysConfigured;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
@@ -739,12 +741,12 @@ export function ChatView({
               className="icon-btn"
               onClick={() => {
                 if (setupNeeded) onNeedKey?.();
-                else if (!blocked) fileRef.current?.click();
+                else if (!noKey) fileRef.current?.click();
               }}
               title={
                 setupNeeded
                   ? "Add an API key in Settings"
-                  : blocked
+                  : noKey
                     ? "Select a keyed model"
                     : "Attach image"
               }
@@ -765,19 +767,21 @@ export function ChatView({
               placeholder={
                 setupNeeded
                   ? "Add key to start chatting"
-                  : blocked
+                  : noKey
                     ? "Select a model to chat"
-                    : "Ask AI anything…"
+                    : sendLocked
+                      ? "Waiting for current operation…"
+                      : "Ask AI anything…"
               }
               rows={MIN_LINES}
-              readOnly={blocked}
+              readOnly={noKey}
               onChange={(e) => setInput(e.target.value)}
-              onPaste={blocked ? undefined : onPaste}
+              onPaste={noKey ? undefined : onPaste}
               onClick={() => {
                 if (setupNeeded) onNeedKey?.();
               }}
               onKeyDown={(e) => {
-                if (blocked) {
+                if (noKey) {
                   if (e.key === "Tab") return;
                   e.preventDefault();
                   if (setupNeeded) onNeedKey?.();
@@ -785,7 +789,7 @@ export function ChatView({
                 }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void send();
+                  if (!sendLocked) void send();
                 }
               }}
             />
@@ -820,9 +824,11 @@ export function ChatView({
               <span>
                 {setupNeeded
                   ? "Add key to start"
-                  : blocked
+                  : noKey
                     ? "Select a model"
-                    : "Submit ↵"}
+                    : sendLocked
+                      ? "Waiting…"
+                      : "Submit ↵"}
               </span>
             )}
           </div>

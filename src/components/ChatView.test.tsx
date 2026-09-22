@@ -137,6 +137,32 @@ describe("ChatView", () => {
     expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "Hi");
   });
 
+  it("keeps drafting enabled while sendLocked; Enter does not send", async () => {
+    const user = userEvent.setup();
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+        sendLocked
+      />,
+    );
+    const box = await screen.findByPlaceholderText(
+      "Waiting for current operation…",
+    );
+    expect(box).not.toHaveAttribute("readonly");
+    await user.type(box, "draft while busy");
+    expect(box).toHaveValue("draft while busy");
+    await user.keyboard("{Enter}");
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(addMessage).not.toHaveBeenCalled();
+    expect(screen.getByText("Waiting…")).toBeInTheDocument();
+  });
+
   it("sets provisional title and requests auto-title for New Chat", async () => {
     const user = userEvent.setup();
     const onChatMeta = vi.fn();

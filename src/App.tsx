@@ -54,6 +54,8 @@ function App() {
   const [readyProviders, setReadyProviders] = useState<ProviderId[] | null>(
     null,
   );
+  /** True while newChat awaits key probes / create — blocks send on old thread. */
+  const [navBusy, setNavBusy] = useState(false);
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -64,6 +66,8 @@ function App() {
   activeIdRef.current = activeId;
   /** Bumped on sidebar navigation so in-flight newChat cannot resurrect a deleted empty. */
   const navGenRef = useRef(0);
+  const readyGenRef = useRef(0);
+  const settingsGenRef = useRef(0);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -128,7 +132,9 @@ function App() {
   );
 
   const refreshReadyKeys = useCallback(async () => {
+    const gen = ++readyGenRef.current;
     const { ready, ok } = await listReadyProviders();
+    if (gen !== readyGenRef.current) return ready;
     if (ok) setReadyProviders(ready);
     return ready;
   }, []);
@@ -157,48 +163,53 @@ function App() {
   const newChat = useCallback(async () => {
     if (!settings) return;
     const gen = ++navGenRef.current;
-    const ready = await refreshReadyKeys();
-    if (gen !== navGenRef.current) return;
-    const picked = pickDefaultModel(ready, {
-      provider: settings.default_provider,
-      modelId: settings.default_model,
-    });
-    const nextSettings = picked
-      ? await persistDefaults(picked, settings)
-      : settings;
-    if (gen !== navGenRef.current) return;
+    setNavBusy(true);
+    try {
+      const ready = await refreshReadyKeys();
+      if (gen !== navGenRef.current) return;
+      const picked = pickDefaultModel(ready, {
+        provider: settings.default_provider,
+        modelId: settings.default_model,
+      });
+      const nextSettings = picked
+        ? await persistDefaults(picked, settings)
+        : settings;
+      if (gen !== navGenRef.current) return;
 
-    const existing = chats.find(isEmptyNewChat);
-    if (existing) {
-      const aligned = await alignEmptyChat(existing, picked);
-      if (gen !== navGenRef.current) return;
-      setActiveId(aligned.id);
-      setActive(aligned);
-      setShowSettings(false);
-      if (aligned !== existing) await refreshChats();
-      focusComposer();
-      return;
-    }
-    if (active && isEmptyNewChat(active)) {
-      const aligned = await alignEmptyChat(active, picked);
-      if (gen !== navGenRef.current) return;
-      if (aligned !== active) {
+      const existing = chats.find(isEmptyNewChat);
+      if (existing) {
+        const aligned = await alignEmptyChat(existing, picked);
+        if (gen !== navGenRef.current) return;
+        setActiveId(aligned.id);
         setActive(aligned);
-        await refreshChats();
+        setShowSettings(false);
+        if (aligned !== existing) await refreshChats();
+        focusComposer();
+        return;
       }
+      if (active && isEmptyNewChat(active)) {
+        const aligned = await alignEmptyChat(active, picked);
+        if (gen !== navGenRef.current) return;
+        if (aligned !== active) {
+          setActive(aligned);
+          await refreshChats();
+        }
+        focusComposer();
+        return;
+      }
+      const chat = await createChat(
+        (picked?.provider ?? nextSettings.default_provider) as ProviderId,
+        picked?.modelId ?? nextSettings.default_model,
+      );
+      if (gen !== navGenRef.current) return;
+      setActiveId(chat.id);
+      setActive(chat);
+      setShowSettings(false);
+      await refreshChats();
       focusComposer();
-      return;
+    } finally {
+      if (gen === navGenRef.current) setNavBusy(false);
     }
-    const chat = await createChat(
-      (picked?.provider ?? nextSettings.default_provider) as ProviderId,
-      picked?.modelId ?? nextSettings.default_model,
-    );
-    if (gen !== navGenRef.current) return;
-    setActiveId(chat.id);
-    setActive(chat);
-    setShowSettings(false);
-    await refreshChats();
-    focusComposer();
   }, [
     settings,
     chats,
@@ -373,6 +384,8 @@ function App() {
   }, [chats, showSettings, newChat, selectChat]);
 
   async function handleDelete(id: string) {
+    navGenRef.current += 1;
+    setNavBusy(false);
     await deleteChat(id);
     if (activeId === id) {
       const next = (await listChats())[0];
@@ -505,13 +518,17 @@ function App() {
                 void refreshReadyKeys();
               }}
               onSaved={(s) => {
+                settingsGenRef.current += 1;
                 setSettings(s);
                 void refreshChats();
               }}
               onKeysChanged={() => {
                 void (async () => {
+                  const gen = settingsGenRef.current;
                   const ready = await refreshReadyKeys();
+                  if (gen !== settingsGenRef.current) return;
                   const s = await getSettings();
+                  if (gen !== settingsGenRef.current) return;
                   const picked = pickDefaultModel(ready, {
                     provider: s.default_provider,
                     modelId: s.default_model,
@@ -519,22 +536,22 @@ function App() {
                   const next = picked
                     ? await persistDefaults(picked, s)
                     : s;
+                  if (gen !== settingsGenRef.current) return;
+                  setSettings(next);
                   const id = activeIdRef.current;
-                  if (id) {
-                    const chat = await getChat(id);
-                    if (
-                      chat &&
-                      activeIdRef.current === id &&
-                      isEmptyNewChat(chat)
-                    ) {
-                      const aligned = await alignEmptyChat(chat, picked);
-                      if (activeIdRef.current === aligned.id) {
-                        setActive(aligned);
-                        if (aligned !== chat) await refreshChats();
-                      }
+                  if (!id) return;
+                  const chat = await getChat(id);
+                  if (
+                    chat &&
+                    activeIdRef.current === id &&
+                    isEmptyNewChat(chat)
+                  ) {
+                    const aligned = await alignEmptyChat(chat, picked);
+                    if (activeIdRef.current === aligned.id) {
+                      setActive(aligned);
+                      if (aligned !== chat) await refreshChats();
                     }
                   }
-                  setSettings(next);
                 })();
               }}
               onNotify={notify}
@@ -561,6 +578,7 @@ function App() {
             noKeysConfigured={
               readyProviders !== null && readyProviders.length === 0
             }
+            sendLocked={navBusy}
             onNeedKey={() => setShowSettings(true)}
           />
         )}

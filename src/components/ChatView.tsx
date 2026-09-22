@@ -49,6 +49,8 @@ type Props = {
   hasProviderKey?: boolean | null;
   /** True when probe finished and no provider has a key. */
   noKeysConfigured?: boolean;
+  /** True while App is switching chats (e.g. New Chat probes) — block send. */
+  sendLocked?: boolean;
   onNeedKey?: () => void;
 };
 
@@ -62,6 +64,7 @@ export function ChatView({
   focusNonce,
   hasProviderKey = true,
   noKeysConfigured = false,
+  sendLocked = false,
   onNeedKey,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -91,7 +94,7 @@ export function ChatView({
   messagesRef.current = messages;
   imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
-  const blocked = hasProviderKey === false;
+  const blocked = hasProviderKey === false || sendLocked;
   const setupNeeded = noKeysConfigured;
 
   const rowCount = messages.length + (showStream ? 1 : 0);

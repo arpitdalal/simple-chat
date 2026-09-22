@@ -62,15 +62,22 @@ export function ModelPicker({
     void (async () => {
       const next: ProviderId[] = [];
       let errMsg = "";
+      let anyOk = false;
       for (const p of PROVIDERS) {
         try {
-          if (await hasApiKey(p)) next.push(p);
+          const has = await hasApiKey(p);
+          anyOk = true;
+          if (has) next.push(p);
         } catch (err) {
           errMsg = keyErrorMessage(err);
         }
       }
       if (cancelled) return;
       setProbeError(errMsg);
+      if (!anyOk) {
+        // Store locked — keep prior label; menu still opens to retry.
+        return;
+      }
       setReady(next);
       setProbed(true);
     })();

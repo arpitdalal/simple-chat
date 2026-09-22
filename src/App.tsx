@@ -85,6 +85,7 @@ function App() {
     async (
       picked: { provider: ProviderId; modelId: string },
       current: AppSettings,
+      settingsGen?: number,
     ): Promise<AppSettings> => {
       if (
         picked.provider === current.default_provider &&
@@ -94,6 +95,12 @@ function App() {
       }
       await setSetting("default_provider", picked.provider);
       await setSetting("default_model", picked.modelId);
+      if (
+        settingsGen != null &&
+        settingsGen !== settingsGenRef.current
+      ) {
+        return getSettings();
+      }
       const next = {
         ...current,
         default_provider: picked.provider,
@@ -131,10 +138,11 @@ function App() {
     [],
   );
 
-  const refreshReadyKeys = useCallback(async () => {
+  /** Latest ready list, or null if this probe was superseded. */
+  const refreshReadyKeys = useCallback(async (): Promise<ProviderId[] | null> => {
     const gen = ++readyGenRef.current;
     const { ready, ok } = await listReadyProviders();
-    if (gen !== readyGenRef.current) return ready;
+    if (gen !== readyGenRef.current) return null;
     if (ok) setReadyProviders(ready);
     return ready;
   }, []);
@@ -142,6 +150,7 @@ function App() {
   const selectChat = useCallback(
     async (id: string) => {
       navGenRef.current += 1;
+      setNavBusy(false);
       setShowSettings(false);
       if (activeId === id) {
         focusComposer();
@@ -166,7 +175,7 @@ function App() {
     setNavBusy(true);
     try {
       const ready = await refreshReadyKeys();
-      if (gen !== navGenRef.current) return;
+      if (ready == null || gen !== navGenRef.current) return;
       const picked = pickDefaultModel(ready, {
         provider: settings.default_provider,
         modelId: settings.default_model,
@@ -246,7 +255,7 @@ function App() {
   useEffect(() => {
     void (async () => {
       let s = await getSettings();
-      const ready = await refreshReadyKeys();
+      const ready = (await refreshReadyKeys()) ?? [];
       const picked = pickDefaultModel(ready, {
         provider: s.default_provider,
         modelId: s.default_model,
@@ -415,6 +424,8 @@ function App() {
 
   async function handleBranch(throughMessageId: string) {
     if (!activeId) return;
+    navGenRef.current += 1;
+    setNavBusy(false);
     try {
       const branched = await branchChat(activeId, throughMessageId);
       setShowSettings(false);
@@ -526,7 +537,7 @@ function App() {
                 void (async () => {
                   const gen = settingsGenRef.current;
                   const ready = await refreshReadyKeys();
-                  if (gen !== settingsGenRef.current) return;
+                  if (ready == null || gen !== settingsGenRef.current) return;
                   const s = await getSettings();
                   if (gen !== settingsGenRef.current) return;
                   const picked = pickDefaultModel(ready, {
@@ -534,7 +545,7 @@ function App() {
                     modelId: s.default_model,
                   });
                   const next = picked
-                    ? await persistDefaults(picked, s)
+                    ? await persistDefaults(picked, s, gen)
                     : s;
                   if (gen !== settingsGenRef.current) return;
                   setSettings(next);

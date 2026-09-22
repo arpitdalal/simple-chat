@@ -42,7 +42,10 @@ describe("keys client", () => {
       if (cmd !== "has_api_key") return undefined;
       return args.provider === "google";
     });
-    expect(await listReadyProviders()).toEqual(["google"]);
+    expect(await listReadyProviders()).toEqual({
+      ready: ["google"],
+      ok: true,
+    });
   });
 
   it("listReadyProviders skips providers that throw", async () => {
@@ -50,7 +53,15 @@ describe("keys client", () => {
       if (args.provider === "openai") throw new Error("locked");
       return args.provider === "anthropic";
     });
-    expect(await listReadyProviders()).toEqual(["anthropic"]);
+    expect(await listReadyProviders()).toEqual({
+      ready: ["anthropic"],
+      ok: true,
+    });
+  });
+
+  it("listReadyProviders ok:false when every probe throws", async () => {
+    invoke.mockRejectedValue(new Error("locked"));
+    expect(await listReadyProviders()).toEqual({ ready: [], ok: false });
   });
 
   it("keyErrorMessage reads Error, string, and other", () => {

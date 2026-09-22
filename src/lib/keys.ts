@@ -33,15 +33,22 @@ export function hasApiKey(provider: ProviderId) {
   return invoke<boolean>("has_api_key", { provider });
 }
 
-/** Providers with a readable key — skips keychain errors (not usable for chat). */
-export async function listReadyProviders(): Promise<ProviderId[]> {
+/** Providers with a readable key.
+ * `ok:false` when every probe threw (store locked) — callers should keep unknown state. */
+export async function listReadyProviders(): Promise<{
+  ready: ProviderId[];
+  ok: boolean;
+}> {
   const ready: ProviderId[] = [];
+  let ok = false;
   for (const p of PROVIDERS) {
     try {
-      if (await hasApiKey(p)) ready.push(p);
+      const has = await hasApiKey(p);
+      ok = true;
+      if (has) ready.push(p);
     } catch {
       /* unreadable / probe failure — not ready for chat */
     }
   }
-  return ready;
+  return { ready, ok };
 }

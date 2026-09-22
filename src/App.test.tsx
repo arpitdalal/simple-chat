@@ -61,7 +61,7 @@ vi.mock("./lib/updater", () => ({
 
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
-  listReadyProviders: vi.fn(async () => ["google"]),
+  listReadyProviders: vi.fn(async () => ({ ready: ["google"], ok: true })),
   setApiKey: vi.fn(),
   clearApiKey: vi.fn(),
   getApiKey: vi.fn(async () => "test-key"),
@@ -130,7 +130,10 @@ describe("App UX", () => {
     vi.mocked(applyHotkey).mockReset();
     vi.mocked(applyHotkey).mockResolvedValue(undefined);
     const { listReadyProviders } = await import("./lib/keys");
-    vi.mocked(listReadyProviders).mockResolvedValue(["google"]);
+    vi.mocked(listReadyProviders).mockResolvedValue({
+      ready: ["google"],
+      ok: true,
+    });
     openOrCreateChat.mockClear();
     openOrCreateChat.mockImplementation(async () => {
       if (chatsStore.get().length === 0) {
@@ -176,7 +179,7 @@ describe("App UX", () => {
 
   it("disables composer when no API keys are present", async () => {
     const { listReadyProviders } = await import("./lib/keys");
-    vi.mocked(listReadyProviders).mockResolvedValue([]);
+    vi.mocked(listReadyProviders).mockResolvedValue({ ready: [], ok: true });
     render(<App />);
     await waitFor(() =>
       expect(

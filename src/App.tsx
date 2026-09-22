@@ -62,6 +62,8 @@ function App() {
   const restartRequiredRef = useRef(false);
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
+  /** Bumped on sidebar navigation so in-flight newChat cannot resurrect a deleted empty. */
+  const navGenRef = useRef(0);
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -126,13 +128,14 @@ function App() {
   );
 
   const refreshReadyKeys = useCallback(async () => {
-    const ready = await listReadyProviders();
-    setReadyProviders(ready);
+    const { ready, ok } = await listReadyProviders();
+    if (ok) setReadyProviders(ready);
     return ready;
   }, []);
 
   const selectChat = useCallback(
     async (id: string) => {
+      navGenRef.current += 1;
       setShowSettings(false);
       if (activeId === id) {
         focusComposer();
@@ -153,7 +156,9 @@ function App() {
 
   const newChat = useCallback(async () => {
     if (!settings) return;
+    const gen = ++navGenRef.current;
     const ready = await refreshReadyKeys();
+    if (gen !== navGenRef.current) return;
     const picked = pickDefaultModel(ready, {
       provider: settings.default_provider,
       modelId: settings.default_model,
@@ -161,10 +166,12 @@ function App() {
     const nextSettings = picked
       ? await persistDefaults(picked, settings)
       : settings;
+    if (gen !== navGenRef.current) return;
 
     const existing = chats.find(isEmptyNewChat);
     if (existing) {
       const aligned = await alignEmptyChat(existing, picked);
+      if (gen !== navGenRef.current) return;
       setActiveId(aligned.id);
       setActive(aligned);
       setShowSettings(false);
@@ -174,6 +181,7 @@ function App() {
     }
     if (active && isEmptyNewChat(active)) {
       const aligned = await alignEmptyChat(active, picked);
+      if (gen !== navGenRef.current) return;
       if (aligned !== active) {
         setActive(aligned);
         await refreshChats();
@@ -185,6 +193,7 @@ function App() {
       (picked?.provider ?? nextSettings.default_provider) as ProviderId,
       picked?.modelId ?? nextSettings.default_model,
     );
+    if (gen !== navGenRef.current) return;
     setActiveId(chat.id);
     setActive(chat);
     setShowSettings(false);
@@ -491,7 +500,10 @@ function App() {
         {showSettings ? (
           <div className="chat-stage settings-stage glass-panel">
             <Settings
-              onClose={() => setShowSettings(false)}
+              onClose={() => {
+                setShowSettings(false);
+                void refreshReadyKeys();
+              }}
               onSaved={(s) => {
                 setSettings(s);
                 void refreshChats();

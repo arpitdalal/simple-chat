@@ -75,7 +75,7 @@ vi.mock("./lib/updater", () => ({
 
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
-  listReadyProviders: vi.fn(async () => ["google"]),
+  listReadyProviders: vi.fn(async () => ({ ready: ["google"], ok: true })),
   setApiKey: vi.fn(),
   clearApiKey: vi.fn(),
   getApiKey: vi.fn(async () => "k"),

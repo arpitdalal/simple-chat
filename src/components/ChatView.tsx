@@ -771,6 +771,7 @@ export function ChatView({
               }}
               onKeyDown={(e) => {
                 if (blocked) {
+                  if (e.key === "Tab") return;
                   e.preventDefault();
                   if (setupNeeded) onNeedKey?.();
                   return;

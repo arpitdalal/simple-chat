@@ -119,11 +119,11 @@ export function Settings({
 
   /** Align default_provider/model with providers that have usable keys. */
   async function syncDefaultsFromKeys() {
+    const readyResult = await listReadyProviders();
+    if (!mountedRef.current || !readyResult.ok) return;
     const s = settingsRef.current;
     if (!s) return;
-    const ready = await listReadyProviders();
-    if (!mountedRef.current) return;
-    const picked = pickDefaultModel(ready, {
+    const picked = pickDefaultModel(readyResult.ready, {
       provider: s.default_provider,
       modelId: s.default_model,
     });

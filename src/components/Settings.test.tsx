@@ -15,14 +15,17 @@ vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
   listReadyProviders: async () => {
     const ready: string[] = [];
+    let ok = false;
     for (const p of ["openai", "anthropic", "google"] as const) {
       try {
-        if (await hasApiKey(p)) ready.push(p);
+        const has = await hasApiKey(p);
+        ok = true;
+        if (has) ready.push(p);
       } catch {
         /* skip */
       }
     }
-    return ready;
+    return { ready, ok };
   },
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),

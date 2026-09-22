@@ -80,15 +80,23 @@ describe("ChatView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     hiddenListeners.clear();
+    // Persist mock: listMessages reflects what addMessage stored (send history).
+    const stored = new Map<string, Message[]>();
     listRecentMessages.mockResolvedValue([]);
     listOlderMessages.mockResolvedValue([]);
-    listMessages.mockResolvedValue([]);
+    listMessages.mockImplementation(async (chatId: string) => [
+      ...(stored.get(chatId) ?? []),
+    ]);
     deleteMessagesAfter.mockResolvedValue(undefined);
     updateChat.mockResolvedValue(undefined);
     generateChatTitle.mockResolvedValue("Auto Title");
-    addMessage.mockImplementation(async (_id, role, content) =>
-      msg({ id: crypto.randomUUID(), role, content }),
-    );
+    addMessage.mockImplementation(async (chatId, role, content) => {
+      const m = msg({ id: crypto.randomUUID(), chat_id: chatId, role, content });
+      const list = stored.get(chatId) ?? [];
+      list.push(m);
+      stored.set(chatId, list);
+      return m;
+    });
     streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
       opts.onToken("Hello ");
       opts.onToken("world");
@@ -808,6 +816,191 @@ describe("ChatView", () => {
     await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
     expect(screen.getByText("fresh")).toBeInTheDocument();
     expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "fresh");
+  });
+
+  it("accepts a second send while the first reply is still streaming", async () => {
+    const user = userEvent.setup();
+    const releases: Array<() => void> = [];
+    const streamCalls: Array<{ onToken: (t: string) => void }> = [];
+    streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
+      streamCalls.push(opts);
+      const n = streamCalls.length;
+      opts.onToken(`reply-${n}-part`);
+      await new Promise<void>((r) => {
+        releases[n - 1] = r;
+      });
+    });
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "first");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("first")).toBeInTheDocument());
+
+    // Second send must not be blocked by the in-flight stream
+    await user.type(box, "second");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("second")).toBeInTheDocument());
+    expect(box).toHaveValue("");
+
+    // First stream still active — Stop remains for the viewed stream
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+
+    await act(async () => {
+      releases[0]?.();
+    });
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "reply-1-part"),
+    );
+    // Second turn starts only after the first settles (per-chat FIFO)
+    await waitFor(() => expect(streamCalls.length).toBe(2));
+    await act(async () => {
+      releases[1]?.();
+    });
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "reply-2-part"),
+    );
+    await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
+
+    // Order: first user → first reply → second user → second reply
+    const texts = Array.from(
+      document.querySelectorAll(".msg-content"),
+    ).map((el) => el.textContent ?? "");
+    const firstIdx = texts.findIndex((t) => t.includes("first"));
+    const reply1Idx = texts.findIndex((t) => t.includes("reply-1-part"));
+    const secondIdx = texts.findIndex((t) => t.includes("second"));
+    const reply2Idx = texts.findIndex((t) => t.includes("reply-2-part"));
+    expect(firstIdx).toBeGreaterThanOrEqual(0);
+    expect(reply1Idx).toBeGreaterThan(firstIdx);
+    expect(secondIdx).toBeGreaterThan(reply1Idx);
+    expect(reply2Idx).toBeGreaterThan(secondIdx);
+  });
+
+  it("streams a new chat's send while another chat's reply is in flight", async () => {
+    const user = userEvent.setup();
+    const gates: Record<string, (() => void) | undefined> = {};
+    const chatSeen: string[] = [];
+    streamChat.mockImplementation(
+      async (opts: {
+        messages: Array<{ content: unknown }>;
+        onToken: (t: string) => void;
+      }) => {
+        const last = opts.messages[opts.messages.length - 1];
+        const text =
+          typeof last?.content === "string"
+            ? last.content
+            : JSON.stringify(last?.content);
+        chatSeen.push(text);
+        opts.onToken(`echo:${text}`);
+        await new Promise<void>((r) => {
+          gates[text] = r;
+        });
+      },
+    );
+
+    listRecentMessages.mockImplementation(async (id: string) => {
+      if (id === "c2") {
+        return [msg({ id: "old-c2", chat_id: "c2", role: "user", content: "hi c2" })];
+      }
+      return [];
+    });
+    // Default listMessages (beforeEach) already returns what addMessage stored;
+    // seed c2 history on top of that via the stored list in the default mock.
+    const baseListMessages = listMessages.getMockImplementation()!;
+    listMessages.mockImplementation(async (id: string) => {
+      const storedMsgs = await baseListMessages(id);
+      if (id === "c2" && storedMsgs.length === 0) {
+        return [msg({ id: "old-c2", chat_id: "c2", role: "user", content: "hi c2" })];
+      }
+      if (id === "c2") {
+        return [
+          msg({ id: "old-c2", chat_id: "c2", role: "user", content: "hi c2" }),
+          ...storedMsgs,
+        ];
+      }
+      return storedMsgs;
+    });
+
+    const other: Chat = { ...chat, id: "c2", title: "Other" };
+    const { rerender } = render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "alpha");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+
+    // Switch to another chat while stream A is still running — send must work
+    rerender(
+      <ChatView
+        chat={other}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={2}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    const box2 = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box2, "beta");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("beta")).toBeInTheDocument());
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByText("echo:beta")).toBeInTheDocument();
+
+    // Finish stream B — still on chat B, must not touch chat A's turn
+    await act(async () => {
+      gates["beta"]?.();
+    });
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c2", "assistant", "echo:beta"),
+    );
+    await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
+
+    // Return to chat A — stream A still live, Stop back
+    rerender(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={3}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByText("echo:alpha")).toBeInTheDocument();
+
+    await act(async () => {
+      gates["alpha"]?.();
+    });
+    await waitFor(() =>
+      expect(addMessage).toHaveBeenCalledWith("c1", "assistant", "echo:alpha"),
+    );
+    expect(chatSeen).toContain("alpha");
+    expect(chatSeen.some((t) => t.includes("beta"))).toBe(true);
   });
 
   it("shows scroll-to-bottom when scrolled up and jumps on click", async () => {

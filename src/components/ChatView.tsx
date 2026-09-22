@@ -21,6 +21,7 @@ import {
   trimRecentMessages,
 } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
+import { createQueue, type Queue } from "../lib/queue";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
 import {
@@ -36,6 +37,14 @@ import type { ToastKind } from "./Toast";
 const LINE_H = 22;
 const MAX_LINES = 15;
 const MIN_LINES = 1;
+
+/** One in-flight assistant stream for a chat (multi-chat concurrent). */
+type StreamSlot = {
+  ac: AbortController;
+  /** User message this stream replies to — stream row renders after it. */
+  anchor: string;
+  text: string;
+};
 
 type Props = {
   chat: Chat | null;
@@ -72,11 +81,15 @@ export function ChatView({
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState("");
+  /** Live stream for the *viewed* chat only; background streams stay in refs. */
+  const [viewingStream, setViewingStream] = useState<{
+    anchor: string;
+    text: string;
+  } | null>(null);
+  /** Viewed chat has a queued or in-flight turn (regenerate gate). */
   const [busy, setBusy] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -84,8 +97,12 @@ export function ChatView({
   const stickBottom = useRef(true);
   const [showJump, setShowJump] = useState(false);
   const viewingIdRef = useRef<string | null>(chat?.id ?? null);
-  const streamOwnerRef = useRef<string | null>(null);
-  const streamTextRef = useRef("");
+  /** chatId → in-flight stream (concurrent across chats). */
+  const streamsRef = useRef(new Map<string, StreamSlot>());
+  /** chatId → FIFO so one chat never interleaves its own turns. */
+  const queuesRef = useRef(new Map<string, Queue>());
+  /** Unpersisted optimistic user messages, re-attached on chat reload. */
+  const pendingSendsRef = useRef(new Map<string, Message[]>());
   const messagesRef = useRef<Message[]>([]);
   const imagesRef = useRef<string[]>([]);
   /** In-flight FileReaders — composer not "empty" until they settle. */
@@ -96,12 +113,35 @@ export function ChatView({
   viewingIdRef.current = chat?.id ?? null;
   messagesRef.current = messages;
   imagesRef.current = images;
-  const showStream = busy && streamOwnerRef.current === chat?.id;
+  const showStream = viewingStream != null;
+  const streaming = viewingStream?.text ?? "";
+  const streamingAnchor = viewingStream?.anchor ?? null;
   // null = unknown (probe still running) — do not block. false = probed, no key.
   const noKey = hasProviderKey === false;
   // send() / regenerate() only — drafting stays enabled while queues are busy.
   const blocked = noKey || sendLocked;
   const setupNeeded = noKeysConfigured;
+
+  function getChatQueue(chatId: string): Queue {
+    let q = queuesRef.current.get(chatId);
+    if (!q) {
+      q = createQueue();
+      queuesRef.current.set(chatId, q);
+    }
+    return q;
+  }
+
+  function isChatBusy(chatId: string): boolean {
+    return streamsRef.current.has(chatId) || getChatQueue(chatId).isBusy();
+  }
+
+  /** Stream row sits after the user message it answers — not always at the end. */
+  const streamIndex = (() => {
+    if (!showStream) return messages.length;
+    if (!streamingAnchor) return messages.length;
+    const i = messages.findIndex((m) => m.id === streamingAnchor);
+    return i === -1 ? messages.length : i + 1;
+  })();
 
   const rowCount = messages.length + (showStream ? 1 : 0);
 
@@ -122,22 +162,28 @@ export function ChatView({
     if (!chat) {
       setMessages([]);
       setHasMore(false);
-      setStreaming("");
+      setViewingStream(null);
+      setBusy(false);
       setShowJump(false);
       return;
     }
     let cancelled = false;
     setShowJump(false);
-    // Restore in-flight stream text when returning to the owning chat
-    if (streamOwnerRef.current === chat.id && busy) {
-      setStreaming(streamTextRef.current);
+    // Restore in-flight stream + busy for the chat we're entering
+    const stream = streamsRef.current.get(chat.id);
+    if (stream) {
+      setViewingStream({ anchor: stream.anchor, text: stream.text });
+      setBusy(true);
     } else {
-      setStreaming("");
+      setViewingStream(null);
+      setBusy(isChatBusy(chat.id));
     }
+    const pending = pendingSendsRef.current.get(chat.id) ?? [];
     void (async () => {
       const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
       if (cancelled) return;
-      setMessages(page);
+      // Keep optimistic user sends that have not hit the DB yet
+      setMessages([...page, ...pending]);
       setHasMore(page.length >= MESSAGE_PAGE);
       stickBottom.current = true;
       requestAnimationFrame(() => {
@@ -274,20 +320,25 @@ export function ChatView({
   async function streamReply(
     chatSnap: Chat,
     history: Message[],
+    anchorUserId: string,
     lastUserContent?: ModelMessage["content"],
   ) {
     const chatId = chatSnap.id;
     const startGen = releaseGenRef.current;
-    streamOwnerRef.current = chatId;
-    streamTextRef.current = "";
-    flushSync(() => {
-      setBusy(true);
-      setStreaming("");
-    });
+    const slot: StreamSlot = {
+      ac: new AbortController(),
+      anchor: anchorUserId,
+      text: "",
+    };
+    streamsRef.current.set(chatId, slot);
+    if (viewingIdRef.current === chatId) {
+      flushSync(() => {
+        setBusy(true);
+        setViewingStream({ anchor: anchorUserId, text: "" });
+      });
+    }
     stickBottom.current = true;
-
-    const ac = new AbortController();
-    abortRef.current = ac;
+    const ac = slot.ac;
 
     const modelMessages: ModelMessage[] = history.map((m) => ({
       role: m.role as "user" | "assistant" | "system",
@@ -308,9 +359,17 @@ export function ChatView({
             ? MESSAGE_PAGE
             : MAX_CACHED_MESSAGES;
         const wouldTrim = messagesRef.current.length >= limit;
-        setMessages((m) => trimRecentMessages([...m, assistant], limit));
+        setMessages((m) => {
+          // Place the reply directly after the user turn it answers — later
+          // optimistic sends may already sit below while this stream ran.
+          const i = m.findIndex((x) => x.id === anchorUserId);
+          const next =
+            i === -1
+              ? [...m, assistant]
+              : [...m.slice(0, i + 1), assistant, ...m.slice(i + 1)];
+          return trimRecentMessages(next, limit);
+        });
         if (wouldTrim) setHasMore(true);
-        setStreaming("");
       }
       // Preview update is best-effort — don't re-enter append on metadata failure
       try {
@@ -333,13 +392,18 @@ export function ChatView({
         abortSignal: ac.signal,
         onToken: (t) => {
           full += t;
-          streamTextRef.current = full;
-          if (viewingIdRef.current === chatId) setStreaming(full);
+          slot.text = full;
+          if (viewingIdRef.current === chatId) {
+            setViewingStream({ anchor: anchorUserId, text: full });
+          }
         },
         onRetry: () => {
-          // Reset live buffer only — streamTextRef keeps last partial until new tokens
+          // Reset live buffer only — slot keeps last partial until new tokens
           full = "";
-          if (viewingIdRef.current === chatId) setStreaming("");
+          slot.text = "";
+          if (viewingIdRef.current === chatId) {
+            setViewingStream({ anchor: anchorUserId, text: "" });
+          }
         },
       });
       streamed = true;
@@ -355,35 +419,37 @@ export function ChatView({
           assistantSaved = true;
           return;
         } catch {
-          if (viewingIdRef.current === chatId) setStreaming("");
+          if (viewingIdRef.current === chatId) {
+            setViewingStream({ anchor: anchorUserId, text: "" });
+          }
           onNotify((e as Error).message || String(e), "err");
           throw e;
         }
       }
-      const partial = full || streamTextRef.current;
+      const partial = full || slot.text;
       // Keep partial reply only when the stream itself failed
       if (!aborted && !streamed && !assistantSaved && partial) {
         try {
           await appendAssistant(partial);
           assistantSaved = true;
         } catch {
-          if (viewingIdRef.current === chatId) setStreaming("");
+          if (viewingIdRef.current === chatId) {
+            setViewingStream({ anchor: anchorUserId, text: "" });
+          }
         }
       } else if (viewingIdRef.current === chatId && !assistantSaved) {
-        setStreaming("");
+        setViewingStream({ anchor: anchorUserId, text: "" });
       }
       if (!aborted) {
         onNotify((e as Error).message || String(e), "err");
       }
       throw e;
     } finally {
-      if (streamOwnerRef.current === chatId) {
-        streamOwnerRef.current = null;
-        streamTextRef.current = "";
-        setBusy(false);
+      if (streamsRef.current.get(chatId) === slot) {
+        streamsRef.current.delete(chatId);
       }
-      abortRef.current = null;
       if (viewingIdRef.current === chatId) {
+        setViewingStream(null);
         inputRef.current?.focus();
         requestAnimationFrame(resizeComposer);
       }
@@ -391,7 +457,7 @@ export function ChatView({
   }
 
   async function send() {
-    if (!chat || busy || blocked) {
+    if (!chat || blocked) {
       if (setupNeeded) onNeedKey?.();
       return;
     }
@@ -403,27 +469,28 @@ export function ChatView({
     const displayText =
       text || (imageParts.length ? `[${imageParts.length} image(s)]` : "");
     const tempId = `tmp-${crypto.randomUUID()}`;
+    const tempMsg: Message = {
+      id: tempId,
+      chat_id: chatId,
+      role: "user",
+      content: displayText,
+      created_at: Date.now(),
+    };
 
-    // Paint user + Thinking before any await
+    // Paint user + Thinking before any await — send is never blocked by a
+    // stream on this or another chat; the per-chat queue serializes turns.
     flushSync(() => {
       setBusy(true);
-      setStreaming("");
+      setViewingStream({ anchor: tempId, text: "" });
       setInput("");
       setImages([]);
-      streamOwnerRef.current = chatId;
-      streamTextRef.current = "";
-      setMessages((m) => [
-        ...m,
-        {
-          id: tempId,
-          chat_id: chatId,
-          role: "user",
-          content: displayText,
-          created_at: Date.now(),
-        },
-      ]);
+      setMessages((m) => [...m, tempMsg]);
     });
     stickBottom.current = true;
+    pendingSendsRef.current.set(chatId, [
+      ...(pendingSendsRef.current.get(chatId) ?? []),
+      tempMsg,
+    ]);
 
     const userContent =
       imageParts.length === 0
@@ -437,41 +504,57 @@ export function ChatView({
           ];
 
     let userPersisted = false;
+    let reachedStream = false;
     const sendGen = releaseGenRef.current;
     try {
-      const userMsg = await addMessage(chatId, "user", displayText);
-      userPersisted = true;
-      if (viewingIdRef.current === chatId) {
-        setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
-      }
-
-      if (chatSnap.title === "New Chat" && text) {
-        const provisional =
-          text.slice(0, 48) + (text.length > 48 ? "…" : "");
-        await updateChat(chatId, {
-          title: provisional,
-          preview: text.slice(0, 120),
-        });
-        onChatMeta({
-          ...chatSnap,
-          title: provisional,
-          preview: text.slice(0, 120),
-        });
-        onChatUpdated();
-        void generateChatTitle(chatSnap.provider as ProviderId, text).then(
-          async (title) => {
-            await updateChat(chatId, { title });
-            if (viewingIdRef.current === chatId) {
-              onChatMeta({ ...chatSnap, title, preview: text.slice(0, 120) });
-            }
-            onChatUpdated();
-          },
+      await getChatQueue(chatId).run(async () => {
+        const userMsg = await addMessage(chatId, "user", displayText);
+        userPersisted = true;
+        const pend = pendingSendsRef.current.get(chatId) ?? [];
+        pendingSendsRef.current.set(
+          chatId,
+          pend.filter((m) => m.id !== tempId),
         );
-      }
+        if (viewingIdRef.current === chatId) {
+          setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
+        }
 
-      const history = [...messages, userMsg];
-      await streamReply(chatSnap, history, userContent as never);
+        if (chatSnap.title === "New Chat" && text) {
+          const provisional =
+            text.slice(0, 48) + (text.length > 48 ? "…" : "");
+          await updateChat(chatId, {
+            title: provisional,
+            preview: text.slice(0, 120),
+          });
+          onChatMeta({
+            ...chatSnap,
+            title: provisional,
+            preview: text.slice(0, 120),
+          });
+          onChatUpdated();
+          void generateChatTitle(chatSnap.provider as ProviderId, text).then(
+            async (title) => {
+              await updateChat(chatId, { title });
+              if (viewingIdRef.current === chatId) {
+                onChatMeta({ ...chatSnap, title, preview: text.slice(0, 120) });
+              }
+              onChatUpdated();
+            },
+          );
+        }
+
+        // Fresh from DB so a prior turn's reply is included even if this
+        // send was queued while an earlier stream was still running.
+        const history = await listMessages(chatId);
+        reachedStream = true;
+        await streamReply(chatSnap, history, userMsg.id, userContent as never);
+      });
     } catch (e) {
+      const pend = pendingSendsRef.current.get(chatId) ?? [];
+      pendingSendsRef.current.set(
+        chatId,
+        pend.filter((m) => m.id !== tempId),
+      );
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
         // Restore only if whole composer still empty — don't merge into a newer draft
@@ -487,53 +570,75 @@ export function ChatView({
             setImages(imageParts);
           }
         }
-        setStreaming("");
-      }
-      if ((e as Error).name !== "AbortError") {
-        // streamReply already notified for stream errors; only notify if we never got there
-        if (streamOwnerRef.current === chatId) {
-          onNotify((e as Error).message || String(e), "err");
+        if (!streamsRef.current.has(chatId)) {
+          setViewingStream(null);
         }
       }
-      if (streamOwnerRef.current === chatId) {
-        streamOwnerRef.current = null;
-        streamTextRef.current = "";
-        setBusy(false);
+      // streamReply notifies for stream errors; only notify if we never got there
+      if ((e as Error).name !== "AbortError" && !reachedStream) {
+        onNotify((e as Error).message || String(e), "err");
+      }
+    } finally {
+      if (viewingIdRef.current === chatId) {
+        if (!isChatBusy(chatId)) {
+          setBusy(false);
+          setViewingStream(null);
+        } else {
+          // Another queued turn on this chat — keep busy, adopt its stream UI
+          const next = streamsRef.current.get(chatId);
+          setViewingStream(
+            next ? { anchor: next.anchor, text: next.text } : null,
+          );
+        }
       }
     }
   }
 
   async function regenerate(userMessageId: string) {
-    if (!chat || busy || blocked) {
-      if (setupNeeded) onNeedKey?.();
+    if (!chat || blocked || isChatBusy(chat.id)) {
+      if (setupNeeded && !(chat && isChatBusy(chat.id))) onNeedKey?.();
       return;
     }
     const chatId = chat.id;
     const chatSnap = chat;
-    const startGen = releaseGenRef.current;
-    const all = await listMessages(chatId);
-    const idx = all.findIndex((m) => m.id === userMessageId);
-    if (idx < 0 || all[idx].role !== "user") return;
-
-    await deleteMessagesAfter(chatId, userMessageId);
-    const keep = all.slice(0, idx + 1);
-    const limit =
-      startGen !== releaseGenRef.current ? MESSAGE_PAGE : MAX_CACHED_MESSAGES;
-    const visible = trimRecentMessages(keep, limit);
-    flushSync(() => {
-      setMessages(visible);
-      if (visible.length < keep.length) setHasMore(true);
-      setBusy(true);
-      setStreaming("");
-      streamOwnerRef.current = chatId;
-      streamTextRef.current = "";
-    });
-    stickBottom.current = true;
-
     try {
-      await streamReply(chatSnap, keep);
+      await getChatQueue(chatId).run(async () => {
+        const startGen = releaseGenRef.current;
+        const all = await listMessages(chatId);
+        const idx = all.findIndex((m) => m.id === userMessageId);
+        if (idx < 0 || all[idx].role !== "user") return;
+
+        await deleteMessagesAfter(chatId, userMessageId);
+        const keep = all.slice(0, idx + 1);
+        const limit =
+          startGen !== releaseGenRef.current
+            ? MESSAGE_PAGE
+            : MAX_CACHED_MESSAGES;
+        const visible = trimRecentMessages(keep, limit);
+        flushSync(() => {
+          setMessages(visible);
+          if (visible.length < keep.length) setHasMore(true);
+          setBusy(true);
+          setViewingStream({ anchor: userMessageId, text: "" });
+        });
+        stickBottom.current = true;
+
+        await streamReply(chatSnap, keep, userMessageId);
+      });
     } catch {
       /* notified in streamReply */
+    } finally {
+      if (viewingIdRef.current === chatId) {
+        if (!isChatBusy(chatId)) {
+          setBusy(false);
+          setViewingStream(null);
+        } else {
+          const next = streamsRef.current.get(chatId);
+          setViewingStream(
+            next ? { anchor: next.anchor, text: next.text } : null,
+          );
+        }
+      }
     }
   }
 
@@ -621,8 +726,12 @@ export function ChatView({
             style={{ height: virtualizer.getTotalSize(), position: "relative" }}
           >
             {items.map((row) => {
-              const isStream = showStream && row.index === messages.length;
-              const m = isStream ? null : messages[row.index];
+              const isStream = showStream && row.index === streamIndex;
+              const msgIndex =
+                showStream && row.index > streamIndex
+                  ? row.index - 1
+                  : row.index;
+              const m = isStream ? null : messages[msgIndex];
               return (
                 <div
                   key={isStream ? "stream" : m!.id}
@@ -816,7 +925,9 @@ export function ChatView({
               <button
                 type="button"
                 className="ghost"
-                onClick={() => abortRef.current?.abort()}
+                onClick={() => {
+                  if (chat) streamsRef.current.get(chat.id)?.ac.abort();
+                }}
               >
                 Stop
               </button>

@@ -48,14 +48,15 @@ describe("keys client", () => {
     });
   });
 
-  it("listReadyProviders skips providers that throw", async () => {
+  it("listReadyProviders treats any probe failure as unknown", async () => {
     invoke.mockImplementation(async (_cmd: string, args: { provider: string }) => {
       if (args.provider === "openai") throw new Error("locked");
       return args.provider === "anthropic";
     });
+    // Partial success must not look like "openai has no key".
     expect(await listReadyProviders()).toEqual({
-      ready: ["anthropic"],
-      ok: true,
+      ready: [],
+      ok: false,
       error: "locked",
     });
   });

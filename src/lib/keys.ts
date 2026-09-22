@@ -34,7 +34,8 @@ export function hasApiKey(provider: ProviderId) {
 }
 
 /** Providers with a readable key.
- * `ok:false` when every probe threw (store locked) — callers should keep unknown state.
+ * `ok:false` when any probe threw (store locked / provider-specific failure) —
+ * callers must treat the list as unknown and skip destructive default/chat alignment.
  * Uses direct invoke inside one queue slot (do not call hasApiKey here — nested deadlock). */
 export async function listReadyProviders(): Promise<{
   ready: ProviderId[];
@@ -43,17 +44,20 @@ export async function listReadyProviders(): Promise<{
 }> {
   return runKeyOp(async () => {
     const ready: ProviderId[] = [];
-    let ok = false;
+    // ok only when every provider probed successfully — a partial failure
+    // must not look like "these others have no key".
+    let ok = true;
     let error: string | undefined;
     for (const p of PROVIDERS) {
       try {
         const has = await invoke<boolean>("has_api_key", { provider: p });
-        ok = true;
         if (has) ready.push(p);
       } catch (err) {
+        ok = false;
         error = keyErrorMessage(err);
       }
     }
-    return ok ? { ready, ok, ...(error ? { error } : {}) } : { ready, ok, error };
+    if (!ok) return { ready: [], ok, error: error ?? "key probe failed" };
+    return { ready, ok };
   });
 }

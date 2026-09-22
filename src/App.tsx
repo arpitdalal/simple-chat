@@ -13,6 +13,7 @@ import {
   getSettings,
   listChats,
   listMessages,
+  messageCount,
   openOrCreateChat,
   setSetting,
   updateChat,
@@ -59,6 +60,8 @@ function App() {
   const updateCheckGenRef = useRef(0);
   const updatingRef = useRef(false);
   const restartRequiredRef = useRef(false);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -102,6 +105,7 @@ function App() {
       picked: { provider: ProviderId; modelId: string } | null,
     ): Promise<Chat> => {
       if (!picked || !isEmptyNewChat(chat)) return chat;
+      if ((await messageCount(chat.id)) !== 0) return chat;
       if (
         chat.provider === picked.provider &&
         chat.model_id === picked.modelId
@@ -495,7 +499,7 @@ function App() {
               onKeysChanged={() => {
                 void (async () => {
                   const ready = await refreshReadyKeys();
-                  const s = settings ?? (await getSettings());
+                  const s = await getSettings();
                   const picked = pickDefaultModel(ready, {
                     provider: s.default_provider,
                     modelId: s.default_model,
@@ -503,10 +507,20 @@ function App() {
                   const next = picked
                     ? await persistDefaults(picked, s)
                     : s;
-                  if (active && isEmptyNewChat(active)) {
-                    const aligned = await alignEmptyChat(active, picked);
-                    setActive(aligned);
-                    if (aligned !== active) await refreshChats();
+                  const id = activeIdRef.current;
+                  if (id) {
+                    const chat = await getChat(id);
+                    if (
+                      chat &&
+                      activeIdRef.current === id &&
+                      isEmptyNewChat(chat)
+                    ) {
+                      const aligned = await alignEmptyChat(chat, picked);
+                      if (activeIdRef.current === aligned.id) {
+                        setActive(aligned);
+                        if (aligned !== chat) await refreshChats();
+                      }
+                    }
                   }
                   setSettings(next);
                 })();

@@ -82,6 +82,8 @@ export function Settings({
   const hotkeyDraftRef = useRef<string | null>(null);
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+  const onKeysChangedRef = useRef(onKeysChanged);
+  onKeysChangedRef.current = onKeysChanged;
   const mountedRef = useRef(true);
 
   async function probeKeys(
@@ -456,6 +458,8 @@ export function Settings({
     keyProbeGenRef.current += 1;
     try {
       await setApiKey(provider, value);
+      // App must refresh even if Close unmounted Settings mid-write.
+      onKeysChangedRef.current?.();
       if (!mountedRef.current) return;
       // Keep a newer draft typed while the OS prompt was pending.
       setKeys((k) =>
@@ -468,7 +472,6 @@ export function Settings({
       const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
       await syncDefaultsFromKeys();
-      onKeysChanged?.();
     } catch (err) {
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
@@ -485,6 +488,7 @@ export function Settings({
     keyProbeGenRef.current += 1;
     try {
       await clearApiKey(provider);
+      onKeysChangedRef.current?.();
       if (!mountedRef.current) return;
       // Keep a draft typed while the OS clear prompt was pending.
       setKeys((k) =>
@@ -495,7 +499,6 @@ export function Settings({
       const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
       await syncDefaultsFromKeys();
-      onKeysChanged?.();
     } catch (err) {
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);

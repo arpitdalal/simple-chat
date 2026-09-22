@@ -69,6 +69,9 @@ function App() {
   const navGenRef = useRef(0);
   const readyGenRef = useRef(0);
   const settingsGenRef = useRef(0);
+  /** Bumped per onKeysChanged so overlapping key syncs don't retarget with a stale ready list. */
+  const keysSyncGenRef = useRef(0);
+  const keysSyncTailRef = useRef(Promise.resolve());
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -592,56 +595,67 @@ function App() {
                 void refreshChats();
               }}
               onKeysChanged={() => {
-                void (async () => {
-                  const gen = settingsGenRef.current;
-                  // Probe here — not via refreshReadyKeys — so a ModelPicker
-                  // onReady cannot cancel this sync by bumping readyGen.
-                  const { ready, ok } = await listReadyProviders();
-                  if (gen !== settingsGenRef.current) return;
-                  readyGenRef.current += 1;
-                  if (!ok) {
-                    setReadyProviders(null);
-                    return;
-                  }
-                  setReadyProviders(ready);
-                  const s = await getSettings();
-                  if (gen !== settingsGenRef.current) return;
-                  const picked = pickDefaultModel(ready, {
-                    provider: s.default_provider,
-                    modelId: s.default_model,
-                  });
-                  const next = picked
-                    ? await persistDefaults(picked, s, gen)
-                    : s;
-                  if (gen !== settingsGenRef.current) return;
-                  setSettings(next);
-                  const alignTo = pickDefaultModel(ready, {
-                    provider: next.default_provider,
-                    modelId: next.default_model,
-                  });
-                  const id = activeIdRef.current;
-                  if (!id) return;
-                  const chat = await getChat(id);
-                  if (
-                    chat &&
-                    activeIdRef.current === id &&
-                    isEmptyNewChat(chat)
-                  ) {
-                    const navGen = navGenRef.current;
-                    setNavBusy(true);
-                    try {
-                      const aligned = await alignEmptyChat(chat, alignTo);
-                      if (activeIdRef.current === aligned.id) {
-                        setActive(aligned);
-                        if (aligned !== chat) await refreshChats();
-                      }
-                    } finally {
-                      if (navGen === navGenRef.current) {
-                        setNavBusy(false);
+                const gen = ++keysSyncGenRef.current;
+                const settingsGen = settingsGenRef.current;
+                // Serialize + skip stale gens so an older alignEmptyChat cannot
+                // finish after a newer key clear and retarget to a removed provider.
+                keysSyncTailRef.current = keysSyncTailRef.current
+                  .catch(() => undefined)
+                  .then(async () => {
+                    if (gen !== keysSyncGenRef.current) return;
+                    // Probe here — not via refreshReadyKeys — so a ModelPicker
+                    // onReady cannot cancel this sync by bumping readyGen.
+                    const { ready, ok } = await listReadyProviders();
+                    if (gen !== keysSyncGenRef.current) return;
+                    readyGenRef.current += 1;
+                    if (!ok) {
+                      setReadyProviders(null);
+                      return;
+                    }
+                    setReadyProviders(ready);
+                    const s = await getSettings();
+                    if (gen !== keysSyncGenRef.current) return;
+                    const picked = pickDefaultModel(ready, {
+                      provider: s.default_provider,
+                      modelId: s.default_model,
+                    });
+                    const next = picked
+                      ? await persistDefaults(picked, s, settingsGen)
+                      : s;
+                    if (gen !== keysSyncGenRef.current) return;
+                    setSettings(next);
+                    const alignTo = pickDefaultModel(ready, {
+                      provider: next.default_provider,
+                      modelId: next.default_model,
+                    });
+                    const id = activeIdRef.current;
+                    if (!id) return;
+                    const chat = await getChat(id);
+                    if (gen !== keysSyncGenRef.current) return;
+                    if (
+                      chat &&
+                      activeIdRef.current === id &&
+                      isEmptyNewChat(chat)
+                    ) {
+                      const navGen = navGenRef.current;
+                      setNavBusy(true);
+                      try {
+                        const aligned = await alignEmptyChat(chat, alignTo);
+                        if (gen !== keysSyncGenRef.current) return;
+                        if (activeIdRef.current === aligned.id) {
+                          setActive(aligned);
+                          if (aligned !== chat) await refreshChats();
+                        }
+                      } finally {
+                        if (
+                          gen === keysSyncGenRef.current &&
+                          navGen === navGenRef.current
+                        ) {
+                          setNavBusy(false);
+                        }
                       }
                     }
-                  }
-                })();
+                  });
               }}
               onNotify={notify}
               onUpdateFound={adoptUpdate}

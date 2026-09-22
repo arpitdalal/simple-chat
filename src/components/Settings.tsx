@@ -71,6 +71,8 @@ export function Settings({
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
   const persistGenRef = useRef(0);
+  /** True when Defaults picker / syncDefaults intentionally changed provider+model. */
+  const defaultsDirtyRef = useRef(false);
   const recordingRef = useRef(false);
   /** Bumped on key save/clear / unmount so a late probe cannot overwrite hasKey. */
   const keyProbeGenRef = useRef(0);
@@ -369,6 +371,12 @@ export function Settings({
   }
 
   function patch(partial: Partial<AppSettings>) {
+    if (
+      partial.default_provider !== undefined ||
+      partial.default_model !== undefined
+    ) {
+      defaultsDirtyRef.current = true;
+    }
     setSettings((prev) => {
       if (!prev) return prev;
       const next = { ...prev, ...partial };
@@ -442,12 +450,25 @@ export function Settings({
     await setSetting("resume_minutes", s.resume_minutes);
     await setSetting("always_on_top", s.always_on_top);
     await setSetting("show_tray", s.show_tray);
-    await setDefaultModel(s.default_provider, s.default_model);
+    // Skip defaults unless the Defaults UI dirtied them — a debounced flush of
+    // unrelated edits must not restore pre-key-change provider/model over App sync.
+    let default_provider = s.default_provider;
+    let default_model = s.default_model;
+    if (defaultsDirtyRef.current) {
+      const saved = await setDefaultModel(s.default_provider, s.default_model);
+      default_provider = saved.default_provider;
+      default_model = saved.default_model;
+      if (gen === persistGenRef.current) defaultsDirtyRef.current = false;
+    } else {
+      const live = await getSettings();
+      default_provider = live.default_provider;
+      default_model = live.default_model;
+    }
     await setSetting("web_search", true);
     await setSetting("hotkey", hotkey);
     if (gen !== persistGenRef.current) return;
     await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
-    onSaved({ ...s, hotkey });
+    onSaved({ ...s, hotkey, default_provider, default_model });
     setStatus(hotkeyOk ? "Saved" : "Saved (hotkey unchanged)");
   }
 

@@ -25,7 +25,7 @@ import type { ProviderId } from "./lib/models";
 import { pickDefaultModel } from "./lib/models";
 import { listReadyProviders } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
-import { isEmptyNewChat } from "./lib/chats";
+import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -55,7 +55,7 @@ function App() {
   const [readyProviders, setReadyProviders] = useState<ProviderId[] | null>(
     null,
   );
-  /** True while newChat awaits key probes / create — blocks send on old thread. */
+  /** True while newChat / key-align hold a nav lock — blocks send on old thread. */
   const [navBusy, setNavBusy] = useState(false);
 
   /** Currently offered update; dismiss before replace. */
@@ -72,6 +72,25 @@ function App() {
   /** Bumped per onKeysChanged so overlapping key syncs don't retarget with a stale ready list. */
   const keysSyncGenRef = useRef(0);
   const keysSyncTailRef = useRef(Promise.resolve());
+  /** Ref-count so newChat and key-align can overlap without clearing each other's lock. */
+  const navLockRef = useRef(0);
+
+  function acquireNavLock(): () => void {
+    navLockRef.current += 1;
+    setNavBusy(true);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      navLockRef.current = Math.max(0, navLockRef.current - 1);
+      if (navLockRef.current === 0) setNavBusy(false);
+    };
+  }
+
+  function resetNavLock() {
+    navLockRef.current = 0;
+    setNavBusy(false);
+  }
 
   const refreshChats = useCallback(async () => {
     setChats(await listChats());
@@ -128,8 +147,11 @@ function App() {
     async (
       chat: Chat,
       picked: { provider: ProviderId; modelId: string } | null,
+      ready: readonly ProviderId[],
     ): Promise<Chat> => {
       if (!picked || !isEmptyNewChat(chat)) return chat;
+      // Keep an explicit model pick when that provider is still keyed.
+      if (!emptyChatNeedsRetarget(chat, ready)) return chat;
       if ((await messageCount(chat.id)) !== 0) return chat;
       if (
         chat.provider === picked.provider &&
@@ -166,7 +188,7 @@ function App() {
 
   const openSettings = useCallback(() => {
     navGenRef.current += 1;
-    setNavBusy(false);
+    resetNavLock();
     setShowSettings(true);
   }, []);
 
@@ -180,7 +202,7 @@ function App() {
   const selectChat = useCallback(
     async (id: string) => {
       navGenRef.current += 1;
-      setNavBusy(false);
+      resetNavLock();
       setShowSettings(false);
       if (activeId === id) {
         focusComposer();
@@ -202,7 +224,7 @@ function App() {
   const newChat = useCallback(async () => {
     if (!settings) return;
     const gen = ++navGenRef.current;
-    setNavBusy(true);
+    const releaseNav = acquireNavLock();
     try {
       // Probe directly — refreshReadyKeys shares readyGen with onProvidersReady,
       // so a ModelPicker mount probe would cancel New Chat mid-flight.
@@ -234,7 +256,7 @@ function App() {
 
       const existing = chats.find(isEmptyNewChat);
       if (existing) {
-        const aligned = await alignEmptyChat(existing, alignTo);
+        const aligned = await alignEmptyChat(existing, alignTo, readyList);
         if (gen !== navGenRef.current) return;
         setActiveId(aligned.id);
         setActive(aligned);
@@ -244,7 +266,7 @@ function App() {
         return;
       }
       if (active && isEmptyNewChat(active)) {
-        const aligned = await alignEmptyChat(active, alignTo);
+        const aligned = await alignEmptyChat(active, alignTo, readyList);
         if (gen !== navGenRef.current) return;
         if (aligned !== active) {
           setActive(aligned);
@@ -267,7 +289,7 @@ function App() {
       await refreshChats();
       focusComposer();
     } finally {
-      if (gen === navGenRef.current) setNavBusy(false);
+      releaseNav();
     }
   }, [
     settings,
@@ -334,7 +356,7 @@ function App() {
           provider: s.default_provider,
           modelId: s.default_model,
         });
-        chat = await alignEmptyChat(chat, alignTo);
+        chat = await alignEmptyChat(chat, alignTo, ready);
       }
       await setSetting("last_opened_at", Date.now());
       await setSetting("last_chat_id", chat.id);
@@ -453,7 +475,7 @@ function App() {
 
   async function handleDelete(id: string) {
     navGenRef.current += 1;
-    setNavBusy(false);
+    resetNavLock();
     await deleteChat(id);
     if (activeId === id) {
       const next = (await listChats())[0];
@@ -470,7 +492,7 @@ function App() {
 
   async function handleClear(id: string) {
     navGenRef.current += 1;
-    setNavBusy(false);
+    resetNavLock();
     await clearChatMessages(id);
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();
@@ -486,7 +508,7 @@ function App() {
   async function handleBranch(throughMessageId: string) {
     if (!activeId) return;
     navGenRef.current += 1;
-    setNavBusy(false);
+    resetNavLock();
     try {
       const branched = await branchChat(activeId, throughMessageId);
       setShowSettings(false);
@@ -637,22 +659,20 @@ function App() {
                       activeIdRef.current === id &&
                       isEmptyNewChat(chat)
                     ) {
-                      const navGen = navGenRef.current;
-                      setNavBusy(true);
+                      const releaseNav = acquireNavLock();
                       try {
-                        const aligned = await alignEmptyChat(chat, alignTo);
+                        const aligned = await alignEmptyChat(
+                          chat,
+                          alignTo,
+                          ready,
+                        );
                         if (gen !== keysSyncGenRef.current) return;
                         if (activeIdRef.current === aligned.id) {
                           setActive(aligned);
                           if (aligned !== chat) await refreshChats();
                         }
                       } finally {
-                        if (
-                          gen === keysSyncGenRef.current &&
-                          navGen === navGenRef.current
-                        ) {
-                          setNavBusy(false);
-                        }
+                        releaseNav();
                       }
                     }
                   });

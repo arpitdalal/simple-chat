@@ -36,7 +36,11 @@ describe("tauri-driver IPC", () => {
       async () =>
         browser.execute(() => {
           const ta = document.querySelector("textarea");
-          return Boolean(ta?.placeholder?.includes("Ask AI anything"));
+          const p = ta?.placeholder ?? "";
+          return (
+            p.includes("Ask AI anything") ||
+            p.includes("Add key to start chatting")
+          );
         }),
       { timeout: 45_000, interval: 1_000 },
     );

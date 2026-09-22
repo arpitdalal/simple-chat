@@ -49,8 +49,10 @@ function App() {
   const [updating, setUpdating] = useState(false);
   /** Install succeeded; only quit/reopen left — do not re-offer Install. */
   const [restartRequired, setRestartRequired] = useState(false);
-  /** null = not probed yet; false = no usable keys. */
-  const [hasAnyKey, setHasAnyKey] = useState<boolean | null>(null);
+  /** null = not probed yet. */
+  const [readyProviders, setReadyProviders] = useState<ProviderId[] | null>(
+    null,
+  );
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -121,7 +123,7 @@ function App() {
 
   const refreshReadyKeys = useCallback(async () => {
     const ready = await listReadyProviders();
-    setHasAnyKey(ready.length > 0);
+    setReadyProviders(ready);
     return ready;
   }, []);
 
@@ -523,7 +525,16 @@ function App() {
             onBranch={handleBranch}
             onNotify={notify}
             focusNonce={composerFocus}
-            hasAnyKey={hasAnyKey}
+            hasProviderKey={
+              readyProviders === null
+                ? null
+                : active
+                  ? readyProviders.includes(active.provider as ProviderId)
+                  : readyProviders.length > 0
+            }
+            noKeysConfigured={
+              readyProviders !== null && readyProviders.length === 0
+            }
             onNeedKey={() => setShowSettings(true)}
           />
         )}

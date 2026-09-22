@@ -45,8 +45,10 @@ type Props = {
   onBranch: (throughMessageId: string) => Promise<void>;
   onNotify: (text: string, kind?: ToastKind) => void;
   focusNonce: number;
-  /** False once probed with no usable API keys — disables composer. */
-  hasAnyKey?: boolean | null;
+  /** False once probed and this chat's provider has no usable key. */
+  hasProviderKey?: boolean | null;
+  /** True when probe finished and no provider has a key. */
+  noKeysConfigured?: boolean;
   onNeedKey?: () => void;
 };
 
@@ -58,7 +60,8 @@ export function ChatView({
   onBranch,
   onNotify,
   focusNonce,
-  hasAnyKey = true,
+  hasProviderKey = true,
+  noKeysConfigured = false,
   onNeedKey,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -88,7 +91,8 @@ export function ChatView({
   messagesRef.current = messages;
   imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
-  const noKey = hasAnyKey === false;
+  const blocked = hasProviderKey === false;
+  const setupNeeded = noKeysConfigured;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
 
@@ -720,11 +724,17 @@ export function ChatView({
             <button
               type="button"
               className="icon-btn"
-              onClick={() =>
-                noKey ? onNeedKey?.() : fileRef.current?.click()
+              onClick={() => {
+                if (setupNeeded) onNeedKey?.();
+                else if (!blocked) fileRef.current?.click();
+              }}
+              title={
+                setupNeeded
+                  ? "Add an API key in Settings"
+                  : blocked
+                    ? "Select a keyed model"
+                    : "Attach image"
               }
-              title={noKey ? "Add an API key in Settings" : "Attach image"}
-              disabled={noKey}
             >
               +
             </button>
@@ -740,19 +750,23 @@ export function ChatView({
               ref={inputRef}
               value={input}
               placeholder={
-                noKey ? "Add key to start chatting" : "Ask AI anything…"
+                setupNeeded
+                  ? "Add key to start chatting"
+                  : blocked
+                    ? "Select a model to chat"
+                    : "Ask AI anything…"
               }
               rows={MIN_LINES}
-              readOnly={noKey}
+              readOnly={blocked}
               onChange={(e) => setInput(e.target.value)}
-              onPaste={noKey ? undefined : onPaste}
+              onPaste={blocked ? undefined : onPaste}
               onClick={() => {
-                if (noKey) onNeedKey?.();
+                if (setupNeeded) onNeedKey?.();
               }}
               onKeyDown={(e) => {
-                if (noKey) {
+                if (blocked) {
                   e.preventDefault();
-                  onNeedKey?.();
+                  if (setupNeeded) onNeedKey?.();
                   return;
                 }
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -787,7 +801,13 @@ export function ChatView({
                 Stop
               </button>
             ) : (
-              <span>{noKey ? "Add key to start" : "Submit ↵"}</span>
+              <span>
+                {setupNeeded
+                  ? "Add key to start"
+                  : blocked
+                    ? "Select a model"
+                    : "Submit ↵"}
+              </span>
             )}
           </div>
         </div>

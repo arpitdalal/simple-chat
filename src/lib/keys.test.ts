@@ -56,12 +56,37 @@ describe("keys client", () => {
     expect(await listReadyProviders()).toEqual({
       ready: ["anthropic"],
       ok: true,
+      error: "locked",
     });
   });
 
   it("listReadyProviders ok:false when every probe throws", async () => {
     invoke.mockRejectedValue(new Error("locked"));
-    expect(await listReadyProviders()).toEqual({ ready: [], ok: false });
+    expect(await listReadyProviders()).toEqual({
+      ready: [],
+      ok: false,
+      error: "locked",
+    });
+  });
+
+  it("listReadyProviders waits for an in-flight setApiKey", async () => {
+    const order: string[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "set_api_key") {
+        order.push("set:start");
+        await new Promise((r) => setTimeout(r, 30));
+        order.push("set:end");
+        return;
+      }
+      order.push("has");
+      return true;
+    });
+    const save = setApiKey("openai", "sk");
+    const list = listReadyProviders();
+    await Promise.all([save, list]);
+    expect(order[0]).toBe("set:start");
+    expect(order[1]).toBe("set:end");
+    expect(order.slice(2).every((x) => x === "has")).toBe(true);
   });
 
   it("keyErrorMessage reads Error, string, and other", () => {

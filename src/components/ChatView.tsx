@@ -797,6 +797,7 @@ export function ChatView({
                 provider={chat.provider}
                 modelId={chat.model_id}
                 disabled={showStream || sendLocked}
+                knownNoKeys={noKeysConfigured}
                 onChange={(p, m) => void changeModel(p, m)}
                 onNeedKey={onNeedKey}
                 onReady={onProvidersReady}

@@ -8,7 +8,7 @@ export function keyErrorMessage(err: unknown): string {
   return String(err);
 }
 
-/** Serialize all keychain mutations so Settings probes cannot race mid-flight writes. */
+/** Serialize keychain reads/writes so probes cannot race mid-flight mutations. */
 let keyOpTail: Promise<unknown> = Promise.resolve();
 
 function runKeyOp<T>(op: () => Promise<T>): Promise<T> {
@@ -30,25 +30,30 @@ export function getApiKey(provider: ProviderId) {
 }
 
 export function hasApiKey(provider: ProviderId) {
-  return invoke<boolean>("has_api_key", { provider });
+  return runKeyOp(() => invoke<boolean>("has_api_key", { provider }));
 }
 
 /** Providers with a readable key.
- * `ok:false` when every probe threw (store locked) — callers should keep unknown state. */
+ * `ok:false` when every probe threw (store locked) — callers should keep unknown state.
+ * Uses direct invoke inside one queue slot (do not call hasApiKey here — nested deadlock). */
 export async function listReadyProviders(): Promise<{
   ready: ProviderId[];
   ok: boolean;
+  error?: string;
 }> {
-  const ready: ProviderId[] = [];
-  let ok = false;
-  for (const p of PROVIDERS) {
-    try {
-      const has = await hasApiKey(p);
-      ok = true;
-      if (has) ready.push(p);
-    } catch {
-      /* unreadable / probe failure — not ready for chat */
+  return runKeyOp(async () => {
+    const ready: ProviderId[] = [];
+    let ok = false;
+    let error: string | undefined;
+    for (const p of PROVIDERS) {
+      try {
+        const has = await invoke<boolean>("has_api_key", { provider: p });
+        ok = true;
+        if (has) ready.push(p);
+      } catch (err) {
+        error = keyErrorMessage(err);
+      }
     }
-  }
-  return { ready, ok };
+    return ok ? { ready, ok, ...(error ? { error } : {}) } : { ready, ok, error };
+  });
 }

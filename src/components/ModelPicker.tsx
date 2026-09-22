@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { hasApiKey, keyErrorMessage } from "../lib/keys";
+import { listReadyProviders } from "../lib/keys";
 import {
   CATALOG,
   PROVIDER_LABELS,
-  PROVIDERS,
   resolveModel,
   type ModelDef,
   type ProviderId,
@@ -16,6 +15,8 @@ type Props = {
   onChange: (provider: ProviderId, modelId: string) => void;
   disabled?: boolean;
   refreshKey?: number;
+  /** App already knows zero keys — show empty CTA before local probe finishes. */
+  knownNoKeys?: boolean;
   /** When no providers have keys, trigger opens Settings instead of the menu. */
   onNeedKey?: () => void;
   /** Fired after a successful probe finds (or clears) usable providers. */
@@ -28,6 +29,7 @@ export function ModelPicker({
   onChange,
   disabled,
   refreshKey = 0,
+  knownNoKeys = false,
   onNeedKey,
   onReady,
 }: Props) {
@@ -65,21 +67,10 @@ export function ModelPicker({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const next: ProviderId[] = [];
-      let errMsg = "";
-      let anyOk = false;
-      for (const p of PROVIDERS) {
-        try {
-          const has = await hasApiKey(p);
-          anyOk = true;
-          if (has) next.push(p);
-        } catch (err) {
-          errMsg = keyErrorMessage(err);
-        }
-      }
+      const { ready: next, ok, error } = await listReadyProviders();
       if (cancelled) return;
-      setProbeError(errMsg);
-      if (!anyOk) {
+      setProbeError(error ?? "");
+      if (!ok) {
         // Store locked — keep prior label; menu still opens to retry.
         return;
       }
@@ -159,10 +150,13 @@ export function ModelPicker({
 
   const keyed = ready.includes(provider as ProviderId);
   const current = keyed ? resolveModel(provider, modelId) : null;
-  const triggerLabel = !probed
-    ? resolveModel(provider, modelId).label
-    : current?.label ??
-      (ready.length === 0 ? "Add API key" : "Select model");
+  const showEmptyCta =
+    knownNoKeys || (probed && ready.length === 0 && !probeError);
+  const triggerLabel = showEmptyCta
+    ? "Add API key"
+    : !probed
+      ? resolveModel(provider, modelId).label
+      : (current?.label ?? "Select model");
 
   function pick(m: ModelDef) {
     onChange(m.provider, m.id);
@@ -171,7 +165,7 @@ export function ModelPicker({
 
   function toggle() {
     if (disabled) return;
-    if (probed && ready.length === 0 && onNeedKey) {
+    if (showEmptyCta && onNeedKey) {
       onNeedKey();
       return;
     }
@@ -195,9 +189,7 @@ export function ModelPicker({
         disabled={disabled}
         onClick={toggle}
         title={
-          probed && ready.length === 0
-            ? "Add an API key in Settings"
-            : "Select model"
+          showEmptyCta ? "Add an API key in Settings" : "Select model"
         }
         aria-haspopup="listbox"
         aria-expanded={open}

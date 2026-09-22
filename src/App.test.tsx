@@ -188,6 +188,54 @@ describe("App UX", () => {
     );
   });
 
+  it("retargets empty chat to a keyed provider on boot", async () => {
+    const { listReadyProviders } = await import("./lib/keys");
+    const { getSettings, updateChat, messageCount } = await import("./lib/db");
+    vi.mocked(listReadyProviders).mockResolvedValue({
+      ready: ["google"],
+      ok: true,
+    });
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "openai",
+      default_model: "gpt-5.6-luna",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+    });
+    const empty: Chat = {
+      id: "empty-openai",
+      title: "New Chat",
+      model_id: "gpt-5.6-luna",
+      provider: "openai",
+      created_at: 1,
+      updated_at: 1,
+      preview: "Ask AI anything…",
+      pinned: 0,
+    };
+    chatsStore.set([empty]);
+    openOrCreateChat.mockResolvedValueOnce(empty);
+    vi.mocked(messageCount).mockResolvedValue(0);
+    vi.mocked(updateChat).mockImplementation(async (id, patch) => {
+      const cur = chatsStore.get().find((c) => c.id === id);
+      if (!cur) return;
+      chatsStore.set(
+        chatsStore.get().map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      );
+    });
+
+    render(<App />);
+    await waitFor(() =>
+      expect(updateChat).toHaveBeenCalledWith("empty-openai", {
+        provider: "google",
+        model_id: expect.stringMatching(/^gemini/),
+      }),
+    );
+  });
+
   it("discards empty New Chat when selecting another thread", async () => {
     const user = userEvent.setup();
     const kept: Chat = {

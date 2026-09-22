@@ -138,6 +138,28 @@ export function modelsForProvider(provider: string): ModelDef[] {
   return CATALOG.filter((m) => m.provider === provider);
 }
 
+/**
+ * Pick a chat default from providers that have usable keys.
+ * Keeps `current` when its provider is ready; else first catalog model of first ready provider.
+ */
+export function pickDefaultModel(
+  ready: ProviderId[],
+  current?: { provider: string; modelId: string },
+): { provider: ProviderId; modelId: string } | null {
+  if (ready.length === 0) return null;
+  if (current && ready.includes(current.provider as ProviderId)) {
+    return {
+      provider: current.provider as ProviderId,
+      modelId: current.modelId,
+    };
+  }
+  for (const provider of ready) {
+    const first = modelsForProvider(provider)[0];
+    if (first) return { provider, modelId: first.id };
+  }
+  return null;
+}
+
 export function resolveModel(
   provider: string,
   modelId: string,

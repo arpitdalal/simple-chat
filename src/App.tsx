@@ -20,6 +20,8 @@ import {
   type Chat,
 } from "./lib/db";
 import type { ProviderId } from "./lib/models";
+import { pickDefaultModel } from "./lib/models";
+import { listReadyProviders } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { isEmptyNewChat } from "./lib/chats";
 import {
@@ -47,6 +49,8 @@ function App() {
   const [updating, setUpdating] = useState(false);
   /** Install succeeded; only quit/reopen left — do not re-offer Install. */
   const [restartRequired, setRestartRequired] = useState(false);
+  /** null = not probed yet; false = no usable keys. */
+  const [hasAnyKey, setHasAnyKey] = useState<boolean | null>(null);
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -64,6 +68,61 @@ function App() {
 
   const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
     setToast({ text, kind });
+  }, []);
+
+  const persistDefaults = useCallback(
+    async (
+      picked: { provider: ProviderId; modelId: string },
+      current: AppSettings,
+    ): Promise<AppSettings> => {
+      if (
+        picked.provider === current.default_provider &&
+        picked.modelId === current.default_model
+      ) {
+        return current;
+      }
+      await setSetting("default_provider", picked.provider);
+      await setSetting("default_model", picked.modelId);
+      const next = {
+        ...current,
+        default_provider: picked.provider,
+        default_model: picked.modelId,
+      };
+      setSettings(next);
+      return next;
+    },
+    [],
+  );
+
+  const alignEmptyChat = useCallback(
+    async (
+      chat: Chat,
+      picked: { provider: ProviderId; modelId: string } | null,
+    ): Promise<Chat> => {
+      if (!picked || !isEmptyNewChat(chat)) return chat;
+      if (
+        chat.provider === picked.provider &&
+        chat.model_id === picked.modelId
+      ) {
+        return chat;
+      }
+      await updateChat(chat.id, {
+        provider: picked.provider,
+        model_id: picked.modelId,
+      });
+      return {
+        ...chat,
+        provider: picked.provider,
+        model_id: picked.modelId,
+      };
+    },
+    [],
+  );
+
+  const refreshReadyKeys = useCallback(async () => {
+    const ready = await listReadyProviders();
+    setHasAnyKey(ready.length > 0);
+    return ready;
   }, []);
 
   const selectChat = useCallback(
@@ -88,28 +147,53 @@ function App() {
 
   const newChat = useCallback(async () => {
     if (!settings) return;
+    const ready = await refreshReadyKeys();
+    const picked = pickDefaultModel(ready, {
+      provider: settings.default_provider,
+      modelId: settings.default_model,
+    });
+    const nextSettings = picked
+      ? await persistDefaults(picked, settings)
+      : settings;
+
     const existing = chats.find(isEmptyNewChat);
     if (existing) {
-      setActiveId(existing.id);
-      setActive(existing);
+      const aligned = await alignEmptyChat(existing, picked);
+      setActiveId(aligned.id);
+      setActive(aligned);
       setShowSettings(false);
+      if (aligned !== existing) await refreshChats();
       focusComposer();
       return;
     }
     if (active && isEmptyNewChat(active)) {
+      const aligned = await alignEmptyChat(active, picked);
+      if (aligned !== active) {
+        setActive(aligned);
+        await refreshChats();
+      }
       focusComposer();
       return;
     }
     const chat = await createChat(
-      settings.default_provider as ProviderId,
-      settings.default_model,
+      (picked?.provider ?? nextSettings.default_provider) as ProviderId,
+      picked?.modelId ?? nextSettings.default_model,
     );
     setActiveId(chat.id);
     setActive(chat);
     setShowSettings(false);
     await refreshChats();
     focusComposer();
-  }, [settings, chats, active, focusComposer, refreshChats]);
+  }, [
+    settings,
+    chats,
+    active,
+    focusComposer,
+    refreshChats,
+    refreshReadyKeys,
+    persistDefaults,
+    alignEmptyChat,
+  ]);
 
   useEffect(() => {
     pendingUpdateRef.current = pendingUpdate;
@@ -135,8 +219,15 @@ function App() {
 
   useEffect(() => {
     void (async () => {
-      const s = await getSettings();
+      let s = await getSettings();
+      const ready = await refreshReadyKeys();
+      const picked = pickDefaultModel(ready, {
+        provider: s.default_provider,
+        modelId: s.default_model,
+      });
+      if (picked) s = await persistDefaults(picked, s);
       setSettings(s);
+
       await getCurrentWindow().setAlwaysOnTop(s.always_on_top);
       try {
         await applyHotkey(s.hotkey);
@@ -149,7 +240,8 @@ function App() {
         );
       }
 
-      const chat = await openOrCreateChat(s);
+      let chat = await openOrCreateChat(s);
+      chat = await alignEmptyChat(chat, picked);
       await setSetting("last_opened_at", Date.now());
       await setSetting("last_chat_id", chat.id);
       setActiveId(chat.id);
@@ -171,7 +263,14 @@ function App() {
       pendingUpdateRef.current?.dismiss();
       pendingUpdateRef.current = null;
     };
-  }, [refreshChats, focusComposer, notify]);
+  }, [
+    refreshChats,
+    focusComposer,
+    notify,
+    refreshReadyKeys,
+    persistDefaults,
+    alignEmptyChat,
+  ]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -391,6 +490,25 @@ function App() {
                 setSettings(s);
                 void refreshChats();
               }}
+              onKeysChanged={() => {
+                void (async () => {
+                  const ready = await refreshReadyKeys();
+                  const s = settings ?? (await getSettings());
+                  const picked = pickDefaultModel(ready, {
+                    provider: s.default_provider,
+                    modelId: s.default_model,
+                  });
+                  const next = picked
+                    ? await persistDefaults(picked, s)
+                    : s;
+                  if (active && isEmptyNewChat(active)) {
+                    const aligned = await alignEmptyChat(active, picked);
+                    setActive(aligned);
+                    if (aligned !== active) await refreshChats();
+                  }
+                  setSettings(next);
+                })();
+              }}
               onNotify={notify}
               onUpdateFound={adoptUpdate}
               updateLocked={updating || restartRequired}
@@ -405,6 +523,8 @@ function App() {
             onBranch={handleBranch}
             onNotify={notify}
             focusNonce={composerFocus}
+            hasAnyKey={hasAnyKey}
+            onNeedKey={() => setShowSettings(true)}
           />
         )}
       </div>

@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...a: unknown[]) => invoke(...a),
 }));
 
-import { clearApiKey, getApiKey, hasApiKey, keyErrorMessage, setApiKey } from "./keys";
+import { clearApiKey, getApiKey, hasApiKey, keyErrorMessage, listReadyProviders, setApiKey } from "./keys";
 
 describe("keys client", () => {
   beforeEach(() => {
@@ -35,6 +35,22 @@ describe("keys client", () => {
     expect(await getApiKey("google")).toBe("secret");
     invoke.mockResolvedValueOnce(true);
     expect(await hasApiKey("google")).toBe(true);
+  });
+
+  it("listReadyProviders returns only providers with keys", async () => {
+    invoke.mockImplementation(async (cmd: string, args: { provider: string }) => {
+      if (cmd !== "has_api_key") return undefined;
+      return args.provider === "google";
+    });
+    expect(await listReadyProviders()).toEqual(["google"]);
+  });
+
+  it("listReadyProviders skips providers that throw", async () => {
+    invoke.mockImplementation(async (_cmd: string, args: { provider: string }) => {
+      if (args.provider === "openai") throw new Error("locked");
+      return args.provider === "anthropic";
+    });
+    expect(await listReadyProviders()).toEqual(["anthropic"]);
   });
 
   it("keyErrorMessage reads Error, string, and other", () => {

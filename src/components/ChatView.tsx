@@ -45,6 +45,9 @@ type Props = {
   onBranch: (throughMessageId: string) => Promise<void>;
   onNotify: (text: string, kind?: ToastKind) => void;
   focusNonce: number;
+  /** False once probed with no usable API keys — disables composer. */
+  hasAnyKey?: boolean | null;
+  onNeedKey?: () => void;
 };
 
 export function ChatView({
@@ -55,6 +58,8 @@ export function ChatView({
   onBranch,
   onNotify,
   focusNonce,
+  hasAnyKey = true,
+  onNeedKey,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -83,6 +88,7 @@ export function ChatView({
   messagesRef.current = messages;
   imagesRef.current = images;
   const showStream = busy && streamOwnerRef.current === chat?.id;
+  const noKey = hasAnyKey === false;
 
   const rowCount = messages.length + (showStream ? 1 : 0);
 
@@ -714,8 +720,11 @@ export function ChatView({
             <button
               type="button"
               className="icon-btn"
-              onClick={() => fileRef.current?.click()}
-              title="Attach image"
+              onClick={() =>
+                noKey ? onNeedKey?.() : fileRef.current?.click()
+              }
+              title={noKey ? "Add an API key in Settings" : "Attach image"}
+              disabled={noKey}
             >
               +
             </button>
@@ -730,11 +739,22 @@ export function ChatView({
             <textarea
               ref={inputRef}
               value={input}
-              placeholder="Ask AI anything…"
+              placeholder={
+                noKey ? "Add key to start chatting" : "Ask AI anything…"
+              }
               rows={MIN_LINES}
+              readOnly={noKey}
               onChange={(e) => setInput(e.target.value)}
-              onPaste={onPaste}
+              onPaste={noKey ? undefined : onPaste}
+              onClick={() => {
+                if (noKey) onNeedKey?.();
+              }}
               onKeyDown={(e) => {
+                if (noKey) {
+                  e.preventDefault();
+                  onNeedKey?.();
+                  return;
+                }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void send();
@@ -751,6 +771,7 @@ export function ChatView({
                 modelId={chat.model_id}
                 disabled={showStream}
                 onChange={(p, m) => void changeModel(p, m)}
+                onNeedKey={onNeedKey}
               />
             ) : (
               <span className="model-label">{model?.label ?? "—"}</span>
@@ -766,7 +787,7 @@ export function ChatView({
                 Stop
               </button>
             ) : (
-              <span>Submit ↵</span>
+              <span>{noKey ? "Add key to start" : "Submit ↵"}</span>
             )}
           </div>
         </div>

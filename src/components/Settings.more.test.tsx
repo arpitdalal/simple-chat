@@ -18,6 +18,17 @@ let focusHandler: ((e: { payload: boolean }) => void) | null = null;
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
+  listReadyProviders: async () => {
+    const ready: string[] = [];
+    for (const p of ["openai", "anthropic", "google"] as const) {
+      try {
+        if (await hasApiKey(p)) ready.push(p);
+      } catch {
+        /* skip */
+      }
+    }
+    return ready;
+  },
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
   keyErrorMessage: (err: unknown) =>
@@ -387,6 +398,38 @@ describe("Settings behaviors", () => {
     await user.type(inputs[0], "sk-test");
     await user.tab();
     await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+  });
+
+  it("shifts default model to the provider of a newly saved key", async () => {
+    const user = userEvent.setup();
+    getSettings.mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "openai",
+      default_model: "gpt-5.6-luna",
+      last_opened_at: 0,
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+    });
+    hasApiKey.mockResolvedValue(false);
+    setApiKey.mockImplementation(async () => {
+      hasApiKey.mockImplementation(async (p: string) => p === "google");
+    });
+    render(<Settings onClose={vi.fn()} onSaved={onSaved} />);
+    const inputs = await screen.findAllByPlaceholderText("Paste key");
+    // openai, anthropic, google
+    await user.type(inputs[2], "AIza-test");
+    await user.tab();
+    await waitFor(() => expect(setApiKey).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith("default_provider", "google"),
+    );
+    expect(setSetting).toHaveBeenCalledWith(
+      "default_model",
+      "gemini-3.8-flash",
+    );
   });
 
   it("updates resume minutes", async () => {

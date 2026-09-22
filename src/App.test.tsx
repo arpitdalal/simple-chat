@@ -61,6 +61,7 @@ vi.mock("./lib/updater", () => ({
 
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
+  listReadyProviders: vi.fn(async () => ["google"]),
   setApiKey: vi.fn(),
   clearApiKey: vi.fn(),
   getApiKey: vi.fn(async () => "test-key"),
@@ -123,10 +124,12 @@ import App from "./App";
 import { applyHotkey } from "./lib/hotkey";
 
 describe("App UX", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     chatsStore.reset();
     vi.mocked(applyHotkey).mockReset();
     vi.mocked(applyHotkey).mockResolvedValue(undefined);
+    const { listReadyProviders } = await import("./lib/keys");
+    vi.mocked(listReadyProviders).mockResolvedValue(["google"]);
     openOrCreateChat.mockClear();
     openOrCreateChat.mockImplementation(async () => {
       if (chatsStore.get().length === 0) {
@@ -168,6 +171,17 @@ describe("App UX", () => {
     expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument();
     expect(screen.getByText("Simple Chat")).toBeInTheDocument();
     expect(screen.queryByText(/^Web$/)).toBeNull();
+  });
+
+  it("disables composer when no API keys are present", async () => {
+    const { listReadyProviders } = await import("./lib/keys");
+    vi.mocked(listReadyProviders).mockResolvedValue([]);
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        screen.getByPlaceholderText("Add key to start chatting"),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("discards empty New Chat when selecting another thread", async () => {

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ProviderId } from "./models";
+import { PROVIDERS, type ProviderId } from "./models";
 
 /** Extract a string from a Tauri/invoke rejection (Error, string, or other). */
 export function keyErrorMessage(err: unknown): string {
@@ -31,4 +31,17 @@ export function getApiKey(provider: ProviderId) {
 
 export function hasApiKey(provider: ProviderId) {
   return invoke<boolean>("has_api_key", { provider });
+}
+
+/** Providers with a readable key — skips keychain errors (not usable for chat). */
+export async function listReadyProviders(): Promise<ProviderId[]> {
+  const ready: ProviderId[] = [];
+  for (const p of PROVIDERS) {
+    try {
+      if (await hasApiKey(p)) ready.push(p);
+    } catch {
+      /* unreadable / probe failure — not ready for chat */
+    }
+  }
+  return ready;
 }

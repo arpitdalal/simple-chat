@@ -10,8 +10,9 @@ import {
   setApiKey,
   clearApiKey,
   keyErrorMessage,
+  listReadyProviders,
 } from "../lib/keys";
-import { PROVIDER_LABELS, PROVIDERS, type ProviderId } from "../lib/models";
+import { PROVIDER_LABELS, PROVIDERS, pickDefaultModel, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -33,6 +34,8 @@ type Props = {
   onUpdateFound?: (update: AvailableUpdate) => void;
   /** True while App is installing or needs manual restart. */
   updateLocked?: boolean;
+  /** After a key save/clear so App can retarget empty chats. */
+  onKeysChanged?: () => void;
 };
 
 export function Settings({
@@ -41,6 +44,7 @@ export function Settings({
   onNotify,
   onUpdateFound,
   updateLocked = false,
+  onKeysChanged,
 }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
@@ -83,7 +87,7 @@ export function Settings({
   async function probeKeys(
     gen: number,
     opts?: { notify?: boolean; retainError?: string },
-  ) {
+  ): Promise<Record<ProviderId, boolean> | null> {
     const hk: Record<ProviderId, boolean> = {
       openai: false,
       anthropic: false,
@@ -99,7 +103,7 @@ export function Settings({
         if (/unreadable|Clear the key/i.test(errMsg)) hk[p] = true;
       }
     }
-    if (!mountedRef.current || gen !== keyProbeGenRef.current) return;
+    if (!mountedRef.current || gen !== keyProbeGenRef.current) return null;
     setHasKey(hk);
     const displayErr = errMsg || opts?.retainError || "";
     if (displayErr) {
@@ -107,6 +111,29 @@ export function Settings({
       if (opts?.notify) onNotifyRef.current?.(displayErr, "err");
     } else {
       setKeyError("");
+    }
+    return hk;
+  }
+
+  /** Align default_provider/model with providers that have usable keys. */
+  async function syncDefaultsFromKeys() {
+    const s = settingsRef.current;
+    if (!s) return;
+    const ready = await listReadyProviders();
+    if (!mountedRef.current) return;
+    const picked = pickDefaultModel(ready, {
+      provider: s.default_provider,
+      modelId: s.default_model,
+    });
+    if (
+      picked &&
+      (picked.provider !== s.default_provider ||
+        picked.modelId !== s.default_model)
+    ) {
+      patch({
+        default_provider: picked.provider,
+        default_model: picked.modelId,
+      });
     }
   }
 
@@ -440,6 +467,8 @@ export function Settings({
       // cannot leave this provider stuck without Clear.
       const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
+      await syncDefaultsFromKeys();
+      onKeysChanged?.();
     } catch (err) {
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);
@@ -465,6 +494,8 @@ export function Settings({
       setStatus(`${PROVIDER_LABELS[provider]} key cleared`);
       const gen = ++keyProbeGenRef.current;
       await probeKeys(gen);
+      await syncDefaultsFromKeys();
+      onKeysChanged?.();
     } catch (err) {
       if (!mountedRef.current) return;
       const msg = keyErrorMessage(err);

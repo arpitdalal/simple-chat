@@ -134,4 +134,24 @@ describe("ModelPicker", () => {
     );
     expect(within(screen.getByRole("listbox")).getByText("Gemini 3.8 Flash")).toBeInTheDocument();
   });
+
+  it("shows Add API key and calls onNeedKey when no keys", async () => {
+    const user = userEvent.setup();
+    const onNeedKey = vi.fn();
+    hasApiKey.mockResolvedValue(false);
+    render(
+      <ModelPicker
+        provider="openai"
+        modelId="gpt-5.6-luna"
+        onChange={vi.fn()}
+        onNeedKey={onNeedKey}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /add api key/i })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: /add api key/i }));
+    expect(onNeedKey).toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
 });

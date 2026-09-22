@@ -13,6 +13,17 @@ const setAlwaysOnTop = vi.fn();
 
 vi.mock("../lib/keys", () => ({
   hasApiKey: (p: string) => hasApiKey(p),
+  listReadyProviders: async () => {
+    const ready: string[] = [];
+    for (const p of ["openai", "anthropic", "google"] as const) {
+      try {
+        if (await hasApiKey(p)) ready.push(p);
+      } catch {
+        /* skip */
+      }
+    }
+    return ready;
+  },
   setApiKey: (...a: unknown[]) => setApiKey(...a),
   clearApiKey: (...a: unknown[]) => clearApiKey(...a),
   keyErrorMessage: (err: unknown) =>

@@ -16,6 +16,8 @@ type Props = {
   onChange: (provider: ProviderId, modelId: string) => void;
   disabled?: boolean;
   refreshKey?: number;
+  /** When no providers have keys, trigger opens Settings instead of the menu. */
+  onNeedKey?: () => void;
 };
 
 export function ModelPicker({
@@ -24,9 +26,11 @@ export function ModelPicker({
   onChange,
   disabled,
   refreshKey = 0,
+  onNeedKey,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState<ProviderId[]>([]);
+  const [probed, setProbed] = useState(false);
   const [probeError, setProbeError] = useState("");
   const [query, setQuery] = useState("");
   const [hi, setHi] = useState(0);
@@ -68,6 +72,7 @@ export function ModelPicker({
       if (cancelled) return;
       setProbeError(errMsg);
       setReady(next);
+      setProbed(true);
     })();
     return () => {
       cancelled = true;
@@ -139,7 +144,12 @@ export function ModelPicker({
     };
   }, [open, onChange]);
 
-  const current = resolveModel(provider, modelId);
+  const keyed = ready.includes(provider as ProviderId);
+  const current = keyed ? resolveModel(provider, modelId) : null;
+  const triggerLabel = !probed
+    ? resolveModel(provider, modelId).label
+    : current?.label ??
+      (ready.length === 0 ? "Add API key" : "Select model");
 
   function pick(m: ModelDef) {
     onChange(m.provider, m.id);
@@ -148,6 +158,10 @@ export function ModelPicker({
 
   function toggle() {
     if (disabled) return;
+    if (probed && ready.length === 0 && onNeedKey) {
+      onNeedKey();
+      return;
+    }
     if (!open && btnRef.current) {
       const r = btnRef.current.getBoundingClientRect();
       setPos({
@@ -167,11 +181,15 @@ export function ModelPicker({
         className="model-trigger"
         disabled={disabled}
         onClick={toggle}
-        title="Select model"
+        title={
+          probed && ready.length === 0
+            ? "Add an API key in Settings"
+            : "Select model"
+        }
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="model-trigger-label">{current.label}</span>
+        <span className="model-trigger-label">{triggerLabel}</span>
         <span className="model-trigger-chevron" aria-hidden>
           ▾
         </span>

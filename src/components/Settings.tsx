@@ -442,7 +442,11 @@ export function Settings({
     if (!flushRef) return;
     flushRef.current = () => flushPendingSavesRef.current();
     return () => {
-      flushRef.current = null;
+      // Unmount queues bare persist(base) without awaiting it. Keep App’s
+      // drain pointed at that chain so New Chat can still wait for defaults.
+      flushRef.current = async () => {
+        await persistChainRef.current.catch(() => undefined);
+      };
     };
   }, [flushRef]);
 

@@ -71,6 +71,8 @@ function App() {
   const settingsGenRef = useRef(0);
   /** Bumped per onKeysChanged so overlapping key syncs don't retarget with a stale ready list. */
   const keysSyncGenRef = useRef(0);
+  /** True while a scheduled key sync owns work (or is waiting on the tail). */
+  const keysSyncActiveRef = useRef(false);
   const keysSyncTailRef = useRef(Promise.resolve());
   /** Ref-count so newChat and key-align can overlap without clearing each other's lock. */
   const navLockRef = useRef(0);
@@ -103,33 +105,40 @@ function App() {
   }
 
   /**
-   * Cancel in-flight newChat and any key-change sync, then schedule a full
-   * key sync. Cancelling alone leaves defaults un-persisted and the empty
-   * chat unaligned when navigation unmounts Settings mid-sync; re-running
-   * the sync (not just readiness) finishes that work under a fresh gen.
+   * Cancel in-flight newChat and any key-change sync. If a key sync was
+   * running, schedule a replacement under a fresh gen so defaults/align
+   * still finish after Settings unmounts mid-sync — ordinary sidebar
+   * navigation must not force a three-provider credential probe.
    */
   function cancelInFlightNav() {
     navGenRef.current += 1;
+    const needsResync = keysSyncActiveRef.current;
     keysSyncGenRef.current += 1;
     resetNavLock();
-    scheduleKeySync();
+    if (needsResync) {
+      scheduleKeySync();
+    }
   }
 
   /**
    * Probe readiness, retarget default provider/model if the key set changed,
    * and align the active empty chat — serialized behind keysSyncTailRef so
    * overlapping key mutations cannot retarget with a stale ready list.
+   * Acquires the nav lock before queueing so the composer stays locked for
+   * the entire gap between cancel and this sync’s first await.
    */
   function scheduleKeySync() {
+    keysSyncActiveRef.current = true;
     const gen = ++keysSyncGenRef.current;
     const settingsGen = settingsGenRef.current;
+    const releaseNav = acquireNavLock();
     keysSyncTailRef.current = keysSyncTailRef.current
       .catch(() => undefined)
       .then(async () => {
-        if (gen !== keysSyncGenRef.current) return;
-        // Hold the nav lock from before readiness is published so
-        // send/model changes cannot interleave with getChat + align.
-        const releaseNav = acquireNavLock();
+        if (gen !== keysSyncGenRef.current) {
+          releaseNav();
+          return;
+        }
         try {
           // Probe here — not via refreshReadyKeys — so a ModelPicker
           // onReady cannot cancel this sync by bumping readyGen.
@@ -165,8 +174,8 @@ function App() {
             activeIdRef.current === id &&
             isEmptyNewChat(chat)
           ) {
-            // Navigation may have dropped our lock — retake it so
-            // send/model changes cannot race alignEmptyChat.
+            // Outer lock may have been epoch-reset by navigation — retake
+            // so send/model changes cannot race alignEmptyChat.
             const releaseAlign = acquireNavLock();
             try {
               if (gen !== keysSyncGenRef.current) return;
@@ -187,6 +196,9 @@ function App() {
           }
         } finally {
           releaseNav();
+          if (gen === keysSyncGenRef.current) {
+            keysSyncActiveRef.current = false;
+          }
         }
       });
   }

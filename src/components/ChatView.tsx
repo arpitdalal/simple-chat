@@ -6,6 +6,7 @@ import type { ModelMessage } from "ai";
 import {
   addMessage,
   deleteMessagesAfter,
+  getChat,
   listMessages,
   listOlderMessages,
   listRecentMessages,
@@ -103,6 +104,8 @@ export function ChatView({
   const queuesRef = useRef(new Map<string, Queue>());
   /** Unpersisted optimistic user messages, re-attached on chat reload. */
   const pendingSendsRef = useRef(new Map<string, Message[]>());
+  /** Recently persisted rows per chat — merged back if a history load races. */
+  const localAddsRef = useRef(new Map<string, Message[]>());
   const messagesRef = useRef<Message[]>([]);
   const imagesRef = useRef<string[]>([]);
   /** In-flight FileReaders — composer not "empty" until they settle. */
@@ -133,6 +136,25 @@ export function ChatView({
 
   function isChatBusy(chatId: string): boolean {
     return streamsRef.current.has(chatId) || getChatQueue(chatId).isBusy();
+  }
+
+  /** Remember a row we wrote so a racing history load can merge it back. */
+  function noteLocalAdd(chatId: string, msg: Message) {
+    const list = localAddsRef.current.get(chatId) ?? [];
+    const next = [...list.filter((m) => m.id !== msg.id), msg].slice(-50);
+    localAddsRef.current.set(chatId, next);
+  }
+
+  /** page ∪ locally-written rows ∪ optimistic pending, ordered, de-duped. */
+  function mergeHistory(page: Message[], chatId: string): Message[] {
+    const pendingNow = pendingSendsRef.current.get(chatId) ?? [];
+    const locals = localAddsRef.current.get(chatId) ?? [];
+    const byId = new Map<string, Message>();
+    for (const m of page) byId.set(m.id, m);
+    for (const m of [...locals, ...pendingNow]) {
+      if (!byId.has(m.id)) byId.set(m.id, m);
+    }
+    return [...byId.values()].sort((a, b) => a.created_at - b.created_at);
   }
 
   /** Stream row sits after the user message it answers — not always at the end. */
@@ -178,14 +200,11 @@ export function ChatView({
       setViewingStream(null);
       setBusy(isChatBusy(chat.id));
     }
-    const pending = pendingSendsRef.current.get(chat.id) ?? [];
     void (async () => {
       const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
       if (cancelled) return;
-      // Re-read after await — sends may have landed while history loaded
-      const pendingNow = pendingSendsRef.current.get(chat.id) ?? pending;
-      // Keep optimistic user sends that have not hit the DB yet
-      setMessages([...page, ...pendingNow]);
+      // page ∪ writes that landed mid-flight ∪ still-optimistic sends
+      setMessages(mergeHistory(page, chat.id));
       setHasMore(page.length >= MESSAGE_PAGE);
       stickBottom.current = true;
       requestAnimationFrame(() => {
@@ -327,16 +346,21 @@ export function ChatView({
   ) {
     const chatId = chatSnap.id;
     const startGen = releaseGenRef.current;
-    const slot: StreamSlot = {
-      ac: new AbortController(),
-      anchor: anchorUserId,
-      text: "",
-    };
+    // Reuse an AbortController registered at send() paint time so Stop works
+    // during persist/title — not only after streamChat starts.
+    const prior = streamsRef.current.get(chatId);
+    const slot: StreamSlot = prior
+      ? { ac: prior.ac, anchor: anchorUserId, text: prior.text }
+      : {
+          ac: new AbortController(),
+          anchor: anchorUserId,
+          text: "",
+        };
     streamsRef.current.set(chatId, slot);
     if (viewingIdRef.current === chatId) {
       flushSync(() => {
         setBusy(true);
-        setViewingStream({ anchor: anchorUserId, text: "" });
+        setViewingStream({ anchor: anchorUserId, text: slot.text });
       });
     }
     stickBottom.current = true;
@@ -355,6 +379,7 @@ export function ChatView({
 
     const appendAssistant = async (full: string) => {
       const assistant = await addMessage(chatId, "assistant", full);
+      noteLocalAdd(chatId, assistant);
       if (viewingIdRef.current === chatId) {
         const limit =
           startGen !== releaseGenRef.current
@@ -484,9 +509,17 @@ export function ChatView({
     // Don't clobber an already-visible stream row with an empty anchor:
     // a second send while one streams only appends the user message below.
     const alreadyStreaming = streamsRef.current.has(chatId);
+    let ownsSlot = false;
     flushSync(() => {
       setBusy(true);
       if (!alreadyStreaming) {
+        // Register AC now so Stop can cancel before streamChat starts
+        streamsRef.current.set(chatId, {
+          ac: new AbortController(),
+          anchor: tempId,
+          text: "",
+        });
+        ownsSlot = true;
         setViewingStream({ anchor: tempId, text: "" });
       }
       setInput("");
@@ -515,8 +548,15 @@ export function ChatView({
     const sendGen = releaseGenRef.current;
     try {
       await getChatQueue(chatId).run(async () => {
+        // Stop clicked while this turn was still persisting / queued
+        if (streamsRef.current.get(chatId)?.ac.signal.aborted) {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          throw err;
+        }
         const userMsg = await addMessage(chatId, "user", displayText);
         userPersisted = true;
+        noteLocalAdd(chatId, userMsg);
         const pend = pendingSendsRef.current.get(chatId) ?? [];
         pendingSendsRef.current.set(
           chatId,
@@ -526,7 +566,10 @@ export function ChatView({
           setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
         }
 
-        if (chatSnap.title === "New Chat" && text) {
+        // Eligibility from live DB state — a prior queued turn may have
+        // already titled this chat after chatSnap was captured.
+        const live = await getChat(chatId);
+        if (live?.title === "New Chat" && text) {
           const provisional =
             text.slice(0, 48) + (text.length > 48 ? "…" : "");
           await updateChat(chatId, {
@@ -562,6 +605,10 @@ export function ChatView({
         chatId,
         pend.filter((m) => m.id !== tempId),
       );
+      // Placeholder slot never reached streamReply — drop it so busy can clear
+      if (ownsSlot && !reachedStream) {
+        streamsRef.current.delete(chatId);
+      }
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
         // Restore only if whole composer still empty — don't merge into a newer draft
@@ -608,6 +655,7 @@ export function ChatView({
     }
     const chatId = chat.id;
     const chatSnap = chat;
+    let reachedStream = false;
     try {
       await getChatQueue(chatId).run(async () => {
         const startGen = releaseGenRef.current;
@@ -630,15 +678,32 @@ export function ChatView({
             setMessages([...visible, ...pending]);
             if (visible.length < keep.length) setHasMore(true);
             setBusy(true);
+            // AC now so Stop works before streamChat starts
+            streamsRef.current.set(chatId, {
+              ac: new AbortController(),
+              anchor: userMessageId,
+              text: "",
+            });
             setViewingStream({ anchor: userMessageId, text: "" });
           }
         });
         if (viewing) stickBottom.current = true;
+        else {
+          streamsRef.current.set(chatId, {
+            ac: new AbortController(),
+            anchor: userMessageId,
+            text: "",
+          });
+        }
 
+        reachedStream = true;
         await streamReply(chatSnap, keep, userMessageId);
       });
-    } catch {
-      /* notified in streamReply */
+    } catch (e) {
+      // streamReply notifies for stream errors; only notify if we never got there
+      if ((e as Error).name !== "AbortError" && !reachedStream) {
+        onNotify((e as Error).message || String(e), "err");
+      }
     } finally {
       if (viewingIdRef.current === chatId) {
         if (!isChatBusy(chatId)) {
@@ -938,7 +1003,10 @@ export function ChatView({
                 type="button"
                 className="ghost"
                 onClick={() => {
-                  if (chat) streamsRef.current.get(chat.id)?.ac.abort();
+                  // Abort the in-flight AC; if only a queued turn painted a
+                  // placeholder slot, abort that too so the job exits early.
+                  const slot = chat && streamsRef.current.get(chat.id);
+                  slot?.ac.abort();
                 }}
               >
                 Stop

@@ -11,6 +11,7 @@ const listOlderMessages = vi.fn();
 const listMessages = vi.fn();
 const deleteMessagesAfter = vi.fn();
 const updateChat = vi.fn();
+const getChat = vi.fn();
 
 const hiddenListeners = vi.hoisted(() => new Set<() => void>());
 
@@ -51,6 +52,7 @@ vi.mock("../lib/db", () => ({
   listMessages: (...a: unknown[]) => listMessages(...a),
   deleteMessagesAfter: (...a: unknown[]) => deleteMessagesAfter(...a),
   updateChat: (...a: unknown[]) => updateChat(...a),
+  getChat: (...a: unknown[]) => getChat(...a),
 }));
 
 import { ChatView } from "./ChatView";
@@ -89,6 +91,12 @@ describe("ChatView", () => {
     ]);
     deleteMessagesAfter.mockResolvedValue(undefined);
     updateChat.mockResolvedValue(undefined);
+    getChat.mockImplementation(async (id: string) => ({
+      ...chat,
+      id,
+      title: "New Chat",
+      preview: "Ask AI anything…",
+    }));
     generateChatTitle.mockResolvedValue("Auto Title");
     addMessage.mockImplementation(async (chatId, role, content) => {
       const m = msg({ id: crypto.randomUUID(), chat_id: chatId, role, content });

@@ -623,6 +623,10 @@ h3 {
   background: #f8fbff;
 }
 
+.download-list a:focus-visible {
+  outline-offset: -3px;
+}
+
 .download-list strong,
 .download-list small {
   display: block;

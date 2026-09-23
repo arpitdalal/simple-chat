@@ -123,14 +123,17 @@ export function ChatView({
     Array<{ text: string; images: string[]; gen: number }>
   >([]);
   const [reloadTick, setReloadTick] = useState(0);
+  const lastClearedNonceRef = useRef(0);
 
   // External clear wipes DB rows — drop local mirrors or mergeHistory resurrects them.
+  // Process each nonce once; viewingIdRef is the live view (chat?.id in deps re-fires on switch).
   useEffect(() => {
-    if (!cleared?.nonce) return;
+    if (!cleared?.nonce || cleared.nonce === lastClearedNonceRef.current) return;
+    lastClearedNonceRef.current = cleared.nonce;
     localAddsRef.current.delete(cleared.chatId);
     pendingSendsRef.current.delete(cleared.chatId);
-    if (chat?.id === cleared.chatId) setReloadTick((t) => t + 1);
-  }, [cleared, chat?.id]);
+    if (viewingIdRef.current === cleared.chatId) setReloadTick((t) => t + 1);
+  }, [cleared]);
 
   viewingIdRef.current = chat?.id ?? null;
   messagesRef.current = messages;
@@ -794,6 +797,9 @@ export function ChatView({
           }
         }
 
+        // Kick title gen without blocking the stream; settle it after streamReply
+        // so a slow title call cannot hold the FIFO / delay first tokens.
+        let titlePromise: Promise<string> | undefined;
         if (freshChat.title === "New Chat" && text) {
           const provisional =
             text.slice(0, 48) + (text.length > 48 ? "…" : "");
@@ -809,27 +815,11 @@ export function ChatView({
             });
           }
           onChatUpdated();
-          // Await title gen here (abortable) so a hung call cannot sit in a
-          // detached FIFO op keeping Stop busy forever. Write stays in this
-          // same queue op — no second enqueue after Stop.
-          const title = await generateChatTitle(
+          titlePromise = generateChatTitle(
             chatSnap.provider as ProviderId,
             text,
             turnAc.signal,
           );
-          throwIfTurnAborted(turnAc);
-          await updateChat(chatId, { title });
-          // Re-read before meta so a delete in this window cannot re-activate
-          // a vanished chat via a stale snapshot fallback.
-          const titled = await getChat(chatId);
-          if (viewingIdRef.current === chatId && titled) {
-            onChatMeta({
-              ...titled,
-              title,
-              preview: text.slice(0, 120),
-            });
-          }
-          onChatUpdated();
         }
 
         // Bounded recent page (not full table) so each queued turn stays cheap.
@@ -838,13 +828,33 @@ export function ChatView({
           MAX_CACHED_MESSAGES,
         );
         reachedStream = true;
-        await streamReply(
-          chatSnap,
-          history,
-          userMsg.id,
-          userContent as never,
-          turnAc,
-        );
+        try {
+          await streamReply(
+            chatSnap,
+            history,
+            userMsg.id,
+            userContent as never,
+            turnAc,
+          );
+        } finally {
+          if (titlePromise) {
+            const title = await titlePromise;
+            // Honor cancellation / deletion before writing the real title.
+            throwIfTurnAborted(turnAc);
+            await updateChat(chatId, { title });
+            // Re-read before meta so a delete in this window cannot re-activate
+            // a vanished chat via a stale snapshot fallback.
+            const titled = await getChat(chatId);
+            if (viewingIdRef.current === chatId && titled) {
+              onChatMeta({
+                ...titled,
+                title,
+                preview: text.slice(0, 120),
+              });
+            }
+            onChatUpdated();
+          }
+        }
       });
     } catch (e) {
       dropPendingSend(chatId, tempId);
@@ -1085,9 +1095,9 @@ export function ChatView({
                           content={m!.content}
                           messageId={m!.id}
                           role={m!.role}
-                          canRegenerate={
-                            !blocked && chat ? !isChatBusy(chat.id) : !busy
-                          }
+                          canRegenerate={Boolean(
+                            !blocked && chat && !isChatBusy(chat.id),
+                          )}
                           onBranch={onBranch}
                           onRegenerate={(id) => void regenerate(id)}
                           onNotify={onNotify}

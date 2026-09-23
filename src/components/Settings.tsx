@@ -109,7 +109,9 @@ async function readRuntimeMetadata(): Promise<RuntimeMetadata> {
     platform,
     osVersion,
     architecture,
-    complete: Boolean(version && platform && osVersion && architecture),
+    complete: [version, platform, osVersion, architecture].every(
+      (value) => Boolean(value) && value.toLowerCase() !== "unknown",
+    ),
   };
 }
 

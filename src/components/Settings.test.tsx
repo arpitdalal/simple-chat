@@ -222,7 +222,7 @@ describe("Settings", () => {
   it("does not open an issue report with incomplete runtime metadata", async () => {
     const user = userEvent.setup();
     const onNotify = vi.fn();
-    runtimeMocks.getArchitecture.mockReturnValue("");
+    runtimeMocks.getOsVersion.mockReturnValue("Unknown");
     render(
       <Settings
         onClose={vi.fn()}

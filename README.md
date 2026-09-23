@@ -98,6 +98,20 @@ The packaged app lands under `apps/desktop/src-tauri/target/release/bundle/` (e.
 
 Unsigned local builds won’t auto-update from GitHub Releases. Signing/updater keys are only needed for official release artifacts.
 
+## Marketing site
+
+The static marketing site lives in `apps/website`. It is built with Astro, self-hosts Onest, and fetches release metadata only during the build:
+
+```bash
+pnpm --filter @simple-chat/website check
+RELEASE_TAG=v0.1.0 pnpm --filter @simple-chat/website build
+pnpm --filter @simple-chat/website test
+```
+
+`RELEASE_TAG` is required. The build fails unless that tag names a published, non-prerelease GitHub Release with both Apple Silicon and Intel DMGs. The resulting `apps/website/dist` has no JavaScript or runtime GitHub API dependency.
+
+Pull requests and pushes to `main` validate the site without deploying. Publishing a stable release builds from the released tag and deploys it to GitHub Pages. The `Website` workflow also accepts a required stable release tag for manual recovery deployments.
+
 ## Contributing
 
 Contributions are welcome — PRs, issues, ideas — but there’s no guarantee anything will be merged.

@@ -285,6 +285,29 @@ describe("Settings", () => {
     await waitFor(() => expect(box).toBeChecked());
   });
 
+  it("does not settle the first-run prompt when the flag write fails", async () => {
+    const user = userEvent.setup();
+    const onAutostartSettled = vi.fn();
+    const onNotify = vi.fn();
+    setSetting.mockRejectedValueOnce(new Error("db locked"));
+    render(
+      <Settings
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onAutostartSettled={onAutostartSettled}
+        onNotify={onNotify}
+      />,
+    );
+    const box = await screen.findByRole("checkbox", { name: /start on login/i });
+    await waitFor(() => expect(box).not.toBeDisabled());
+    await user.click(box);
+    await waitFor(() => expect(setAutostartEnabled).toHaveBeenCalledWith(true));
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith("db locked", "err"),
+    );
+    expect(onAutostartSettled).not.toHaveBeenCalled();
+  });
+
   it("retries login-item read after a failed probe", async () => {
     const user = userEvent.setup();
     isAutostartEnabled

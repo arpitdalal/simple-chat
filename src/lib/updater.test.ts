@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const check = vi.hoisted(() => vi.fn());
-const relaunch = vi.hoisted(() => vi.fn());
+const relaunchVisible = vi.hoisted(() => vi.fn());
 const downloadAndInstall = vi.hoisted(() => vi.fn());
 const close = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-updater", () => ({ check }));
-vi.mock("@tauri-apps/plugin-process", () => ({ relaunch }));
+vi.mock("./relaunch", () => ({ relaunchVisible }));
 
 import {
   checkForAppUpdate,
@@ -21,7 +21,7 @@ function fakeUpdate(version = "0.2.0") {
 describe("checkForAppUpdate", () => {
   beforeEach(() => {
     check.mockReset();
-    relaunch.mockReset();
+    relaunchVisible.mockReset();
     downloadAndInstall.mockReset();
     close.mockReset();
   });
@@ -51,7 +51,7 @@ describe("checkForAppUpdate", () => {
 
     await result.update.install();
     expect(downloadAndInstall).toHaveBeenCalledOnce();
-    expect(relaunch).toHaveBeenCalledOnce();
+    expect(relaunchVisible).toHaveBeenCalledOnce();
   });
 
   it("does not relaunch when downloadAndInstall rejects; closes Update", async () => {
@@ -61,13 +61,13 @@ describe("checkForAppUpdate", () => {
     if (result.status !== "available") throw new Error("expected available");
 
     await expect(result.update.install()).rejects.toThrow("dl failed");
-    expect(relaunch).not.toHaveBeenCalled();
+    expect(relaunchVisible).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
   });
 
   it("surfaces restart failure after successful install; closes Update", async () => {
     downloadAndInstall.mockResolvedValue(undefined);
-    relaunch.mockRejectedValue(new Error("nope"));
+    relaunchVisible.mockRejectedValue(new Error("nope"));
     check.mockResolvedValue(fakeUpdate());
     const result = await checkForAppUpdate();
     if (result.status !== "available") throw new Error("expected available");

@@ -70,6 +70,19 @@ where
     }
 }
 
+/// Drop `--autostart` so in-app restarts are user-visible, not login-item.
+fn argv_for_visible_relaunch<I, S>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .skip(1)
+        .filter(|a| a.as_ref() != "--autostart")
+        .map(|a| a.as_ref().to_string())
+        .collect()
+}
+
 #[tauri::command]
 fn capture_previous_app() {
     focus::capture_previous_app();
@@ -78,6 +91,59 @@ fn capture_previous_app() {
 #[tauri::command]
 fn hide_main_window_cmd(app: AppHandle) {
     hide_main_window(&app);
+}
+
+/// Start a waiter that execs `exe` only after this PID is gone.
+/// Failed spawn keeps the current process (and single-instance lock).
+fn spawn_successor(exe: std::path::PathBuf, args: Vec<String>) -> Result<(), String> {
+    let pid = std::process::id();
+    #[cfg(unix)]
+    {
+        use std::process::Stdio;
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.05; done; exe="$2"; shift 2; exec "$exe" "$@""#)
+            .arg("sc-relaunch")
+            .arg(pid.to_string())
+            .arg(exe)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Stdio;
+        let cmd = format!(
+            "while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 50 }}; $a = @(); if ($env:SC_ARGS) {{ $a = $env:SC_ARGS -split [char]0 }}; if ($a.Count) {{ Start-Process -FilePath $env:SC_EXE -ArgumentList $a }} else {{ Start-Process -FilePath $env:SC_EXE }}"
+        );
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &cmd])
+            .env("SC_EXE", exe)
+            .env("SC_ARGS", args.join("\0"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (pid, exe, args);
+        Err("relaunch unsupported on this platform".into())
+    }
+}
+
+#[tauri::command]
+fn relaunch_visible(app: AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    spawn_successor(exe, argv_for_visible_relaunch(std::env::args()))?;
+    app.exit(0);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -108,6 +174,7 @@ pub fn run() {
             keys::has_api_key,
             capture_previous_app,
             hide_main_window_cmd,
+            relaunch_visible,
         ]);
 
     // Before setup so on_webview_ready applies to the main webview (CI IPC e2e).
@@ -207,7 +274,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{args_include_autostart, should_show_on_user_launch};
+    use super::{
+        args_include_autostart, argv_for_visible_relaunch, should_show_on_user_launch,
+    };
 
     #[test]
     fn detects_autostart_flag() {
@@ -219,5 +288,17 @@ mod tests {
     fn user_launch_shows_except_login_item() {
         assert!(should_show_on_user_launch(["simple-chat"]));
         assert!(!should_show_on_user_launch(["simple-chat", "--autostart"]));
+    }
+
+    #[test]
+    fn visible_relaunch_drops_autostart_flag() {
+        assert_eq!(
+            argv_for_visible_relaunch(["simple-chat", "--autostart"]),
+            [] as [String; 0]
+        );
+        assert_eq!(
+            argv_for_visible_relaunch(["simple-chat", "--autostart", "--foo"]),
+            ["--foo"]
+        );
     }
 }

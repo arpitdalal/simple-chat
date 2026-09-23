@@ -810,6 +810,7 @@ export function Settings({
                         "Login item updated, but the prompt flag did not save.",
                       "err",
                     );
+                    return;
                   }
                   onAutostartSettledRef.current?.();
                   setStatus("Saved");

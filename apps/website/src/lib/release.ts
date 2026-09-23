@@ -1,10 +1,15 @@
+import { writeFile } from "node:fs/promises";
+
 export type ReleaseAsset = {
+  id: number;
   name: string;
   browser_download_url: string;
   size: number;
+  state: string;
 };
 
 export type GitHubRelease = {
+  id: number;
   tag_name: string;
   name: string | null;
   html_url: string;
@@ -21,7 +26,9 @@ export type ResolvedRelease = {
   intel: ReleaseAsset;
 };
 
-const repositoryUrl = "https://api.github.com/repos/arpitdalal/simple-chat/releases/tags";
+const repository = "arpitdalal/simple-chat";
+const repositoryApiUrl = `https://api.github.com/repos/${repository}`;
+const repositoryWebUrl = `https://github.com/${repository}`;
 
 export async function getRelease(): Promise<ResolvedRelease> {
   const tag = process.env.RELEASE_TAG?.trim();
@@ -40,7 +47,10 @@ export async function getRelease(): Promise<ResolvedRelease> {
 
   let response: Response;
   try {
-    response = await fetch(`${repositoryUrl}/${encodeURIComponent(tag)}`, { headers });
+    response = await fetch(`${repositoryApiUrl}/releases/tags/${encodeURIComponent(tag)}`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : "";
     throw new Error(`Unable to read GitHub release ${tag}${detail}`);
@@ -50,15 +60,48 @@ export async function getRelease(): Promise<ResolvedRelease> {
     throw new Error(`Unable to read GitHub release ${tag}: HTTP ${response.status}`);
   }
 
-  return resolveRelease((await response.json()) as GitHubRelease, tag);
+  const release = (await response.json()) as GitHubRelease;
+  const resolved = resolveRelease(release, tag);
+
+  if (process.env.RELEASE_MANIFEST_PATH) {
+    await writeFile(
+      process.env.RELEASE_MANIFEST_PATH,
+      JSON.stringify({
+        id: release.id,
+        tag: resolved.tag,
+        assets: [resolved.appleSilicon, resolved.intel].map(
+          ({ id, name, browser_download_url, size, state }) => ({
+            id,
+            name,
+            browser_download_url,
+            size,
+            state,
+          }),
+        ),
+      }),
+      "utf8",
+    );
+  }
+
+  return resolved;
 }
 
 export function resolveRelease(release: GitHubRelease, requestedTag: string): ResolvedRelease {
+  if (!Number.isSafeInteger(release.id) || release.id <= 0) {
+    throw new Error(`Release ${requestedTag} has invalid release id data`);
+  }
   if (!release.tag_name || release.tag_name !== requestedTag) {
     throw new Error(`GitHub returned release ${release.tag_name || "(missing tag)"} for ${requestedTag}`);
   }
   if (release.draft || release.prerelease) {
     throw new Error(`Release ${requestedTag} is not stable`);
+  }
+  const expectedReleaseUrl = `${repositoryWebUrl}/releases/tag/${requestedTag}`;
+  if (release.html_url !== expectedReleaseUrl) {
+    throw new Error(`Release ${requestedTag} has an invalid release URL`);
+  }
+  if (!Array.isArray(release.assets)) {
+    throw new Error(`Release ${requestedTag} has invalid asset data`);
   }
 
   const appleSilicon = findSingleAsset(release.assets, "_aarch64.dmg", requestedTag);
@@ -80,11 +123,17 @@ function findSingleAsset(assets: ReleaseAsset[], suffix: string, tag: string): R
   }
 
   const asset = matches[0];
+  if (!Number.isSafeInteger(asset.id) || asset.id <= 0) {
+    throw new Error(`Release asset ${asset.name} has invalid id data`);
+  }
   if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
     throw new Error(`Release asset ${asset.name} has invalid size data`);
   }
+  if (asset.state !== "uploaded") {
+    throw new Error(`Release asset ${asset.name} is not fully uploaded`);
+  }
 
-  const expectedPrefix = `https://github.com/arpitdalal/simple-chat/releases/download/${tag}/`;
+  const expectedPrefix = `${repositoryWebUrl}/releases/download/${tag}/`;
   if (!asset.browser_download_url.startsWith(expectedPrefix)) {
     throw new Error(`Release asset ${asset.name} has an invalid download URL`);
   }

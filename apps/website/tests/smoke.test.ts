@@ -30,6 +30,8 @@ describe("production landing page", () => {
     expect(html).toContain("Download for Intel");
     expect(html).toMatch(/https:\/\/github\.com\/arpitdalal\/simple-chat\/releases\/download\/[^"']+_aarch64\.dmg/);
     expect(html).toMatch(/https:\/\/github\.com\/arpitdalal\/simple-chat\/releases\/download\/[^"']+_x64\.dmg/);
+    const releaseTags = [...html.matchAll(/releases\/download\/([^/"']+)\/[^"']+\.dmg/g)].map((match) => match[1]);
+    expect(new Set(releaseTags).size).toBe(1);
     expect(html).not.toContain("uarch");
   });
 

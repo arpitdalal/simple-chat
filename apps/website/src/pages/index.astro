@@ -9,6 +9,20 @@ const title = "Simple Chat — Your AI, one keystroke away";
 const description = "A minimal macOS AI chat app with your own keys, local history, and a global shortcut.";
 const canonical = new URL(Astro.url.pathname, Astro.site);
 const socialImage = new URL(`${base}/og-image.png`, Astro.site);
+const downloads = [
+  {
+    architecture: "Apple Silicon",
+    description: "M-series Mac",
+    href: release.appleSilicon.browser_download_url,
+    size: formatFileSize(release.appleSilicon.size),
+  },
+  {
+    architecture: "Intel",
+    description: "Intel processor",
+    href: release.intel.browser_download_url,
+    size: formatFileSize(release.intel.size),
+  },
+];
 const features = [
   ["01", "Global shortcut", "Summon Simple Chat from anywhere, centered on the display under your cursor."],
   ["02", "Your keys", "Connect OpenAI, Anthropic, or Google with keys saved in your operating system keychain."],
@@ -69,16 +83,18 @@ const faqs = [
           <h1 id="hero-title">Your AI, one <span>keystroke</span> away.</h1>
           <p class="hero-lede">Bring your own keys. Keep your chat history on your Mac. Send every prompt directly to the provider you choose.</p>
           <div class="hero-actions download-actions">
-            <a class="button button-primary" href={release.appleSilicon.browser_download_url} download>
-              <span>Download for Apple Silicon</span>
-              <span aria-hidden="true">↓</span>
-            </a>
-            <a class="button button-secondary" href={release.intel.browser_download_url} download>
-              <span>Download for Intel</span>
-              <span aria-hidden="true">↓</span>
-            </a>
+            {downloads.map((download, index) => (
+              <a
+                class:list={["button", index === 0 ? "button-primary" : "button-secondary"]}
+                href={download.href}
+                download
+              >
+                <span>Download for {download.architecture}</span>
+                <span aria-hidden="true">↓</span>
+              </a>
+            ))}
           </div>
-          <p class="download-note">{release.name} · Apple Silicon {formatFileSize(release.appleSilicon.size)} · Intel {formatFileSize(release.intel.size)}</p>
+          <p class="download-note">{release.name} · {downloads.map((download) => `${download.architecture} ${download.size}`).join(" · ")}</p>
           <p class="source-note">Not on a Mac? Prebuilt releases are currently macOS-only. <a href="https://github.com/arpitdalal/simple-chat#local-build">Build from source</a>.</p>
         </div>
 
@@ -195,14 +211,12 @@ const faqs = [
             <p>Choose your Mac architecture. No installer account, no bundled provider key, no subscription.</p>
           </div>
           <div class="download-list">
-            <a href={release.appleSilicon.browser_download_url} download>
-              <span><strong>Apple Silicon</strong><small>M-series Mac · {formatFileSize(release.appleSilicon.size)}</small></span>
-              <span aria-hidden="true">↓</span>
-            </a>
-            <a href={release.intel.browser_download_url} download>
-              <span><strong>Intel Mac</strong><small>Intel processor · {formatFileSize(release.intel.size)}</small></span>
-              <span aria-hidden="true">↓</span>
-            </a>
+            {downloads.map((download) => (
+              <a href={download.href} download>
+                <span><strong>{download.architecture} Mac</strong><small>{download.description} · {download.size}</small></span>
+                <span aria-hidden="true">↓</span>
+              </a>
+            ))}
           </div>
           <p class="release-meta">Serving <a href={release.url}>{release.name}</a>. Downloads and this page come from the same stable release.</p>
         </div>

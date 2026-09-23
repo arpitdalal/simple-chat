@@ -12,7 +12,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "npx vite --config e2e/vite.config.ts",
+    command: "./node_modules/.bin/vite --config e2e/vite.config.ts",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

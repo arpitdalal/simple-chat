@@ -1,0 +1,6 @@
+packages:
+  - "apps/*"
+allowBuilds:
+  edgedriver: true
+  esbuild: true
+  geckodriver: true

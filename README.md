@@ -78,17 +78,23 @@ No. Raycast is a full launcher with many features. Simple Chat is a small BYOK h
 
 Want to build the app yourself instead of using a prebuilt installer:
 
-1. Install [Node.js 22+](https://nodejs.org/), [Rust](https://www.rust-lang.org/tools/install), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
-2. Clone and build:
+1. Install [Node.js 24+](https://nodejs.org/), [Rust](https://www.rust-lang.org/tools/install), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+2. Install the pinned pnpm version:
+
+```bash
+npm install --global pnpm@12.6.0
+```
+
+3. Clone and build:
 
 ```bash
 git clone https://github.com/arpitdalal/simple-chat.git
 cd simple-chat
-npm install
-npm run tauri:build
+pnpm install
+pnpm tauri:build
 ```
 
-The packaged app lands under `src-tauri/target/release/bundle/` (e.g. `.app` / `.dmg` on macOS).
+The packaged app lands under `apps/desktop/src-tauri/target/release/bundle/` (e.g. `.app` / `.dmg` on macOS).
 
 Unsigned local builds won’t auto-update from GitHub Releases. Signing/updater keys are only needed for official release artifacts.
 
@@ -96,12 +102,12 @@ Unsigned local builds won’t auto-update from GitHub Releases. Signing/updater 
 
 Contributions are welcome — PRs, issues, ideas — but there’s no guarantee anything will be merged.
 
-Same toolchain as local build: [Node.js 22+](https://nodejs.org/), [Rust](https://www.rust-lang.org/tools/install), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+Same toolchain as local build: [Node.js 24+](https://nodejs.org/), [Rust](https://www.rust-lang.org/tools/install), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```bash
-npm install
-npm run check
-npm run tauri:dev
+pnpm install
+pnpm check
+pnpm tauri:dev
 ```
 
 `tauri:dev` may briefly show a Dock icon / wrong menu name. Release builds use `LSUIElement` + accessory policy (no Dock; menu name “Simple Chat”).
@@ -109,20 +115,20 @@ npm run tauri:dev
 ### Tests
 
 ```bash
-npm test          # unit + component (vitest)
-npm run test:e2e  # browser UX (playwright + in-memory Tauri mocks)
-npm run test:ipc  # real Tauri↔Rust IPC via embedded WebDriver (macOS; needs release binary)
-npm run test:all
+pnpm test          # unit + component (vitest)
+pnpm test:e2e      # browser UX (playwright + in-memory Tauri mocks)
+pnpm test:ipc      # real Tauri↔Rust IPC via embedded WebDriver (macOS; needs release binary)
+pnpm test:all
 ```
 
-`test:ipc` expects `src-tauri/target/release/simple-chat` (`npm run build`, then in `src-tauri`: `TAURI_CONFIG=… cargo build --release --features webdriver`). CI runs that path on macOS — Linux/Windows WebView automation sends an invalid IPC Origin.
+`test:ipc` expects `apps/desktop/src-tauri/target/release/simple-chat` (`pnpm build`, then in `apps/desktop/src-tauri`: `TAURI_CONFIG=… cargo build --release --features webdriver`). CI runs that path on macOS — Linux/Windows WebView automation sends an invalid IPC Origin.
 
 ### CI / Release
 
 - **CI** (`.github/workflows/ci.yml`): on `main`/PR — vitest + `cargo test` (ubuntu), Playwright e2e (macOS), then `tauri-apps/tauri-action` builds for macOS arm64 + x64. Updater signing skipped on CI; ad-hoc signing (`APPLE_SIGNING_IDENTITY=-`). Win/Linux binary CI deferred.
 - **Release** (`.github/workflows/release.yml`): on `v*` tags (or manual dispatch from `main`) — preflight → tests + macOS e2e → draft GitHub Release → signed/notarized macOS matrix upload. Publish the draft when ready. Needs `TAURI_SIGNING_PRIVATE_KEY` and Apple secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_CONTENT`). After a failed tag release, delete the `v*` tag before re-pushing. Ships `.app` (updater) + DMG.
 
-Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` (key contents or file path). Pubkey lives in `src-tauri/tauri.conf.json`. Updater endpoint: GitHub Releases `latest.json`.
+Release builds that publish updater artifacts need `TAURI_SIGNING_PRIVATE_KEY` (key contents or file path). Pubkey lives in `apps/desktop/src-tauri/tauri.conf.json`. Updater endpoint: GitHub Releases `latest.json`.
 
 ## Stack
 

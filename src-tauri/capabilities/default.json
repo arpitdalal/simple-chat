@@ -14,8 +14,15 @@
     "core:window:allow-set-position",
     "core:window:allow-start-dragging",
     "core:tray:default",
-    "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/arpitdalal/simple-chat" },
+        { "url": "https://github.com/arpitdalal/simple-chat/issues/new*" }
+      ]
+    },
     "os:default",
+    "clipboard-manager:allow-write-text",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

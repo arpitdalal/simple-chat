@@ -23,6 +23,7 @@ import {
   version as getOsVersion,
 } from "@tauri-apps/plugin-os";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   applyHotkey,
   clearHotkey,
@@ -44,19 +45,19 @@ type RuntimeMetadata = {
   platform: string;
   osVersion: string;
   architecture: string;
+  complete: boolean;
 };
 
 function osName(platform: string) {
   if (platform === "macos") return "macOS";
-  if (platform) return platform[0].toUpperCase() + platform.slice(1);
-  return "Unknown";
+  return platform[0].toUpperCase() + platform.slice(1);
 }
 
-export function buildIssueUrl(metadata: RuntimeMetadata) {
+export function buildIssueUrl(metadata: Omit<RuntimeMetadata, "complete">) {
   const body = [
-    `Version: ${metadata.version || "Unknown"}`,
-    `OS: ${osName(metadata.platform)} ${metadata.osVersion || "Unknown"}`.trimEnd(),
-    `Architecture: ${metadata.architecture || "Unknown"}`,
+    `Version: ${metadata.version}`,
+    `OS: ${osName(metadata.platform)} ${metadata.osVersion}`,
+    `Architecture: ${metadata.architecture}`,
     "",
     "Description:",
     "",
@@ -71,34 +72,45 @@ export function buildIssueUrl(metadata: RuntimeMetadata) {
   return url.toString();
 }
 
+async function readValue<T>(read: () => T | Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await read();
+  } catch {
+    return fallback;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(
+          () => reject(new Error("Version lookup timed out")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
+}
+
 async function readRuntimeMetadata(): Promise<RuntimeMetadata> {
-  const metadata: RuntimeMetadata = {
-    version: "Unknown",
-    platform: "",
-    osVersion: "",
-    architecture: "",
+  const [version, platform, osVersion, architecture] = await Promise.all([
+    readValue(() => withTimeout(getVersion(), 3000), ""),
+    readValue(getPlatform, ""),
+    readValue(getOsVersion, ""),
+    readValue(getArchitecture, ""),
+  ]);
+  return {
+    version,
+    platform,
+    osVersion,
+    architecture,
+    complete: Boolean(version && platform && osVersion && architecture),
   };
-  try {
-    metadata.version = await getVersion();
-  } catch {
-    metadata.version = "Unknown";
-  }
-  try {
-    metadata.platform = getPlatform();
-  } catch {
-    metadata.platform = "";
-  }
-  try {
-    metadata.osVersion = getOsVersion();
-  } catch {
-    metadata.osVersion = "";
-  }
-  try {
-    metadata.architecture = getArchitecture();
-  } catch {
-    metadata.architecture = "";
-  }
-  return metadata;
 }
 
 type Props = {
@@ -153,7 +165,10 @@ export function Settings({
     null,
   );
   const [versionCopied, setVersionCopied] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
   const updateCheckGenRef = useRef(0);
+  const metadataProbeGenRef = useRef(0);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const lastGoodHotkeyRef = useRef(DEFAULT_HOTKEY);
@@ -253,12 +268,9 @@ export function Settings({
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void readRuntimeMetadata().then((metadata) => {
-      if (!cancelled) setRuntimeMetadata(metadata);
-    });
+    void probeRuntimeMetadata();
     return () => {
-      cancelled = true;
+      metadataProbeGenRef.current += 1;
     };
   }, []);
 
@@ -742,6 +754,16 @@ export function Settings({
     }
   }
 
+  async function probeRuntimeMetadata() {
+    const gen = ++metadataProbeGenRef.current;
+    setRuntimeMetadata(null);
+    const metadata = await readRuntimeMetadata();
+    if (mountedRef.current && gen === metadataProbeGenRef.current) {
+      setRuntimeMetadata(metadata);
+    }
+    return metadata;
+  }
+
   async function openExternal(url: string) {
     try {
       await openUrl(url);
@@ -754,9 +776,12 @@ export function Settings({
   }
 
   async function copyVersion() {
-    if (!runtimeMetadata) return;
+    if (!runtimeMetadata?.version || copyBusy) return;
+    setVersionCopied(false);
+    setCopyBusy(true);
     try {
-      await navigator.clipboard.writeText(runtimeMetadata.version);
+      await writeText(runtimeMetadata.version);
+      if (!mountedRef.current) return;
       setVersionCopied(true);
       onNotifyRef.current?.("Version copied", "ok");
     } catch (err) {
@@ -764,16 +789,29 @@ export function Settings({
         (err as Error).message || "Could not copy the version.",
         "err",
       );
+    } finally {
+      if (mountedRef.current) setCopyBusy(false);
     }
   }
 
   async function reportIssue() {
-    let metadata = runtimeMetadata;
-    if (!metadata) {
-      metadata = await readRuntimeMetadata();
-      if (mountedRef.current) setRuntimeMetadata(metadata);
+    if (reportBusy) return;
+    setReportBusy(true);
+    try {
+      const metadata = runtimeMetadata?.complete
+        ? runtimeMetadata
+        : await probeRuntimeMetadata();
+      if (!metadata.complete) {
+        onNotifyRef.current?.(
+          "Could not read complete app details. Try again.",
+          "err",
+        );
+        return;
+      }
+      await openExternal(buildIssueUrl(metadata));
+    } finally {
+      if (mountedRef.current) setReportBusy(false);
     }
-    await openExternal(buildIssueUrl(metadata));
   }
 
   if (!settings) return <div className="settings-panel">Loading…</div>;
@@ -976,12 +1014,26 @@ export function Settings({
       <section>
         <h3>Updates</h3>
         <div className="update-row">
-          <span>Version {runtimeMetadata?.version ?? "Loading…"}</span>
+          <span>
+            Version{" "}
+            {runtimeMetadata
+              ? runtimeMetadata.version || "Unavailable"
+              : "Loading…"}
+          </span>
+          {runtimeMetadata && !runtimeMetadata.version && (
+            <button
+              type="button"
+              className="ghost tiny"
+              onClick={() => void probeRuntimeMetadata()}
+            >
+              Retry
+            </button>
+          )}
           <div className="update-actions">
             <button
               type="button"
               className="ghost tiny version-copy"
-              disabled={!runtimeMetadata}
+              disabled={!runtimeMetadata?.version || copyBusy}
               aria-label={versionCopied ? "Copied" : "Copy version"}
               onClick={() => void copyVersion()}
             >
@@ -1068,9 +1120,10 @@ export function Settings({
             <button
               type="button"
               className="ghost tiny"
+              disabled={reportBusy}
               onClick={() => void reportIssue()}
             >
-              Report an issue
+              {reportBusy ? "Preparing…" : "Report an issue"}
             </button>
           </div>
         </div>

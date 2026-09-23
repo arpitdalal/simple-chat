@@ -63,6 +63,10 @@ export default defineConfig({
         replacement: path.resolve(projectRoot, "src/test/mock-shortcut.ts"),
       },
       {
+        find: "@tauri-apps/plugin-clipboard-manager",
+        replacement: path.resolve(projectRoot, "src/test/mock-clipboard.ts"),
+      },
+      {
         find: "@tauri-apps/plugin-opener",
         replacement: path.resolve(projectRoot, "src/test/mock-opener.ts"),
       },

@@ -61,6 +61,7 @@ test.describe("Simple Chat UX", () => {
 
   test("model picker filters by search", async ({ page }) => {
     await page.goto("/");
+    await expect(page.getByPlaceholder("Ask AI anything…")).toBeFocused();
     await page.getByTitle("Select model").click();
     await expect(page.getByRole("listbox")).toBeVisible();
     await page.getByPlaceholder("Search…").fill("flash");

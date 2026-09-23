@@ -193,6 +193,7 @@ export async function streamChat(opts: {
 export async function generateChatTitle(
   provider: ProviderId,
   userMessage: string,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const key = await getApiKey(provider).catch(() => null);
   if (!key) {
@@ -203,6 +204,7 @@ export async function generateChatTitle(
     const { text } = await generateText({
       model: client(TITLE_MODELS[provider]),
       prompt: `Write a short chat title (3–6 words, no quotes, no punctuation at end) for this user message:\n\n${userMessage.slice(0, 500)}`,
+      abortSignal,
     });
     const cleaned = text
       .trim()

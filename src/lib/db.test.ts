@@ -17,6 +17,9 @@ import {
   updateChat,
   branchChat,
   deleteMessagesAfter,
+  setInitialChatTitle,
+  replaceChatTitle,
+  refreshChatPreview,
 } from "./db";
 import { resetMemoryDb } from "../test/memory-sql";
 
@@ -50,8 +53,19 @@ describe("db (memory sql integration)", () => {
     expect(recent[0].content).toBe("m400");
     expect(recent[1].content).toBe("m500");
 
-    const older = await listOlderMessages(chat.id, recent[0].created_at, 10);
+    const older = await listOlderMessages(chat.id, recent[0].id, 10);
     expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300"]);
+  });
+
+  it("pages through messages with the same timestamp", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    for (let i = 0; i < 60; i++) await addMessage(chat.id, "user", `m${i}`, 100);
+    const recent = await listRecentMessages(chat.id, 20);
+    const middle = await listOlderMessages(chat.id, recent[0].id, 20);
+    const oldest = await listOlderMessages(chat.id, middle[0].id, 20);
+    expect([...oldest, ...middle, ...recent].map((m) => m.content)).toEqual(
+      Array.from({ length: 60 }, (_, i) => `m${i}`),
+    );
   });
 
   it("deletes chat and persists settings", async () => {
@@ -112,6 +126,23 @@ describe("db (memory sql integration)", () => {
     await addMessage(chat.id, "user", "three", 30);
     await deleteMessagesAfter(chat.id, a.id);
     expect((await listMessages(chat.id)).map((m) => m.content)).toEqual(["one"]);
+  });
+
+  it("generated titles do not overwrite a manual rename", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    expect(await setInitialChatTitle(chat.id, "Prompt")).toBe(true);
+    await updateChat(chat.id, { title: "Mine" });
+    expect(await replaceChatTitle(chat.id, "Prompt", "Generated")).toBe(false);
+    expect((await getChat(chat.id))?.title).toBe("Mine");
+  });
+
+  it("refreshes activity time when a message changes the preview", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    await addMessage(chat.id, "user", "later message", 200);
+    vi.spyOn(Date, "now").mockReturnValue(500);
+    await refreshChatPreview(chat.id);
+    vi.spyOn(Date, "now").mockRestore();
+    expect(await getChat(chat.id)).toMatchObject({ preview: "later message", updated_at: 500 });
   });
 
   it("setDefaultModel CAS skips when live defaults already moved", async () => {

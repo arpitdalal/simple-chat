@@ -102,6 +102,28 @@ class MemoryDatabase {
       return { rowsAffected: 1 };
     }
 
+    if (q.includes("UPDATE chats SET title = $1, updated_at = $2")) {
+      const id = String(args[2]);
+      const i = chats.findIndex((c) => c.id === id && c.title === "New Chat");
+      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[1]) };
+      return { rowsAffected: i >= 0 ? 1 : 0 };
+    }
+
+    if (q.includes("UPDATE chats SET updated_at = $2, preview = COALESCE")) {
+      const id = String(args[0]);
+      const i = chats.findIndex((c) => c.id === id);
+      const latest = messages.filter((m) => m.chat_id === id)
+        .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))[0];
+      if (i >= 0) chats[i] = { ...chats[i], updated_at: Number(args[1]), preview: latest ? Array.from(latest.content).slice(0, 120).join("") : "Ask AI anything…" };
+      return { rowsAffected: i >= 0 ? 1 : 0 };
+    }
+
+    if (q.includes("UPDATE chats SET title = $1 WHERE id = $2 AND title = $3")) {
+      const i = chats.findIndex((c) => c.id === String(args[1]) && c.title === String(args[2]));
+      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
+      return { rowsAffected: i >= 0 ? 1 : 0 };
+    }
+
     if (q.includes("UPDATE chats SET")) {
       const id = String(args[6]);
       const i = chats.findIndex((c) => c.id === id);
@@ -124,6 +146,17 @@ class MemoryDatabase {
       const ids = new Set(chats.filter((c) => c.updated_at < cutoff).map((c) => c.id));
       messages = messages.filter((m) => !ids.has(m.chat_id));
       return { rowsAffected: 0 };
+    }
+
+    if (q.includes("DELETE FROM messages WHERE chat_id =") && q.includes("(created_at, rowid) >")) {
+      const chatId = String(args[0]);
+      const afterId = String(args[1]);
+      const index = messages.findIndex((m) => m.id === afterId && m.chat_id === chatId);
+      if (index < 0) return { rowsAffected: 0 };
+      const before = messages.length;
+      const anchor = messages[index];
+      messages = messages.filter((m, i) => m.chat_id !== chatId || m.created_at < anchor.created_at || (m.created_at === anchor.created_at && i <= index));
+      return { rowsAffected: before - messages.length };
     }
 
     if (q.includes("DELETE FROM messages WHERE id =")) {
@@ -198,22 +231,24 @@ class MemoryDatabase {
       return [{ n: messages.filter((m) => m.chat_id === chatId).length }] as unknown as T;
     }
 
-    if (q.includes("FROM messages") && q.includes("created_at <")) {
+    if (q.includes("FROM messages") && q.includes("(created_at, rowid) <")) {
       const chatId = String(args[0]);
-      const before = Number(args[1]);
+      const anchor = messages.find((m) => m.id === String(args[1]) && m.chat_id === chatId);
+      if (!anchor) return [] as unknown as T;
+      const index = messages.indexOf(anchor);
       const limit = Number(args[2] ?? 40);
       return messages
-        .filter((m) => m.chat_id === chatId && m.created_at < before)
-        .sort((a, b) => b.created_at - a.created_at)
+        .filter((m) => m.chat_id === chatId && (m.created_at < anchor.created_at || (m.created_at === anchor.created_at && messages.indexOf(m) < index)))
+        .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))
         .slice(0, limit) as unknown as T;
     }
 
-    if (q.includes("FROM messages") && q.includes("ORDER BY created_at DESC LIMIT")) {
+    if (q.includes("FROM messages") && q.includes("ORDER BY created_at DESC")) {
       const chatId = String(args[0]);
       const limit = Number(args[1] ?? 50);
       return messages
         .filter((m) => m.chat_id === chatId)
-        .sort((a, b) => b.created_at - a.created_at)
+        .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))
         .slice(0, limit) as unknown as T;
     }
 
@@ -221,7 +256,7 @@ class MemoryDatabase {
       const chatId = String(args[0]);
       return messages
         .filter((m) => m.chat_id === chatId)
-        .sort((a, b) => a.created_at - b.created_at) as unknown as T;
+        .sort((a, b) => a.created_at - b.created_at || messages.indexOf(a) - messages.indexOf(b)) as unknown as T;
     }
 
     return [] as unknown as T;

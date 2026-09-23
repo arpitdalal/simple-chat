@@ -126,6 +126,7 @@ vi.mock("./lib/db", () => ({
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
   updateChat: vi.fn(),
+  refreshChatPreview: vi.fn(async () => {}),
   messageCount: vi.fn(async () => 0),
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),

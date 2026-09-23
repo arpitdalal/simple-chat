@@ -11,6 +11,9 @@ const listOlderMessages = vi.fn();
 const listMessages = vi.fn();
 const deleteMessagesAfter = vi.fn();
 const updateChat = vi.fn();
+const setInitialChatTitle = vi.fn();
+const replaceChatTitle = vi.fn();
+const getChat = vi.fn();
 
 const hiddenListeners = vi.hoisted(() => new Set<() => void>());
 
@@ -51,9 +54,18 @@ vi.mock("../lib/db", () => ({
   listMessages: (...a: unknown[]) => listMessages(...a),
   deleteMessagesAfter: (...a: unknown[]) => deleteMessagesAfter(...a),
   updateChat: (...a: unknown[]) => updateChat(...a),
+  setInitialChatTitle: (...a: unknown[]) => setInitialChatTitle(...a),
+  refreshChatPreview: vi.fn(async () => {}),
+  replaceChatTitle: (...a: unknown[]) => replaceChatTitle(...a),
+  getChat: (...a: unknown[]) => getChat(...a),
 }));
 
 import { ChatView } from "./ChatView";
+import { getChatSession, resetChatSessions } from "../lib/chat-runtime";
+
+function TestChatView(props: Omit<Parameters<typeof ChatView>[0], "session">) {
+  return <ChatView key={props.chat?.id ?? "__empty__"} {...props} session={getChatSession(props.chat?.id ?? "__empty__")} />;
+}
 
 const chat: Chat = {
   id: "c1",
@@ -79,12 +91,16 @@ function msg(
 describe("ChatView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetChatSessions();
     hiddenListeners.clear();
     listRecentMessages.mockResolvedValue([]);
     listOlderMessages.mockResolvedValue([]);
     listMessages.mockResolvedValue([]);
     deleteMessagesAfter.mockResolvedValue(undefined);
     updateChat.mockResolvedValue(undefined);
+    setInitialChatTitle.mockResolvedValue(true);
+    replaceChatTitle.mockResolvedValue(true);
+    getChat.mockImplementation(async (id: string) => ({ ...chat, id }));
     generateChatTitle.mockResolvedValue("Auto Title");
     addMessage.mockImplementation(async (_id, role, content) =>
       msg({ id: crypto.randomUUID(), role, content }),
@@ -107,7 +123,7 @@ describe("ChatView", () => {
     });
 
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -140,7 +156,7 @@ describe("ChatView", () => {
   it("keeps drafting enabled while sendLocked; Enter does not send", async () => {
     const user = userEvent.setup();
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -167,7 +183,7 @@ describe("ChatView", () => {
     const user = userEvent.setup();
     const onChatMeta = vi.fn();
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={onChatMeta}
@@ -183,10 +199,7 @@ describe("ChatView", () => {
     await user.type(screen.getByPlaceholderText("Ask AI anything…"), "domains");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(generateChatTitle).toHaveBeenCalled());
-    expect(updateChat).toHaveBeenCalledWith(
-      "c1",
-      expect.objectContaining({ title: "domains", preview: "domains" }),
-    );
+    expect(setInitialChatTitle).toHaveBeenCalledWith("c1", "domains");
     await waitFor(() =>
       expect(onChatMeta).toHaveBeenCalledWith(
         expect.objectContaining({ title: "Auto Title" }),
@@ -210,7 +223,7 @@ describe("ChatView", () => {
     );
 
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -230,6 +243,7 @@ describe("ChatView", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Stop" })).toBeNull(),
     );
+    await waitFor(() => expect(screen.getByPlaceholderText("Ask AI anything…")).toHaveFocus());
     expect(screen.queryByText(/aborted/i)).toBeNull();
   });
 
@@ -238,7 +252,7 @@ describe("ChatView", () => {
     const onNotify = vi.fn();
     streamChat.mockRejectedValue(new Error("No API key for google"));
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -262,7 +276,7 @@ describe("ChatView", () => {
     const user = userEvent.setup();
     addMessage.mockRejectedValueOnce(new Error("db down"));
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -292,7 +306,7 @@ describe("ChatView", () => {
         }),
     );
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -314,6 +328,8 @@ describe("ChatView", () => {
       rejectAdd(new Error("db down"));
     });
     await waitFor(() => expect(ta).toHaveValue("newer draft"));
+    await user.clear(ta);
+    await waitFor(() => expect(ta).toHaveValue("first"));
   });
 
   it("does not restore failed images into a text-only newer draft", async () => {
@@ -326,7 +342,7 @@ describe("ChatView", () => {
         }),
     );
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -369,7 +385,7 @@ describe("ChatView", () => {
       },
     );
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -406,7 +422,7 @@ describe("ChatView", () => {
     ]);
 
     render(
-      <ChatView
+      <TestChatView
         chat={{ ...chat, title: "Thread" }}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -464,7 +480,7 @@ describe("ChatView", () => {
     );
 
     render(
-      <ChatView
+      <TestChatView
         chat={{ ...chat, title: "Thread" }}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -524,7 +540,7 @@ describe("ChatView", () => {
 
   it("attaches pasted images", async () => {
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -565,7 +581,7 @@ describe("ChatView", () => {
   it("grows composer height with multiline input up to cap", async () => {
     const user = userEvent.setup();
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -590,7 +606,7 @@ describe("ChatView", () => {
   it("sends with webSearch always on", async () => {
     const user = userEvent.setup();
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -612,7 +628,7 @@ describe("ChatView", () => {
     const user = userEvent.setup();
     const onNew = vi.fn();
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -632,7 +648,7 @@ describe("ChatView", () => {
     const onChatUpdated = vi.fn();
 
     render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={onChatUpdated}
         onChatMeta={onChatMeta}
@@ -677,7 +693,7 @@ describe("ChatView", () => {
     ]);
 
     render(
-      <ChatView
+      <TestChatView
         chat={{ ...chat, title: "Thread" }}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -725,7 +741,7 @@ describe("ChatView", () => {
     });
 
     const { rerender } = render(
-      <ChatView
+      <TestChatView
         chat={chat}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -741,7 +757,7 @@ describe("ChatView", () => {
     expect(screen.getByText("partial-A")).toBeInTheDocument();
 
     rerender(
-      <ChatView
+      <TestChatView
         chat={other}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -783,7 +799,7 @@ describe("ChatView", () => {
     });
 
     render(
-      <ChatView
+      <TestChatView
         chat={{ ...chat, title: "Thread" }}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}
@@ -823,7 +839,7 @@ describe("ChatView", () => {
     );
 
     render(
-      <ChatView
+      <TestChatView
         chat={{ ...chat, title: "Thread" }}
         onChatUpdated={vi.fn()}
         onChatMeta={vi.fn()}

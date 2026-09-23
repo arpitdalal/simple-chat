@@ -31,6 +31,7 @@ export default defineConfig({
         if (
           bare === "../lib/chat" ||
           bare === "./lib/chat" ||
+          bare === "./chat" ||
           bare.endsWith("/lib/chat") ||
           bare.endsWith("/lib/chat.ts")
         ) {

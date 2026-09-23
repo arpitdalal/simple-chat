@@ -125,6 +125,9 @@ vi.mock("./lib/db", () => ({
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
   updateChat: vi.fn(),
+  setInitialChatTitle: vi.fn(async () => true),
+  refreshChatPreview: vi.fn(async () => {}),
+  replaceChatTitle: vi.fn(async () => true),
   messageCount: vi.fn(async () => 0),
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),
@@ -139,6 +142,8 @@ import { applyHotkey } from "./lib/hotkey";
 
 describe("App UX", () => {
   beforeEach(async () => {
+    const { resetChatSessions } = await import("./lib/chat-runtime");
+    resetChatSessions();
     chatsStore.reset();
     vi.mocked(applyHotkey).mockReset();
     vi.mocked(applyHotkey).mockResolvedValue(undefined);
@@ -147,6 +152,9 @@ describe("App UX", () => {
       ready: ["google"],
       ok: true,
     });
+    const { messageCount } = await import("./lib/db");
+    vi.mocked(messageCount).mockReset();
+    vi.mocked(messageCount).mockResolvedValue(0);
     openOrCreateChat.mockClear();
     openOrCreateChat.mockImplementation(async () => {
       if (chatsStore.get().length === 0) {
@@ -280,6 +288,44 @@ describe("App UX", () => {
     await waitFor(() => {
       expect(chatsStore.get().map((c) => c.id)).toEqual(["kept"]);
     });
+  });
+
+  it("does not discard a New Chat that already has messages", async () => {
+    const user = userEvent.setup();
+    const { messageCount, deleteChat } = await import("./lib/db");
+    const kept: Chat = {
+      id: "kept",
+      title: "Kept chat",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 1,
+      updated_at: 2,
+      preview: "hello",
+      pinned: 0,
+    };
+    const emptyLooking: Chat = {
+      id: "empty-looking",
+      title: "New Chat",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 3,
+      updated_at: 4,
+      preview: "Ask AI anything…",
+      pinned: 0,
+    };
+    chatsStore.set([emptyLooking, kept]);
+    openOrCreateChat.mockResolvedValueOnce(emptyLooking);
+    vi.mocked(messageCount).mockImplementation(async (id: string) =>
+      id === "empty-looking" ? 1 : 0,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Kept chat")).toBeInTheDocument());
+    await user.click(screen.getByText("Kept chat"));
+    await waitFor(() => expect(screen.getAllByText("Kept chat").length).toBeGreaterThan(1));
+    expect(chatsStore.get().map((c) => c.id)).toEqual(["empty-looking", "kept"]);
+    expect(deleteChat).not.toHaveBeenCalled();
+    expect(screen.getByText("New Chat")).toBeInTheDocument();
   });
 
   it("shows reopen control when sidebar is closed", async () => {

@@ -6,9 +6,7 @@ import { Settings } from "./components/Settings";
 import { Toast, type ToastState } from "./components/Toast";
 import {
   branchChat,
-  clearChatMessages,
   createChat,
-  deleteChat,
   getChat,
   getSettings,
   listChats,
@@ -27,6 +25,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
+import { ChatSession, chatCanBeDiscarded, getChatSession, sessionHasWork } from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -39,6 +38,7 @@ function App() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [active, setActive] = useState<Chat | null>(null);
+  const [activeSession, setActiveSession] = useState(() => new ChatSession("__empty__"));
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -60,6 +60,13 @@ function App() {
   const [navBusy, setNavBusy] = useState(false);
   /** Derived from keychain queue pending count (OS prompts included). */
   const [keyBusy, setKeyBusy] = useState(false);
+
+  useEffect(() => activeSession.retain(), [activeSession]);
+
+  function setActiveChat(chat: Chat | null) {
+    setActive(chat);
+    setActiveSession(chat ? getChatSession(chat.id) : new ChatSession("__empty__"));
+  }
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -168,12 +175,12 @@ function App() {
         if (!id) return;
         const chat = await getChat(id);
         if (isCancelled() || !chat || activeIdRef.current !== id) return;
-        if (!isEmptyNewChat(chat)) return;
+        if (!isEmptyNewChat(chat) || sessionHasWork(chat.id)) return;
 
         const aligned = await alignEmptyChat(chat, alignTo, ready);
         if (isCancelled()) return;
         if (activeIdRef.current === aligned.id) {
-          setActive(aligned);
+          setActiveChat(aligned);
           if (aligned !== chat) await refreshChats();
         }
       } catch (err) {
@@ -233,7 +240,7 @@ function App() {
       picked: { provider: ProviderId; modelId: string } | null,
       ready: readonly ProviderId[],
     ): Promise<Chat> => {
-      if (!picked || !isEmptyNewChat(chat)) return chat;
+      if (!picked || !isEmptyNewChat(chat) || sessionHasWork(chat.id)) return chat;
       if (!emptyChatNeedsRetarget(chat, ready)) return chat;
       if ((await messageCount(chat.id)) !== 0) return chat;
       if (
@@ -275,11 +282,13 @@ function App() {
         return;
       }
       setActiveIdNow(id);
-      const toDelete = chats.filter(
-        (c) => c.id !== id && isEmptyNewChat(c),
-      );
+      const toDelete: typeof chats = [];
+      for (const c of chats) {
+        if (c.id === id || !isEmptyNewChat(c)) continue;
+        if (await chatCanBeDiscarded(c.id)) toDelete.push(c);
+      }
       if (toDelete.length) {
-        for (const c of toDelete) await deleteChat(c.id);
+        for (const c of toDelete) await getChatSession(c.id).delete();
         await refreshChats();
       }
       focusComposer();
@@ -327,12 +336,18 @@ function App() {
 
         const liveChats = await listChats();
         if (isCancelled()) return;
-        const existing = liveChats.find(isEmptyNewChat);
+        let existing: (typeof liveChats)[number] | undefined;
+        for (const c of liveChats) {
+          if (isEmptyNewChat(c) && await chatCanBeDiscarded(c.id)) {
+            existing = c;
+            break;
+          }
+        }
         if (existing) {
           const aligned = await alignEmptyChat(existing, alignTo, readyList);
           if (isCancelled()) return;
           setActiveIdNow(aligned.id);
-          setActive(aligned);
+          setActiveChat(aligned);
           setShowSettings(false);
           if (aligned !== existing) await refreshChats();
           else setChats(liveChats);
@@ -342,14 +357,14 @@ function App() {
         if (active) {
           const freshActive = await getChat(active.id);
           if (isCancelled()) return;
-          if (freshActive && isEmptyNewChat(freshActive)) {
+          if (freshActive && isEmptyNewChat(freshActive) && await chatCanBeDiscarded(freshActive.id)) {
             const aligned = await alignEmptyChat(
               freshActive,
               alignTo,
               readyList,
             );
             if (isCancelled()) return;
-            setActive(aligned);
+            setActiveChat(aligned);
             setShowSettings(false);
             if (aligned !== freshActive) await refreshChats();
             else setChats(liveChats);
@@ -362,11 +377,11 @@ function App() {
           alignTo?.modelId ?? nextSettings.default_model,
         );
         if (isCancelled()) {
-          await deleteChat(chat.id);
+          await getChatSession(chat.id).delete();
           return;
         }
         setActiveIdNow(chat.id);
-        setActive(chat);
+        setActiveChat(chat);
         setShowSettings(false);
         await refreshChats();
         focusComposer();
@@ -432,7 +447,7 @@ function App() {
       await setSetting("last_opened_at", Date.now());
       await setSetting("last_chat_id", chat.id);
       setActiveIdNow(chat.id);
-      setActive(chat);
+      setActiveChat(chat);
       await refreshChats();
       if (cancelled) return;
       setReady(true);
@@ -459,9 +474,13 @@ function App() {
 
   useEffect(() => {
     if (!activeId) return;
-    void getChat(activeId).then(setActive);
+    let cancelled = false;
+    void getChat(activeId).then((chat) => {
+      if (!cancelled && activeIdRef.current === activeId) setActiveChat(chat);
+    });
     void setSetting("last_chat_id", activeId);
     void setSetting("last_opened_at", Date.now());
+    return () => { cancelled = true; };
   }, [activeId]);
 
   useEffect(() => {
@@ -544,12 +563,17 @@ function App() {
 
   async function handleDelete(id: string) {
     cancelNav();
-    await deleteChat(id);
+    try {
+      await getChatSession(id).delete();
+    } catch (err) {
+      notify((err as Error).message || String(err), "err");
+      return;
+    }
     if (activeId === id) {
       const next = (await listChats())[0];
       if (next) {
         setActiveIdNow(next.id);
-        setActive(next);
+        setActiveChat(next);
       } else if (settings) {
         await newChat();
         return;
@@ -560,8 +584,13 @@ function App() {
 
   async function handleClear(id: string) {
     cancelNav();
-    await clearChatMessages(id);
-    if (activeId === id) setActive(await getChat(id));
+    try {
+      await getChatSession(id).clear();
+    } catch (err) {
+      notify((err as Error).message || String(err), "err");
+      return;
+    }
+    if (activeId === id) setActiveChat(await getChat(id));
     await refreshChats();
     focusComposer();
   }
@@ -579,7 +608,7 @@ function App() {
       const branched = await branchChat(activeId, throughMessageId);
       setShowSettings(false);
       setActiveIdNow(branched.id);
-      setActive(branched);
+      setActiveChat(branched);
       await refreshChats();
       focusComposer();
       notify("Branched chat", "ok");
@@ -699,9 +728,13 @@ function App() {
           </div>
         ) : (
           <ChatView
+            key={active?.id ?? "__empty__"}
             chat={active}
+            session={activeSession}
             onChatUpdated={() => void refreshChats()}
-            onChatMeta={setActive}
+            onChatMeta={(updated) => {
+              if (activeIdRef.current === updated.id) setActive(updated);
+            }}
             onNew={() => void newChat()}
             onBranch={handleBranch}
             onNotify={notify}

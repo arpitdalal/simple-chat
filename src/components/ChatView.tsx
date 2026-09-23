@@ -23,7 +23,17 @@ import {
   trimRecentMessages,
 } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
-import { createQueue, type Queue } from "../lib/queue";
+import {
+  abortedDraftsRef,
+  getChatQueue,
+  isChatBusy,
+  localAddsRef,
+  pendingSendsRef,
+  stopChat,
+  streamsRef,
+  turnCancelsRef,
+  type StreamSlot,
+} from "../lib/chat-runtime";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
 import {
@@ -39,14 +49,6 @@ import type { ToastKind } from "./Toast";
 const LINE_H = 22;
 const MAX_LINES = 15;
 const MIN_LINES = 1;
-
-/** One in-flight assistant stream for a chat (multi-chat concurrent). */
-type StreamSlot = {
-  ac: AbortController;
-  /** User message this stream replies to — stream row renders after it. */
-  anchor: string;
-  text: string;
-};
 
 type Props = {
   chat: Chat | null;
@@ -102,34 +104,25 @@ export function ChatView({
   const stickBottom = useRef(true);
   const [showJump, setShowJump] = useState(false);
   const viewingIdRef = useRef<string | null>(chat?.id ?? null);
-  /** chatId → in-flight stream (concurrent across chats). */
-  const streamsRef = useRef(new Map<string, StreamSlot>());
-  /** chatId → FIFO so one chat never interleaves its own turns. */
-  const queuesRef = useRef(new Map<string, Queue>());
-  /** Unpersisted optimistic user messages, re-attached on chat reload. */
-  const pendingSendsRef = useRef(new Map<string, Message[]>());
-  /** Recently persisted rows per chat — merged back if a history load races. */
-  const localAddsRef = useRef(new Map<string, Message[]>());
-  /** Per-send cancel tokens so Stop can drop turns still waiting in the FIFO. */
-  const turnCancelsRef = useRef(new Map<string, AbortController[]>());
+  // Per-chat coordinator (streams/queues/turnCancels/localAdds/pendingSends/
+  // abortedDrafts) is module-scoped in chat-runtime so Settings remounts
+  // cannot orphan in-flight sends. Refs below are the shared maps.
   const messagesRef = useRef<Message[]>([]);
   const imagesRef = useRef<string[]>([]);
   /** In-flight FileReaders — composer not "empty" until they settle. */
   const pendingImageReadsRef = useRef(0);
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
-  /** Unpersisted drafts aborted by Stop — keyed so background chats keep theirs. */
-  const abortedDraftsRef = useRef<
-    Map<string, Array<{ text: string; images: string[]; gen: number }>>
-  >(new Map());
   const [reloadTick, setReloadTick] = useState(0);
   const lastClearedNonceRef = useRef(0);
 
   // External clear wipes DB rows — drop local mirrors or mergeHistory resurrects them.
-  // Process each nonce once; viewingIdRef is the live view (chat?.id in deps re-fires on switch).
+  // Abort active + queued turns first so a mid-flight turn cannot re-insert.
+  // Process each nonce once; deps are [cleared] so chat switches do not re-fire.
   useEffect(() => {
     if (!cleared?.nonce || cleared.nonce === lastClearedNonceRef.current) return;
     lastClearedNonceRef.current = cleared.nonce;
+    stopChat(cleared.chatId);
     localAddsRef.current.delete(cleared.chatId);
     pendingSendsRef.current.delete(cleared.chatId);
     abortedDraftsRef.current.delete(cleared.chatId);
@@ -148,28 +141,21 @@ export function ChatView({
   const blocked = noKey || sendLocked;
   const setupNeeded = noKeysConfigured;
 
-  function getChatQueue(chatId: string): Queue {
-    let q = queuesRef.current.get(chatId);
-    if (!q) {
-      q = createQueue();
-      queuesRef.current.set(chatId, q);
-    }
-    return q;
-  }
-
-  function isChatBusy(chatId: string): boolean {
-    return (
-      streamsRef.current.has(chatId) ||
-      getChatQueue(chatId).isBusy() ||
-      (turnCancelsRef.current.get(chatId)?.length ?? 0) > 0
-    );
-  }
-
   /** Remember a row we wrote so a racing history load can merge it back. */
   function noteLocalAdd(chatId: string, msg: Message) {
     const list = localAddsRef.current.get(chatId) ?? [];
     const next = [...list.filter((m) => m.id !== msg.id), msg].slice(-50);
     localAddsRef.current.set(chatId, next);
+  }
+
+  /** Prune race-buffer rows the authoritative page already contains. */
+  function pruneReconciledLocalAdds(chatId: string, page: Message[]) {
+    const list = localAddsRef.current.get(chatId);
+    if (!list?.length) return;
+    const pageIds = new Set(page.map((m) => m.id));
+    const remaining = list.filter((m) => !pageIds.has(m.id));
+    if (remaining.length) localAddsRef.current.set(chatId, remaining);
+    else localAddsRef.current.delete(chatId);
   }
 
   /** Register a per-turn AbortController for Stop to cancel. */
@@ -185,12 +171,6 @@ export function ChatView({
     const next = list.filter((x) => x !== ac);
     if (next.length) turnCancelsRef.current.set(chatId, next);
     else turnCancelsRef.current.delete(chatId);
-  }
-
-  /** Stop the live stream plus every turn still queued on this chat. */
-  function stopChat(chatId: string) {
-    streamsRef.current.get(chatId)?.ac.abort();
-    for (const ac of turnCancelsRef.current.get(chatId) ?? []) ac.abort();
   }
 
   /** Dequeue guard — only this turn's own token (never a stale stream slot). */
@@ -247,7 +227,8 @@ export function ChatView({
     if (turnCancelsRef.current.get(chatId)?.length) return;
     const drafts = abortedDraftsRef.current.get(chatId);
     if (!drafts?.length) return;
-    abortedDraftsRef.current.delete(chatId);
+    // Only consume when we can actually restore — a nonempty composer or
+    // another chat in view means the drafts stay pending for a later drain.
     if (
       viewingIdRef.current !== chatId ||
       (inputRef.current?.value ?? "") !== "" ||
@@ -256,6 +237,7 @@ export function ChatView({
     ) {
       return;
     }
+    abortedDraftsRef.current.delete(chatId);
     setInput(drafts.map((d) => d.text).join("\n"));
     const allImages = drafts.flatMap((d) => d.images);
     if (allImages.length && drafts.every((d) => d.gen === releaseGenRef.current)) {
@@ -349,6 +331,8 @@ export function ChatView({
       if (cancelled) return;
       // page ∪ writes that landed mid-flight ∪ still-optimistic sends
       setMessages(mergeHistory(page, chat.id));
+      // Authoritative page has the rows — drop them from the race buffer.
+      pruneReconciledLocalAdds(chat.id, page);
       setHasMore(page.length >= MESSAGE_PAGE);
       stickBottom.current = true;
       requestAnimationFrame(() => {
@@ -461,7 +445,7 @@ export function ChatView({
       }
       setHasMore(
         older.length >= pageSize + boundary &&
-          messages.length + older.length < MAX_CACHED_MESSAGES,
+          messages.length + fresh.length < MAX_CACHED_MESSAGES,
       );
       stickBottom.current = false;
       setMessages((m) => [...fresh, ...m]);

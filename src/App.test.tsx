@@ -142,6 +142,8 @@ describe("App UX", () => {
     chatsStore.reset();
     vi.mocked(applyHotkey).mockReset();
     vi.mocked(applyHotkey).mockResolvedValue(undefined);
+    const { resetChatRuntime } = await import("./lib/chat-runtime");
+    resetChatRuntime();
     const { listReadyProviders } = await import("./lib/keys");
     vi.mocked(listReadyProviders).mockResolvedValue({
       ready: ["google"],

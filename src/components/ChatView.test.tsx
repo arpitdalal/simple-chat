@@ -58,6 +58,7 @@ vi.mock("../lib/db", () => ({
 }));
 
 import { ChatView } from "./ChatView";
+import { resetChatRuntime } from "../lib/chat-runtime";
 
 const chat: Chat = {
   id: "c1",
@@ -84,6 +85,7 @@ describe("ChatView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     hiddenListeners.clear();
+    resetChatRuntime();
     // Persist mock: listMessages reflects what addMessage stored (send history).
     const stored = new Map<string, Message[]>();
     listRecentMessages.mockResolvedValue([]);

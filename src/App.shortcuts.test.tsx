@@ -138,10 +138,12 @@ vi.mock("./lib/db", () => ({
 import App from "./App";
 
 describe("App shortcuts", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     chatsStore.reset();
     hideMainWindow.mockClear();
     createChat.mockClear();
+    const { resetChatRuntime } = await import("./lib/chat-runtime");
+    resetChatRuntime();
   });
 
   async function boot(chats: Chat[] = []) {

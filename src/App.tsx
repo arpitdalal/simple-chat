@@ -27,6 +27,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
+import { stopChat } from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -564,6 +565,9 @@ function App() {
 
   async function handleClear(id: string) {
     cancelNav();
+    // Abort active + queued turns before wiping — a live turn must not
+    // re-insert into the chat mid-clear.
+    stopChat(id);
     await clearChatMessages(id);
     // Signal ChatView to drop localAdds/pendingSends for this chat — otherwise
     // mergeHistory resurrects wiped rows on the next history load.

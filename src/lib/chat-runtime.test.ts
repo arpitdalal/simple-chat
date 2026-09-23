@@ -9,6 +9,7 @@ const listRecentMessages = vi.fn();
 const clearChatMessages = vi.fn();
 const deleteChat = vi.fn();
 const updateChat = vi.fn();
+const setInitialChatTitle = vi.fn();
 const store = new Map<string, Message[]>();
 let clock = 0;
 
@@ -26,7 +27,8 @@ vi.mock("./db", () => ({
   clearChatMessages: (...args: unknown[]) => clearChatMessages(...args),
   deleteChat: (...args: unknown[]) => deleteChat(...args),
   updateChat: (...args: unknown[]) => updateChat(...args),
-  setInitialChatTitle: vi.fn(async () => true),
+  setInitialChatTitle: (...args: unknown[]) => setInitialChatTitle(...args),
+  refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: vi.fn(async () => true),
 }));
 
@@ -57,6 +59,7 @@ beforeEach(() => {
   clearChatMessages.mockImplementation(async (id: string) => { store.set(id, []); });
   deleteChat.mockImplementation(async (id: string) => { store.delete(id); });
   updateChat.mockResolvedValue(undefined);
+  setInitialChatTitle.mockResolvedValue(true);
   streamChat.mockImplementation(async ({ onToken }: { onToken: (token: string) => void }) => {
     onToken("reply");
   });
@@ -124,6 +127,53 @@ describe("ChatSession", () => {
     await waitFor(() => expect(a.getSnapshot().busy || b.getSnapshot().busy).toBe(false));
     expect(store.get("a")?.map((m) => m.content)).toEqual(["alpha", "reply to alpha"]);
     expect(store.get("b")?.map((m) => m.content)).toEqual(["beta", "reply to beta"]);
+  });
+
+  it("retries a failed assistant insert without losing the streamed reply", async () => {
+    const insert = addMessage.getMockImplementation()!;
+    let failed = false;
+    addMessage.mockImplementation(async (id: string, role: Message["role"], content: string) => {
+      if (role === "assistant" && !failed) {
+        failed = true;
+        throw new Error("temporary database error");
+      }
+      return insert(id, role, content);
+    });
+    const session = getChatSession("a");
+    session.send(chat("a"), "hello", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(store.get("a")?.map((m) => m.content)).toEqual(["hello", "reply"]);
+    expect(callbacks.onNotify).not.toHaveBeenCalled();
+  });
+
+  it("continues queued turns while an optional title write is pending", async () => {
+    getChat.mockImplementation(async (id: string) => ({ ...chat(id), title: "New Chat" }));
+    let releaseTitle!: () => void;
+    setInitialChatTitle.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      releaseTitle = () => resolve(true);
+    }));
+    const session = getChatSession("a");
+    session.send(chat("a"), "one", [], callbacks);
+    session.send(chat("a"), "two", [], callbacks);
+    await waitFor(() => expect(releaseTitle).toBeTruthy());
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(store.get("a")?.map((m) => m.content)).toEqual(["one", "reply", "two", "reply"]);
+    releaseTitle();
+  });
+
+  it("reconciles cached messages if deleting the chat partially fails", async () => {
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    session.send(chat("a"), "one", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    deleteChat.mockImplementationOnce(async (id: string) => {
+      store.set(id, []);
+      throw new Error("delete failed");
+    });
+    await expect(session.delete()).rejects.toThrow("delete failed");
+    expect(session.getSnapshot().phase).toBe("idle");
+    expect(session.getSnapshot().messages).toEqual([]);
+    unsubscribe();
   });
 
   it("waits for an in-flight insert before Clear and discards queued turns", async () => {

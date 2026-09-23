@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -35,7 +35,7 @@ export function ChatView({
   hasProviderKey = true, noKeysConfigured = false, sendLocked = false,
   onNeedKey, onProvidersReady,
 }: Props) {
-  const session = getChatSession(chat?.id ?? "__empty__");
+  const session = useMemo(() => getChatSession(chat?.id ?? "__empty__"), [chat?.id]);
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const { messages, stream, busy, hasMore, loadingOlder } = state;
   const showStream = stream !== null;
@@ -53,6 +53,8 @@ export function ChatView({
   const imagesRef = useRef<string[]>([]);
   const pendingImageReadsRef = useRef(0);
   const releaseGenRef = useRef(0);
+  const chatIdRef = useRef(chat?.id);
+  chatIdRef.current = chat?.id;
   imagesRef.current = images;
 
   const noKey = hasProviderKey === false;
@@ -74,6 +76,12 @@ export function ChatView({
     setShowJump(false);
     void session.loadRecent().catch((e) => onNotify((e as Error).message || String(e), "err"));
   }, [chat?.id, session, onNotify]);
+
+  useEffect(() => {
+    releaseGenRef.current += 1;
+    setImages([]);
+    if (fileRef.current) fileRef.current.value = "";
+  }, [chat?.id]);
 
   useEffect(() => {
     if (!chat || state.phase !== "idle" || !state.drafts.length) return;
@@ -130,12 +138,15 @@ export function ChatView({
 
   async function loadOlder() {
     if (!chat || !hasMore || loadingOlder) return;
+    const requestedChatId = chat.id;
     const el = parentRef.current;
     const height = el?.scrollHeight ?? 0;
     const top = el?.scrollTop ?? 0;
     await session.loadOlder();
+    if (chatIdRef.current !== requestedChatId) return;
     stickBottom.current = false;
     requestAnimationFrame(() => {
+      if (chatIdRef.current !== requestedChatId) return;
       if (el) el.scrollTop = top + el.scrollHeight - height;
     });
   }
@@ -190,6 +201,7 @@ export function ChatView({
       const file = item.getAsFile();
       if (!file) continue;
       const gen = releaseGenRef.current;
+      const readingChatId = chatIdRef.current;
       pendingImageReadsRef.current += 1;
       const reader = new FileReader();
       reader.onload = () => {
@@ -197,7 +209,7 @@ export function ChatView({
           0,
           pendingImageReadsRef.current - 1,
         );
-        if (gen !== releaseGenRef.current) return;
+        if (gen !== releaseGenRef.current || readingChatId !== chatIdRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }
@@ -217,6 +229,7 @@ export function ChatView({
     for (const file of files) {
       if (!file.type.startsWith("image/")) continue;
       const gen = releaseGenRef.current;
+      const readingChatId = chatIdRef.current;
       pendingImageReadsRef.current += 1;
       const reader = new FileReader();
       reader.onload = () => {
@@ -224,7 +237,7 @@ export function ChatView({
           0,
           pendingImageReadsRef.current - 1,
         );
-        if (gen !== releaseGenRef.current) return;
+        if (gen !== releaseGenRef.current || readingChatId !== chatIdRef.current) return;
         if (typeof reader.result === "string") {
           setImages((imgs) => [...imgs, reader.result as string]);
         }

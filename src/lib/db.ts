@@ -257,13 +257,25 @@ export async function updateChat(
 }
 
 /** Set the first prompt title only while this is still an unnamed chat. */
-export async function setInitialChatTitle(id: string, title: string, preview: string): Promise<boolean> {
+export async function setInitialChatTitle(id: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    "UPDATE chats SET title = $1, preview = $2, updated_at = $3 WHERE id = $4 AND title = 'New Chat'",
-    [title, preview, Date.now(), id],
+    "UPDATE chats SET title = $1, updated_at = $2 WHERE id = $3 AND title = 'New Chat'",
+    [title, Date.now(), id],
   );
   return result.rowsAffected > 0;
+}
+
+/** Recompute preview from stored messages so delayed writes cannot restore an old preview. */
+export async function refreshChatPreview(id: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `UPDATE chats SET preview = COALESCE(
+       (SELECT substr(content, 1, 120) FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
+       'Ask AI anything…'
+     ) WHERE id = $1`,
+    [id],
+  );
 }
 
 /** A generated title must not overwrite a later manual rename or Clear. */

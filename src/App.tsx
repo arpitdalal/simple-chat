@@ -25,7 +25,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
-import { chatHasPendingTurns, getChatSession } from "./lib/chat-runtime";
+import { chatIsUnavailable, getChatSession } from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -278,7 +278,7 @@ function App() {
         (c) =>
           c.id !== id &&
           isEmptyNewChat(c) &&
-          !chatHasPendingTurns(c.id),
+          !chatIsUnavailable(c.id),
       );
       if (toDelete.length) {
         for (const c of toDelete) await getChatSession(c.id).delete();
@@ -330,7 +330,7 @@ function App() {
         const liveChats = await listChats();
         if (isCancelled()) return;
         const existing = liveChats.find(
-          (c) => isEmptyNewChat(c) && !chatHasPendingTurns(c.id),
+          (c) => isEmptyNewChat(c) && !chatIsUnavailable(c.id),
         );
         if (existing) {
           const aligned = await alignEmptyChat(existing, alignTo, readyList);
@@ -346,7 +346,7 @@ function App() {
         if (active) {
           const freshActive = await getChat(active.id);
           if (isCancelled()) return;
-          if (freshActive && isEmptyNewChat(freshActive) && !chatHasPendingTurns(freshActive.id)) {
+          if (freshActive && isEmptyNewChat(freshActive) && !chatIsUnavailable(freshActive.id)) {
             const aligned = await alignEmptyChat(
               freshActive,
               alignTo,

@@ -129,7 +129,7 @@ describe("db (memory sql integration)", () => {
 
   it("generated titles do not overwrite a manual rename", async () => {
     const chat = await createChat("google", "gemini-3.8-flash");
-    expect(await setInitialChatTitle(chat.id, "Prompt", "prompt")).toBe(true);
+    expect(await setInitialChatTitle(chat.id, "Prompt")).toBe(true);
     await updateChat(chat.id, { title: "Mine" });
     expect(await replaceChatTitle(chat.id, "Prompt", "Generated")).toBe(false);
     expect((await getChat(chat.id))?.title).toBe("Mine");

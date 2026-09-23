@@ -9,9 +9,9 @@ import {
   listMessages,
   listOlderMessages,
   listRecentMessages,
+  refreshChatPreview,
   replaceChatTitle,
   setInitialChatTitle,
-  updateChat,
   type Chat,
   type Message,
 } from "./db";
@@ -38,16 +38,12 @@ type Callbacks = {
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[] };
 
 const sessions = new Map<string, ChatSession>();
-export function chatHasPendingTurns(id: string): boolean {
-  return sessions.get(id)?.getSnapshot().busy ?? false;
+export function chatIsUnavailable(id: string): boolean {
+  const state = sessions.get(id)?.getSnapshot();
+  return !!state && (state.busy || state.phase !== "idle");
 }
 export function getChatSession(id: string): ChatSession {
-  let session = sessions.get(id);
-  if (!session) {
-    session = new ChatSession(id);
-    sessions.set(id, session);
-  }
-  return session;
+  return sessions.get(id) ?? new ChatSession(id);
 }
 export function resetChatSessions() {
   for (const session of sessions.values()) session.stop();
@@ -72,6 +68,7 @@ export class ChatSession {
 
   constructor(readonly id: string) {}
   subscribe = (listener: () => void) => {
+    sessions.set(this.id, this);
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -158,6 +155,7 @@ export class ChatSession {
 
   send(chat: Chat, text: string, images: string[], callbacks: Callbacks): boolean {
     if (this.snapshot.phase !== "idle" || (!text && !images.length)) return false;
+    sessions.set(this.id, this);
     const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images };
     const display = text || `[${images.length} image(s)]`;
     const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: display, created_at: Date.now() };
@@ -180,15 +178,10 @@ export class ChatSession {
       const user = await addMessage(this.id, "user", display);
       persisted = true;
       this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? user : m) });
+      this.updatePreview(callbacks);
       if (live.title === "New Chat" && turn.text) {
         const provisional = turn.text.slice(0, 48) + (turn.text.length > 48 ? "…" : "");
-        const renamed = await setInitialChatTitle(this.id, provisional, turn.text.slice(0, 120));
-        this.abortIfNeeded(turn.ac);
-        if (renamed) {
-          callbacks.onChatMeta({ ...live, title: provisional, preview: turn.text.slice(0, 120) });
-          callbacks.onChatUpdated();
-          this.startTitle(chat, turn.text, provisional, turn.ac, callbacks);
-        }
+        this.startTitle(chat, turn.text, provisional, turn.ac, callbacks);
       }
       this.abortIfNeeded(turn.ac);
       const history = await listRecentMessages(this.id, MAX_CACHED_MESSAGES);
@@ -218,6 +211,14 @@ export class ChatSession {
     this.titleControllers.add(ac);
     void (async () => {
       try {
+        const initial = setInitialChatTitle(this.id, provisional);
+        this.titleWrites.add(initial);
+        const renamed = await initial.finally(() => this.titleWrites.delete(initial));
+        if (ac.signal.aborted || !renamed) return;
+        const titled = await getChat(this.id);
+        if (!titled || ac.signal.aborted) return;
+        callbacks.onChatMeta(titled);
+        callbacks.onChatUpdated();
         const title = await generateChatTitle(chat.provider as ProviderId, text, ac.signal);
         if (ac.signal.aborted) return;
         const live = await getChat(this.id);
@@ -257,11 +258,20 @@ export class ChatSession {
       });
     } catch (e) {
       if (turn.ac.signal.aborted) throw turn.ac.signal.reason;
-      if (full) await this.saveReply(turn, anchor, full, callbacks);
+      if (full) await this.saveReplyWithRetry(turn, anchor, full, callbacks);
       throw e;
     }
     this.abortIfNeeded(turn.ac);
-    await this.saveReply(turn, anchor, full, callbacks);
+    await this.saveReplyWithRetry(turn, anchor, full, callbacks);
+  }
+
+  private async saveReplyWithRetry(turn: Turn, anchor: string, content: string, callbacks: Callbacks) {
+    try {
+      await this.saveReply(turn, anchor, content, callbacks);
+    } catch (e) {
+      if (turn.ac.signal.aborted) throw e;
+      await this.saveReply(turn, anchor, content, callbacks);
+    }
   }
 
   private async saveReply(turn: Turn, anchor: string, content: string, callbacks: Callbacks) {
@@ -274,12 +284,17 @@ export class ChatSession {
     const messages = this.snapshot.messages;
     const withoutReply = messages.filter((m) => m.id !== reply.id);
     this.publish({ messages: trimRecentMessages(at < 0 ? [...withoutReply, reply] : [...withoutReply.slice(0, at + 1), reply, ...withoutReply.slice(at + 1)], MAX_CACHED_MESSAGES) });
-    try { await updateChat(this.id, { preview: content.slice(0, 120) }); } catch { /* reply is saved */ }
+    this.updatePreview(callbacks);
     callbacks.onChatUpdated();
+  }
+
+  private updatePreview(callbacks: Callbacks) {
+    void refreshChatPreview(this.id).then(callbacks.onChatUpdated).catch(() => {});
   }
 
   regenerate(chat: Chat, userId: string, callbacks: Callbacks): boolean {
     if (this.snapshot.phase !== "idle" || this.turns.size) return false;
+    sessions.set(this.id, this);
     const turn: Turn = { ac: new AbortController() };
     this.turns.add(turn);
     this.publish({ busy: true });
@@ -316,6 +331,7 @@ export class ChatSession {
   }
   async clear() {
     if (this.snapshot.phase !== "idle") return;
+    sessions.set(this.id, this);
     this.version += 1;
     this.publish({ phase: "clearing" });
     this.stop();
@@ -335,6 +351,7 @@ export class ChatSession {
   }
   async delete() {
     if (this.snapshot.phase !== "idle") return;
+    sessions.set(this.id, this);
     this.version += 1;
     this.publish({ phase: "deleting" });
     this.stop();
@@ -346,7 +363,14 @@ export class ChatSession {
         if (sessions.get(this.id) === this) sessions.delete(this.id);
       });
     } catch (e) {
-      this.publish({ phase: "idle" });
+      this.loaded = false;
+      this.publish({ phase: "idle", messages: [], hasMore: false });
+      const live = await getChat(this.id).catch(() => null);
+      if (live) await this.loadRecent().catch(() => {});
+      else {
+        this.publish({ phase: "deleted" });
+        if (sessions.get(this.id) === this) sessions.delete(this.id);
+      }
       throw e;
     }
   }

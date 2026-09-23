@@ -102,10 +102,19 @@ class MemoryDatabase {
       return { rowsAffected: 1 };
     }
 
-    if (q.includes("UPDATE chats SET title = $1, preview = $2")) {
-      const id = String(args[3]);
+    if (q.includes("UPDATE chats SET title = $1, updated_at = $2")) {
+      const id = String(args[2]);
       const i = chats.findIndex((c) => c.id === id && c.title === "New Chat");
-      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), preview: String(args[1]), updated_at: Number(args[2]) };
+      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[1]) };
+      return { rowsAffected: i >= 0 ? 1 : 0 };
+    }
+
+    if (q.includes("UPDATE chats SET preview = COALESCE")) {
+      const id = String(args[0]);
+      const i = chats.findIndex((c) => c.id === id);
+      const latest = messages.filter((m) => m.chat_id === id)
+        .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))[0];
+      if (i >= 0) chats[i] = { ...chats[i], preview: latest?.content.slice(0, 120) ?? "Ask AI anything…" };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 

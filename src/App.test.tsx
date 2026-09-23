@@ -126,6 +126,7 @@ vi.mock("./lib/db", () => ({
   }),
   updateChat: vi.fn(),
   setInitialChatTitle: vi.fn(async () => true),
+  refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: vi.fn(async () => true),
   messageCount: vi.fn(async () => 0),
   listMessages: vi.fn(async () => []),

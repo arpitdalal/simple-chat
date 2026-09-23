@@ -55,6 +55,7 @@ vi.mock("../lib/db", () => ({
   deleteMessagesAfter: (...a: unknown[]) => deleteMessagesAfter(...a),
   updateChat: (...a: unknown[]) => updateChat(...a),
   setInitialChatTitle: (...a: unknown[]) => setInitialChatTitle(...a),
+  refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: (...a: unknown[]) => replaceChatTitle(...a),
   getChat: (...a: unknown[]) => getChat(...a),
 }));
@@ -194,7 +195,7 @@ describe("ChatView", () => {
     await user.type(screen.getByPlaceholderText("Ask AI anything…"), "domains");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(generateChatTitle).toHaveBeenCalled());
-    expect(setInitialChatTitle).toHaveBeenCalledWith("c1", "domains", "domains");
+    expect(setInitialChatTitle).toHaveBeenCalledWith("c1", "domains");
     await waitFor(() =>
       expect(onChatMeta).toHaveBeenCalledWith(
         expect.objectContaining({ title: "Auto Title" }),

@@ -657,6 +657,14 @@ function App() {
     }
   }
 
+  async function persistAutostartPrompted() {
+    await setSetting("autostart_prompted", true);
+    setSettings((prev) =>
+      prev ? { ...prev, autostart_prompted: true } : prev,
+    );
+    setAutostartPrompt(false);
+  }
+
   function beginDrag(e: React.MouseEvent) {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
@@ -787,11 +795,7 @@ function App() {
                   setAutostartBusy(true);
                   try {
                     await setAutostartEnabled(true);
-                    await setSetting("autostart_prompted", true);
-                    setSettings((prev) =>
-                      prev ? { ...prev, autostart_prompted: true } : prev,
-                    );
-                    setAutostartPrompt(false);
+                    await persistAutostartPrompted();
                   } catch (err) {
                     notify(
                       (err as Error).message ||
@@ -812,11 +816,20 @@ function App() {
               disabled={autostartBusy}
               onClick={() => {
                 if (autostartBusy) return;
-                void setSetting("autostart_prompted", true);
-                setSettings((prev) =>
-                  prev ? { ...prev, autostart_prompted: true } : prev,
-                );
-                setAutostartPrompt(false);
+                void (async () => {
+                  setAutostartBusy(true);
+                  try {
+                    await persistAutostartPrompted();
+                  } catch (err) {
+                    notify(
+                      (err as Error).message ||
+                        "Could not save that choice.",
+                      "err",
+                    );
+                  } finally {
+                    setAutostartBusy(false);
+                  }
+                })();
               }}
             >
               Not now

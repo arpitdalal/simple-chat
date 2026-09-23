@@ -164,9 +164,11 @@ describe("App UX", () => {
       ready: ["google"],
       ok: true,
     });
-    const { messageCount } = await import("./lib/db");
+    const { messageCount, setSetting } = await import("./lib/db");
     vi.mocked(messageCount).mockReset();
     vi.mocked(messageCount).mockResolvedValue(0);
+    vi.mocked(setSetting).mockReset();
+    vi.mocked(setSetting).mockResolvedValue(undefined);
     isAutostartEnabled.mockReset().mockResolvedValue(false);
     setAutostartEnabled.mockReset().mockResolvedValue(undefined);
     openOrCreateChat.mockClear();
@@ -615,5 +617,36 @@ describe("App UX", () => {
         screen.queryByText("Start Simple Chat when you log in?"),
       ).toBeNull(),
     );
+  });
+
+  it("keeps the login-item prompt when Not now cannot persist", async () => {
+    const user = userEvent.setup();
+    const { getSettings, setSetting } = await import("./lib/db");
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
+    });
+    vi.mocked(setSetting).mockImplementation(async (key: string) => {
+      if (key === "autostart_prompted") throw new Error("db locked");
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    await waitFor(() =>
+      expect(screen.getByText(/db locked/)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText("Start Simple Chat when you log in?"),
+    ).toBeInTheDocument();
   });
 });

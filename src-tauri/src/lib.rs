@@ -50,6 +50,26 @@ where
     args.into_iter().any(|a| a.as_ref() == "--autostart")
 }
 
+/// Later user activation (Finder / second process) should show the window.
+/// Another `--autostart` must not — login stays tray-only.
+fn should_show_on_user_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    !args_include_autostart(args)
+}
+
+fn show_on_user_launch<I, S>(app: &AppHandle, args: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    if should_show_on_user_launch(args) {
+        show_main_window(app);
+    }
+}
+
 #[tauri::command]
 fn capture_previous_app() {
     focus::capture_previous_app();
@@ -62,7 +82,17 @@ fn hide_main_window_cmd(app: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    // Single-instance must be first so a second process never reaches setup.
+    #[cfg(desktop)]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, argv, _cwd| {
+            show_on_user_launch(app, &argv);
+        },
+    ));
+    #[cfg(not(desktop))]
+    let builder = tauri::Builder::default();
+
+    let builder = builder
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -131,9 +161,7 @@ pub fn run() {
                 .build(app)?;
 
             // Login-item launches stay tray-only; user / hotkey / tray show the window.
-            if !args_include_autostart(std::env::args()) {
-                show_main_window(app.handle());
-            }
+            show_on_user_launch(app.handle(), std::env::args());
 
             // Re-assert accessory after showing (dev builds sometimes bounce to regular).
             #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
@@ -164,6 +192,14 @@ pub fn run() {
             } if label == "main" => {
                 focus::capture_previous_app();
             }
+            // Hidden login-item process: Finder / Spotlight reopen (no new process).
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                show_main_window(app_handle);
+            }
             _ => {}
         }
     });
@@ -171,11 +207,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::args_include_autostart;
+    use super::{args_include_autostart, should_show_on_user_launch};
 
     #[test]
     fn detects_autostart_flag() {
         assert!(!args_include_autostart(["simple-chat"]));
         assert!(args_include_autostart(["simple-chat", "--autostart"]));
+    }
+
+    #[test]
+    fn user_launch_shows_except_login_item() {
+        assert!(should_show_on_user_launch(["simple-chat"]));
+        assert!(!should_show_on_user_launch(["simple-chat", "--autostart"]));
     }
 }

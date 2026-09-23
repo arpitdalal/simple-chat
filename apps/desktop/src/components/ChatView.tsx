@@ -489,7 +489,10 @@ export function ChatView({
               accept="image/png,image/jpeg,image/webp"
               multiple
               hidden
-              onChange={(e) => onFiles(e.target.files)}
+              onChange={(e) => {
+                onFiles(e.target.files);
+                e.target.value = "";
+              }}
             />
             <textarea
               ref={inputRef}

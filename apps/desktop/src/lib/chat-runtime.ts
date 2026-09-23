@@ -46,6 +46,9 @@ export const MAX_IMAGE_FILE_BYTES = 3 * 1024 * 1024;
 export const MAX_IMAGE_DIMENSION = 4096;
 const MAX_HISTORY_IMAGES = 20;
 const MAX_HISTORY_IMAGE_CHARS = 16 * 1024 * 1024;
+const MAX_HISTORY_TEXT_CHARS = 1 * 1024 * 1024;
+const MAX_HISTORY_TOTAL_CHARS = 17 * 1024 * 1024;
+const MAX_USER_TEXT_CHARS = 1 * 1024 * 1024;
 const JPEG_START_OF_FRAME = new Set([
   0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
   0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
@@ -190,6 +193,32 @@ function userContent(message: Pick<Message, "content" | "images">): UserContent 
         ...message.images.map((image) => ({ type: "image" as const, image })),
       ]
     : message.content || "Earlier image attachment omitted due to context limits.";
+}
+
+function boundProviderHistory(
+  history: Message[],
+  storedImages: Map<string, string[]>,
+  anchor: string,
+): Message[] {
+  const kept: Message[] = [];
+  let textChars = 0;
+  let imageChars = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    const images = message.images.length ? message.images : (storedImages.get(message.id) ?? []);
+    const messageTextChars = message.content.length;
+    const messageImageChars = imageDataUrlChars(images);
+    const fits =
+      message.id === anchor ||
+      (textChars + messageTextChars <= MAX_HISTORY_TEXT_CHARS &&
+        imageChars + messageImageChars <= MAX_HISTORY_IMAGE_CHARS &&
+        textChars + messageTextChars + imageChars + messageImageChars <= MAX_HISTORY_TOTAL_CHARS);
+    if (!fits) continue;
+    kept.unshift({ ...message, images });
+    textChars += messageTextChars;
+    imageChars += messageImageChars;
+  }
+  return kept;
 }
 
 const sessions = new Map<string, ChatSession>();
@@ -338,6 +367,10 @@ export class ChatSession {
 
   send(chat: Chat, text: string, images: string[], callbacks: Callbacks): boolean {
     if (this.snapshot.phase !== "idle" || (!text && !images.length)) return false;
+    if (text.length > MAX_USER_TEXT_CHARS) {
+      callbacks.onNotify("This message is too long to send.", "err");
+      return false;
+    }
     const normalized = images.map(normalizeImageDataUrl);
     const imageError = normalized.some((image) => !image)
       ? "The attached image could not be read."
@@ -444,7 +477,11 @@ export class ChatSession {
       MAX_HISTORY_IMAGE_CHARS,
       MAX_HISTORY_IMAGES,
     );
-    const messages = trimRecentMessages(history, MAX_CACHED_MESSAGES).map((m): ModelMessage => {
+    const messages = boundProviderHistory(
+      trimRecentMessages(history, MAX_CACHED_MESSAGES),
+      storedImages,
+      anchor,
+    ).map((m): ModelMessage => {
       const images = m.images.length ? m.images : (storedImages.get(m.id) ?? []);
       if (m.role === "user") return { role: "user", content: userContent({ ...m, images }) };
       if (m.role === "assistant") return { role: "assistant", content: m.content };

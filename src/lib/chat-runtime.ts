@@ -9,6 +9,7 @@ import {
   listMessages,
   listOlderMessages,
   listRecentMessages,
+  messageCount,
   refreshChatPreview,
   replaceChatTitle,
   setInitialChatTitle,
@@ -38,9 +39,12 @@ type Callbacks = {
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
 
 const sessions = new Map<string, ChatSession>();
-export function chatIsUnavailable(id: string): boolean {
-  const state = sessions.get(id)?.getSnapshot();
-  return !!state && (state.busy || state.phase !== "idle" || state.drafts.length > 0);
+export function sessionHasWork(id: string): boolean {
+  return sessions.get(id)?.hasWork() ?? false;
+}
+export async function chatCanBeDiscarded(id: string): Promise<boolean> {
+  if (sessionHasWork(id)) return false;
+  return (await messageCount(id)) === 0;
 }
 export function getChatSession(id: string): ChatSession {
   let session = sessions.get(id);
@@ -90,6 +94,11 @@ export class ChatSession {
     };
   };
   getSnapshot = () => this.snapshot;
+  hasWork = () => {
+    const s = this.snapshot;
+    return this.turns.size > 0 || s.busy || s.phase !== "idle" || s.drafts.length > 0
+      || this.titleControllers.size > 0 || this.titleWrites.size > 0;
+  };
   private publish(patch: Partial<ChatSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
@@ -122,7 +131,7 @@ export class ChatSession {
     this.loadVersion = version;
     this.loadPromise = (async () => {
       const page = await listRecentMessages(this.id, MESSAGE_PAGE);
-      if (this.version !== version || this.snapshot.phase === "deleted") return;
+      if (this.version !== version || this.snapshot.phase === "deleted" || this.snapshot.phase === "deleting") return;
       const seen = new Set(this.snapshot.messages.map((m) => m.id));
       const older = page.filter((m) => !seen.has(m.id));
       this.loaded = true;
@@ -367,10 +376,12 @@ export class ChatSession {
       this.publish({ messages: [], hasMore: false });
       await this.loadRecent().catch(() => {});
       throw e;
-    } finally { this.publish({ phase: "idle" }); }
+    } finally {
+      if (this.snapshot.phase === "clearing") this.publish({ phase: "idle" });
+    }
   }
   async delete() {
-    if (this.snapshot.phase !== "idle") return;
+    if (this.snapshot.phase === "deleting" || this.snapshot.phase === "deleted") return;
     sessions.set(this.id, this);
     this.version += 1;
     this.publish({ phase: "deleting" });

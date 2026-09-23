@@ -11,6 +11,7 @@ const clearChatMessages = vi.fn();
 const deleteChat = vi.fn();
 const updateChat = vi.fn();
 const setInitialChatTitle = vi.fn();
+const messageCount = vi.fn();
 const store = new Map<string, Message[]>();
 let clock = 0;
 
@@ -31,9 +32,10 @@ vi.mock("./db", () => ({
   setInitialChatTitle: (...args: unknown[]) => setInitialChatTitle(...args),
   refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: vi.fn(async () => true),
+  messageCount: (...args: unknown[]) => messageCount(...args),
 }));
 
-import { chatIsUnavailable, getChatSession, resetChatSessions } from "./chat-runtime";
+import { chatCanBeDiscarded, getChatSession, resetChatSessions, sessionHasWork } from "./chat-runtime";
 
 const chat = (id: string): Chat => ({
   id, title: "Thread", provider: "google", model_id: "gemini-3.8-flash",
@@ -62,6 +64,7 @@ beforeEach(() => {
   deleteChat.mockImplementation(async (id: string) => { store.delete(id); });
   updateChat.mockResolvedValue(undefined);
   setInitialChatTitle.mockResolvedValue(true);
+  messageCount.mockImplementation(async (id: string) => (store.get(id) ?? []).length);
   streamChat.mockImplementation(async ({ onToken }: { onToken: (token: string) => void }) => {
     onToken("reply");
   });
@@ -90,7 +93,18 @@ describe("ChatSession", () => {
     const session = getChatSession("a");
     session.send(chat("a"), "keep", [], callbacks);
     await waitFor(() => expect(session.getSnapshot().drafts).toEqual([{ text: "keep", images: [] }]));
-    expect(chatIsUnavailable("a")).toBe(true);
+    expect(sessionHasWork("a")).toBe(true);
+    expect(await chatCanBeDiscarded("a")).toBe(false);
+  });
+
+  it("does not discard a chat that already has messages", async () => {
+    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", created_at: 1 }]);
+    expect(sessionHasWork("a")).toBe(false);
+    expect(await chatCanBeDiscarded("a")).toBe(false);
+  });
+
+  it("discards an idle empty chat", async () => {
+    expect(await chatCanBeDiscarded("empty")).toBe(true);
   });
 
   it("drops leftover drafts when a later send starts", async () => {
@@ -231,6 +245,27 @@ describe("ChatSession", () => {
     await expect(session.delete()).rejects.toThrow("delete failed");
     expect(session.getSnapshot().phase).toBe("idle");
     expect(session.getSnapshot().messages).toEqual([]);
+    unsubscribe();
+  });
+
+  it("deletes a chat that is still clearing", async () => {
+    let finishClear!: () => void;
+    clearChatMessages.mockImplementationOnce(async (id: string) => {
+      await new Promise<void>((resolve) => { finishClear = resolve; });
+      store.set(id, []);
+    });
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", created_at: 1 }]);
+    const clearing = session.clear();
+    await waitFor(() => expect(session.getSnapshot().phase).toBe("clearing"));
+    const deleting = session.delete();
+    await waitFor(() => expect(session.getSnapshot().phase).toBe("deleting"));
+    finishClear();
+    await clearing;
+    await deleting;
+    expect(deleteChat).toHaveBeenCalledWith("a");
+    expect(session.getSnapshot().phase).toBe("deleted");
     unsubscribe();
   });
 

@@ -25,7 +25,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
-import { ChatSession, chatIsUnavailable, getChatSession } from "./lib/chat-runtime";
+import { ChatSession, chatCanBeDiscarded, getChatSession, sessionHasWork } from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -175,7 +175,7 @@ function App() {
         if (!id) return;
         const chat = await getChat(id);
         if (isCancelled() || !chat || activeIdRef.current !== id) return;
-        if (!isEmptyNewChat(chat)) return;
+        if (!isEmptyNewChat(chat) || sessionHasWork(chat.id)) return;
 
         const aligned = await alignEmptyChat(chat, alignTo, ready);
         if (isCancelled()) return;
@@ -240,7 +240,7 @@ function App() {
       picked: { provider: ProviderId; modelId: string } | null,
       ready: readonly ProviderId[],
     ): Promise<Chat> => {
-      if (!picked || !isEmptyNewChat(chat)) return chat;
+      if (!picked || !isEmptyNewChat(chat) || sessionHasWork(chat.id)) return chat;
       if (!emptyChatNeedsRetarget(chat, ready)) return chat;
       if ((await messageCount(chat.id)) !== 0) return chat;
       if (
@@ -282,12 +282,11 @@ function App() {
         return;
       }
       setActiveIdNow(id);
-      const toDelete = chats.filter(
-        (c) =>
-          c.id !== id &&
-          isEmptyNewChat(c) &&
-          !chatIsUnavailable(c.id),
-      );
+      const toDelete: typeof chats = [];
+      for (const c of chats) {
+        if (c.id === id || !isEmptyNewChat(c)) continue;
+        if (await chatCanBeDiscarded(c.id)) toDelete.push(c);
+      }
       if (toDelete.length) {
         for (const c of toDelete) await getChatSession(c.id).delete();
         await refreshChats();
@@ -337,9 +336,13 @@ function App() {
 
         const liveChats = await listChats();
         if (isCancelled()) return;
-        const existing = liveChats.find(
-          (c) => isEmptyNewChat(c) && !chatIsUnavailable(c.id),
-        );
+        let existing: (typeof liveChats)[number] | undefined;
+        for (const c of liveChats) {
+          if (isEmptyNewChat(c) && await chatCanBeDiscarded(c.id)) {
+            existing = c;
+            break;
+          }
+        }
         if (existing) {
           const aligned = await alignEmptyChat(existing, alignTo, readyList);
           if (isCancelled()) return;
@@ -354,7 +357,7 @@ function App() {
         if (active) {
           const freshActive = await getChat(active.id);
           if (isCancelled()) return;
-          if (freshActive && isEmptyNewChat(freshActive) && !chatIsUnavailable(freshActive.id)) {
+          if (freshActive && isEmptyNewChat(freshActive) && await chatCanBeDiscarded(freshActive.id)) {
             const aligned = await alignEmptyChat(
               freshActive,
               alignTo,

@@ -26,6 +26,7 @@ import {
   isValidAccelerator,
 } from "../lib/hotkey";
 import { checkForAppUpdate, type AvailableUpdate } from "../lib/updater";
+import { isAutostartEnabled, setAutostartEnabled } from "../lib/autostart";
 
 type Props = {
   onClose: () => void;
@@ -39,6 +40,8 @@ type Props = {
   onKeysChanged?: () => void;
   /** App registers a drain for pending debounced saves (e.g. before New Chat). */
   flushRef?: { current: (() => Promise<void>) | null };
+  /** After a successful login-item toggle so App can drop the first-run prompt. */
+  onAutostartSettled?: () => void;
 };
 
 export function Settings({
@@ -49,6 +52,7 @@ export function Settings({
   updateLocked = false,
   onKeysChanged,
   flushRef,
+  onAutostartSettled,
 }: Props) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
@@ -69,6 +73,9 @@ export function Settings({
   const [keyError, setKeyError] = useState("");
   const [keyEpoch, setKeyEpoch] = useState(0);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [autostartOn, setAutostartOn] = useState<boolean | null>(null);
+  const [autostartBusy, setAutostartBusy] = useState(false);
+  const [autostartError, setAutostartError] = useState("");
   const updateCheckGenRef = useRef(0);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
@@ -99,6 +106,8 @@ export function Settings({
   onNotifyRef.current = onNotify;
   const onKeysChangedRef = useRef(onKeysChanged);
   onKeysChangedRef.current = onKeysChanged;
+  const onAutostartSettledRef = useRef(onAutostartSettled);
+  onAutostartSettledRef.current = onAutostartSettled;
   const mountedRef = useRef(true);
 
   // flushPendingSaves is stable (refs only); register once for App.
@@ -176,6 +185,7 @@ export function Settings({
       setSettings(s);
       settingsRef.current = s;
       lastGoodHotkeyRef.current = s.hotkey.trim() || DEFAULT_HOTKEY;
+      void probeAutostart();
       await probeKeys(gen, { notify: true });
     })();
     return () => {
@@ -621,6 +631,24 @@ export function Settings({
     }
   }
 
+  async function probeAutostart() {
+    setAutostartBusy(true);
+    try {
+      const on = await isAutostartEnabled();
+      if (!mountedRef.current) return;
+      setAutostartOn(on);
+      setAutostartError("");
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setAutostartOn(null);
+      setAutostartError(
+        (err as Error).message || "Could not read login item.",
+      );
+    } finally {
+      if (mountedRef.current) setAutostartBusy(false);
+    }
+  }
+
   if (!settings) return <div className="settings-panel">Loading…</div>;
 
   return (
@@ -761,6 +789,60 @@ export function Settings({
           />
           Always on top
         </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={autostartOn === true}
+            disabled={autostartOn === null || autostartBusy}
+            onChange={(e) => {
+              const on = e.target.checked;
+              void (async () => {
+                setAutostartBusy(true);
+                try {
+                  await setAutostartEnabled(on);
+                  setAutostartOn(on);
+                  setAutostartError("");
+                  try {
+                    await setSetting("autostart_prompted", true);
+                  } catch (err) {
+                    onNotifyRef.current?.(
+                      (err as Error).message ||
+                        "Login item updated, but the prompt flag did not save.",
+                      "err",
+                    );
+                  }
+                  onAutostartSettledRef.current?.();
+                  setStatus("Saved");
+                } catch (err) {
+                  const msg =
+                    (err as Error).message ||
+                    "Could not update login item. Try again from Settings.";
+                  setAutostartError(msg);
+                  onNotifyRef.current?.(msg, "err");
+                } finally {
+                  setAutostartBusy(false);
+                }
+              })();
+            }}
+          />
+          Start on login
+          {autostartOn === null && !autostartError
+            ? " · checking…"
+            : ""}
+        </label>
+        {autostartError && (
+          <p className="hint error-text">
+            {autostartError}{" "}
+            <button
+              type="button"
+              className="ghost"
+              disabled={autostartBusy}
+              onClick={() => void probeAutostart()}
+            >
+              Retry
+            </button>
+          </p>
+        )}
       </section>
 
       <section>

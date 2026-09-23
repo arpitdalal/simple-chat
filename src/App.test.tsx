@@ -59,6 +59,16 @@ vi.mock("./lib/updater", () => ({
   checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
 }));
 
+const isAutostartEnabled = vi.hoisted(() => vi.fn(async () => false));
+const setAutostartEnabled = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("./lib/autostart", () => ({
+  isAutostartEnabled,
+  setAutostartEnabled,
+  shouldPromptAutostart: (prompted: boolean, enabled: boolean) =>
+    !prompted && !enabled,
+}));
+
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
   listReadyProviders: vi.fn(async () => ({ ready: ["google"], ok: true })),
@@ -89,6 +99,7 @@ vi.mock("./lib/db", () => ({
     last_chat_id: null,
     web_search: true,
     hotkey: "CommandOrControl+Shift+Space",
+    autostart_prompted: true,
   })),
   setSetting: vi.fn(),
   setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
@@ -101,6 +112,7 @@ vi.mock("./lib/db", () => ({
     last_chat_id: null,
     web_search: true,
     hotkey: "CommandOrControl+Shift+Space",
+    autostart_prompted: true,
   })),
   listChats: vi.fn(async () => chatsStore.get()),
   getChat: vi.fn(async (id: string) =>
@@ -155,6 +167,8 @@ describe("App UX", () => {
     const { messageCount } = await import("./lib/db");
     vi.mocked(messageCount).mockReset();
     vi.mocked(messageCount).mockResolvedValue(0);
+    isAutostartEnabled.mockReset().mockResolvedValue(false);
+    setAutostartEnabled.mockReset().mockResolvedValue(undefined);
     openOrCreateChat.mockClear();
     openOrCreateChat.mockImplementation(async () => {
       if (chatsStore.get().length === 0) {
@@ -226,6 +240,7 @@ describe("App UX", () => {
       last_chat_id: null,
       web_search: true,
       hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: true,
     });
     const empty: Chat = {
       id: "empty-openai",
@@ -458,6 +473,147 @@ describe("App UX", () => {
       expect(writeText).toHaveBeenCalledWith(
         expect.stringContaining("user:\nhi"),
       ),
+    );
+  });
+
+  it("asks to start on login after install, then Enable writes the login item", async () => {
+    const user = userEvent.setup();
+    const { getSettings, setSetting } = await import("./lib/db");
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    setAutostartEnabled.mockImplementation(async () => {
+      await gate;
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Start Simple Chat when you log in?"),
+      ).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Enable" }));
+    expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeDisabled();
+    release();
+    await waitFor(() => expect(setAutostartEnabled).toHaveBeenCalledWith(true));
+    expect(setSetting).toHaveBeenCalledWith("autostart_prompted", true);
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Start Simple Chat when you log in?"),
+      ).toBeNull(),
+    );
+  });
+
+  it("hides the login-item prompt while Settings is open", async () => {
+    const user = userEvent.setup();
+    const { getSettings } = await import("./lib/db");
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Start Simple Chat when you log in?"),
+      ).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("Start Simple Chat when you log in?"),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("Start Simple Chat when you log in?"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("Settings login-item toggle dismisses the first-run prompt", async () => {
+    const user = userEvent.setup();
+    const { getSettings } = await import("./lib/db");
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Start Simple Chat when you log in?"),
+      ).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const box = await screen.findByRole("checkbox", { name: /start on login/i });
+    await waitFor(() => expect(box).not.toBeDisabled());
+    await user.click(box);
+    await waitFor(() => expect(setAutostartEnabled).toHaveBeenCalledWith(true));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.getByText("Ask Anything")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("Start Simple Chat when you log in?"),
+    ).toBeNull();
+  });
+
+  it("Not now dismisses the login-item prompt without enabling", async () => {
+    const user = userEvent.setup();
+    const { getSettings, setSetting } = await import("./lib/db");
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+    expect(setSetting).toHaveBeenCalledWith("autostart_prompted", true);
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Start Simple Chat when you log in?"),
+      ).toBeNull(),
     );
   });
 });

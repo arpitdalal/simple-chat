@@ -73,8 +73,10 @@ describe("db (memory sql integration)", () => {
     await deleteChat(chat.id);
     expect(await getChat(chat.id)).toBeNull();
     await setSetting("resume_minutes", 9);
+    await setSetting("autostart_prompted", true);
     const s = await getSettings();
     expect(s.resume_minutes).toBe(9);
+    expect(s.autostart_prompted).toBe(true);
   });
 
   it("pin/unpin preserves updated_at so order stays chronological", async () => {

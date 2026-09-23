@@ -42,6 +42,14 @@ fn toggle_main_window(app: &AppHandle) {
     }
 }
 
+fn args_include_autostart<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|a| a.as_ref() == "--autostart")
+}
+
 #[tauri::command]
 fn capture_previous_app() {
     focus::capture_previous_app();
@@ -82,8 +90,14 @@ pub fn run() {
 
     let builder = builder.setup(|app| {
             #[cfg(desktop)]
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_autostart::init(
+                    tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                    Some(vec!["--autostart"]),
+                ))?;
+            }
 
             // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
             // WebDriver CI needs a normal activation policy or the webview stays blank.
@@ -116,7 +130,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            show_main_window(app.handle());
+            // Login-item launches stay tray-only; user / hotkey / tray show the window.
+            if !args_include_autostart(std::env::args()) {
+                show_main_window(app.handle());
+            }
 
             // Re-assert accessory after showing (dev builds sometimes bounce to regular).
             #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
@@ -150,4 +167,15 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::args_include_autostart;
+
+    #[test]
+    fn detects_autostart_flag() {
+        assert!(!args_include_autostart(["simple-chat"]));
+        assert!(args_include_autostart(["simple-chat", "--autostart"]));
+    }
 }

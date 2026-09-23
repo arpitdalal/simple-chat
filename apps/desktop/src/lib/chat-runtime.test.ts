@@ -160,6 +160,47 @@ describe("ChatSession", () => {
     unsubscribe();
   });
 
+  it("rejects oversized image sets before sending", () => {
+    const images = Array.from(
+      { length: 5 },
+      (_, index) => `data:image/png;base64,${index}`,
+    );
+    const session = getChatSession("a");
+    expect(session.send(chat("a"), "look", images, callbacks)).toBe(false);
+    expect(callbacks.onNotify).toHaveBeenCalledWith(
+      "Attach no more than 4 images per message.",
+      "err",
+    );
+    expect(session.getSnapshot().busy).toBe(false);
+    expect(addMessage).not.toHaveBeenCalled();
+  });
+
+  it("bounds historical images in later provider requests", async () => {
+    store.set("a", Array.from({ length: 21 }, (_, index) => ({
+      id: `u${index}`,
+      chat_id: "a",
+      role: "user" as const,
+      content: "",
+      images: [`data:image/png;base64,${index}`],
+      created_at: index,
+    })));
+    const session = getChatSession("a");
+    session.send(chat("a"), "follow up", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    const messages = streamChat.mock.calls[0][0].messages;
+    const imageCount = messages.flatMap((message: { content: unknown }) =>
+      Array.isArray(message.content)
+        ? message.content.filter((part) => (part as { type?: string }).type === "image")
+        : [],
+    ).length;
+    expect(imageCount).toBe(20);
+    expect(messages[0]).toEqual({
+      role: "user",
+      content: "Earlier image attachment omitted due to context limits.",
+    });
+  });
+
   it("includes persisted images when regenerating a response", async () => {
     const image = "data:image/png;base64,BBB";
     store.set("a", [{

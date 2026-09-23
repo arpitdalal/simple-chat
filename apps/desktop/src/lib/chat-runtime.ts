@@ -39,13 +39,56 @@ type Callbacks = {
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
 type UserContent = Extract<ModelMessage, { role: "user" }>["content"];
 
+export const MAX_IMAGES_PER_MESSAGE = 4;
+export const MAX_IMAGE_DATA_CHARS = 5 * 1024 * 1024;
+export const MAX_IMAGE_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_HISTORY_IMAGES = 20;
+const MAX_HISTORY_IMAGE_CHARS = 20 * 1024 * 1024;
+const IMAGE_DATA_URL = /^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]*={0,2}$/i;
+
+export function imageDataSize(images: string[]): number {
+  return images.reduce((total, image) => total + image.length, 0);
+}
+
+export function imageLimitError(images: string[]): string | null {
+  if (images.length > MAX_IMAGES_PER_MESSAGE) {
+    return `Attach no more than ${MAX_IMAGES_PER_MESSAGE} images per message.`;
+  }
+  if (images.some((image) => !IMAGE_DATA_URL.test(image))) {
+    return "The attached image could not be read.";
+  }
+  if (imageDataSize(images) > MAX_IMAGE_DATA_CHARS) {
+    return "The attached images are too large to send together.";
+  }
+  return null;
+}
+
+function boundHistoryImages(history: Message[]): Message[] {
+  const bounded = [...history];
+  let remainingImages = MAX_HISTORY_IMAGES;
+  let remainingChars = MAX_HISTORY_IMAGE_CHARS;
+  for (let i = bounded.length - 1; i >= 0; i--) {
+    const message = bounded[i];
+    if (message.role !== "user" || !message.images.length) continue;
+    const images: string[] = [];
+    for (const image of message.images) {
+      if (remainingImages === 0 || remainingChars < image.length) break;
+      images.push(image);
+      remainingImages -= 1;
+      remainingChars -= image.length;
+    }
+    bounded[i] = { ...message, images };
+  }
+  return bounded;
+}
+
 function userContent(message: Pick<Message, "content" | "images">): UserContent {
   return message.images.length
     ? [
         { type: "text" as const, text: message.content || "Describe these images." },
         ...message.images.map((image) => ({ type: "image" as const, image })),
       ]
-    : message.content;
+    : message.content || "Earlier image attachment omitted due to context limits.";
 }
 
 const sessions = new Map<string, ChatSession>();
@@ -194,6 +237,11 @@ export class ChatSession {
 
   send(chat: Chat, text: string, images: string[], callbacks: Callbacks): boolean {
     if (this.snapshot.phase !== "idle" || (!text && !images.length)) return false;
+    const imageError = imageLimitError(images);
+    if (imageError) {
+      callbacks.onNotify(imageError, "err");
+      return false;
+    }
     sessions.set(this.id, this);
     const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images, hideVersion: this.hideVersion };
     const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: text, images, created_at: Date.now() };
@@ -281,7 +329,7 @@ export class ChatSession {
   private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: UserContent | undefined, callbacks: Callbacks) {
     this.streamOwner = turn;
     this.publish({ stream: { anchor, text: "" } });
-    const messages = trimRecentMessages(history, MAX_CACHED_MESSAGES).map((m): ModelMessage => {
+    const messages = boundHistoryImages(trimRecentMessages(history, MAX_CACHED_MESSAGES)).map((m): ModelMessage => {
       if (m.role === "user") return { role: "user", content: userContent(m) };
       if (m.role === "assistant") return { role: "assistant", content: m.content };
       return { role: "system", content: m.content };

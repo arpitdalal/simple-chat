@@ -123,6 +123,32 @@ describe("db (memory sql integration)", () => {
     expect(orig).toHaveLength(3);
   });
 
+  it("rolls back a branch when copying an image message fails", async () => {
+    const source = await createChat("google", "gemini-3.8-flash");
+    const message = await addMessage(
+      source.id,
+      "user",
+      "look",
+      10,
+      ["data:image/png;base64,AAA"],
+    );
+    const { default: Database } = await import("../test/memory-sql");
+    const db = await Database.load();
+    const realExecute = db.execute.bind(db);
+    let failed = false;
+    db.execute = async (query: string, bindValues: unknown[] = []) => {
+      if (query.includes("INSERT INTO messages") && !failed) {
+        failed = true;
+        throw new Error("copy failed");
+      }
+      return realExecute(query, bindValues);
+    };
+
+    await expect(branchChat(source.id, message.id)).rejects.toThrow("copy failed");
+    db.execute = realExecute;
+    expect((await listChats()).map((chat) => chat.id)).toEqual([source.id]);
+  });
+
   it("deleteMessagesAfter keeps the anchor and drops the rest", async () => {
     const chat = await createChat("google", "gemini-3.8-flash");
     const a = await addMessage(chat.id, "user", "one", 10);

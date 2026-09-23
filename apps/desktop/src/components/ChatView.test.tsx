@@ -581,7 +581,7 @@ describe("ChatView", () => {
 
   it("renders an attached image in the sent user message", async () => {
     const user = userEvent.setup();
-    const image = "data:image/png;base64,sent-image";
+    const image = "data:image/png;base64,c2VudC1pbWFnZQ==";
     vi.stubGlobal(
       "FileReader",
       class {
@@ -624,6 +624,35 @@ describe("ChatView", () => {
       [image],
     );
     vi.unstubAllGlobals();
+  });
+
+  it("rejects image files larger than 4 MB", async () => {
+    const onNotify = vi.fn();
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={onNotify}
+        focusNonce={1}
+      />,
+    );
+    await screen.findByPlaceholderText("Ask AI anything…");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["x"], "large.png", { type: "image/png" });
+    Object.defineProperty(file, "size", { value: 4 * 1024 * 1024 + 1 });
+
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onNotify).toHaveBeenCalledWith(
+      "Each attached image must be 4 MB or smaller.",
+      "err",
+    );
+    expect(document.querySelector(".thumb")).toBeNull();
   });
 
   it("grows composer height with multiline input up to cap", async () => {

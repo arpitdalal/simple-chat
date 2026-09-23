@@ -409,19 +409,35 @@ export async function branchChat(
   const idx = all.findIndex((m) => m.id === throughMessageId);
   if (idx < 0) throw new Error("Message not found");
   const keep = all.slice(0, idx + 1);
-
-  const branched = await createChat(source.provider, source.model_id);
   const base =
     source.title && source.title !== "New Chat" ? source.title : "Chat";
   const title = `Branch · ${base}`.slice(0, 60);
   const last = keep[keep.length - 1];
   const preview = last?.content.slice(0, 120) || (last?.images.length ? "Image" : "Ask AI anything…");
-  await updateChat(branched.id, { title, preview });
-
-  for (const m of keep) {
-    await addMessage(branched.id, m.role, m.content, m.created_at, m.images);
+  const branched = await createChat(source.provider, source.model_id);
+  try {
+    await updateChat(branched.id, { title, preview });
+    const db = await getDb();
+    await db.execute(
+      `INSERT INTO messages (id, chat_id, role, content, images, created_at)
+       SELECT lower(hex(randomblob(16))), $1, role, content, images, created_at
+       FROM messages
+       WHERE chat_id = $2 AND (created_at, rowid) <=
+         (SELECT created_at, rowid FROM messages WHERE id = $3 AND chat_id = $2)
+       ORDER BY created_at, rowid`,
+      [branched.id, sourceChatId, throughMessageId],
+    );
+    return { ...branched, title, preview };
+  } catch (error) {
+    try {
+      await deleteChat(branched.id);
+    } catch (cleanupError) {
+      throw new Error(
+        `Failed to create branch and clean up the incomplete chat: ${String(cleanupError)}`,
+      );
+    }
+    throw error;
   }
-  return (await getChat(branched.id)) ?? branched;
 }
 
 /** Delete every message after `afterMessageId` in that chat (keeps the message itself). */

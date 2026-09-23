@@ -91,6 +91,23 @@ class MemoryDatabase {
       return { rowsAffected: 1 };
     }
 
+    if (q.includes("INSERT INTO messages") && q.includes("randomblob(16)")) {
+      const branchedId = String(args[0]);
+      const sourceId = String(args[1]);
+      const throughId = String(args[2]);
+      const sourceMessages = messages
+        .filter((candidate) => candidate.chat_id === sourceId)
+        .sort((a, b) => a.created_at - b.created_at || messages.indexOf(a) - messages.indexOf(b));
+      const throughIndex = sourceMessages.findIndex(
+        (message) => message.id === throughId,
+      );
+      if (throughIndex < 0) throw new Error("Message not found");
+      for (const message of sourceMessages.slice(0, throughIndex + 1)) {
+        messages.push({ ...message, id: crypto.randomUUID(), chat_id: branchedId });
+      }
+      return { rowsAffected: throughIndex + 1 };
+    }
+
     if (q.includes("INSERT INTO messages")) {
       const images = JSON.parse(String(args[4])) as string[];
       messages.push({

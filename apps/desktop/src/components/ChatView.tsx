@@ -5,7 +5,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { updateChat, type Chat, type Message } from "../lib/db";
 import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
-import type { ChatSession } from "../lib/chat-runtime";
+import {
+  imageLimitError,
+  MAX_IMAGE_FILE_BYTES,
+  MAX_IMAGES_PER_MESSAGE,
+  type ChatSession,
+} from "../lib/chat-runtime";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
 import { AiIcon, BranchIcon, CheckIcon, CopyIcon, RegenerateIcon, UserIcon } from "./Icons";
@@ -198,38 +203,36 @@ export function ChatView({
   function onPaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
     if (!items) return;
+    const files: File[] = [];
     for (const item of items) {
       if (!item.type.startsWith("image/")) continue;
-      e.preventDefault();
       const file = item.getAsFile();
-      if (!file) continue;
-      const gen = releaseGenRef.current;
-      pendingImageReadsRef.current += 1;
-      const reader = new FileReader();
-      reader.onload = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-        if (gen !== releaseGenRef.current) return;
-        if (typeof reader.result === "string") {
-          setImages((imgs) => [...imgs, reader.result as string]);
-        }
-      };
-      reader.onerror = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-      };
-      reader.readAsDataURL(file);
+      if (file) files.push(file);
     }
+    if (!files.length) return;
+    e.preventDefault();
+    readImageFiles(files);
   }
 
   function onFiles(files: FileList | null) {
     if (!files) return;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
+    readImageFiles(Array.from(files));
+  }
+
+  function readImageFiles(files: File[]) {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (imagesRef.current.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
+      onNotify(`Attach no more than ${MAX_IMAGES_PER_MESSAGE} images per message.`, "err");
+      return;
+    }
+    for (const file of imageFiles) {
+      if (file.size > MAX_IMAGE_FILE_BYTES) {
+        onNotify(
+          `Each attached image must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`,
+          "err",
+        );
+        continue;
+      }
       const gen = releaseGenRef.current;
       pendingImageReadsRef.current += 1;
       const reader = new FileReader();
@@ -238,9 +241,13 @@ export function ChatView({
           0,
           pendingImageReadsRef.current - 1,
         );
-        if (gen !== releaseGenRef.current) return;
-        if (typeof reader.result === "string") {
-          setImages((imgs) => [...imgs, reader.result as string]);
+        if (gen !== releaseGenRef.current || typeof reader.result !== "string") return;
+        const next = [...imagesRef.current, reader.result];
+        const error = imageLimitError(next);
+        if (error) onNotify(error, "err");
+        else {
+          imagesRef.current = next;
+          setImages(next);
         }
       };
       reader.onerror = () => {
@@ -248,6 +255,9 @@ export function ChatView({
           0,
           pendingImageReadsRef.current - 1,
         );
+        if (gen === releaseGenRef.current) {
+          onNotify("The attached image could not be read.", "err");
+        }
       };
       reader.readAsDataURL(file);
     }

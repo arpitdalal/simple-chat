@@ -63,6 +63,22 @@ beforeEach(() => {
 });
 
 describe("ChatSession", () => {
+  it("removes the pending stream if stopped before the request starts", async () => {
+    let release!: () => void;
+    getChat.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return chat("a");
+    });
+    const session = getChatSession("a");
+    session.send(chat("a"), "one", [], callbacks);
+    await waitFor(() => expect(release).toBeTruthy());
+    session.stop();
+    release();
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(session.getSnapshot().stream).toBeNull();
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
   it("queues turns within a chat and keeps each reply beside its prompt", async () => {
     let finishFirst!: () => void;
     streamChat.mockImplementationOnce(async ({ onToken }: { onToken: (token: string) => void }) => {

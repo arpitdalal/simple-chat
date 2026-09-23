@@ -313,18 +313,19 @@ export async function listRecentMessages(
   return rows.reverse();
 }
 
-/** Older page including the boundary timestamp; caller deduplicates by id. */
+/** Older page before a message in (created_at, rowid) order. */
 export async function listOlderMessages(
   chatId: string,
-  beforeCreatedAt: number,
+  beforeMessageId: string,
   limit = 40,
 ): Promise<Message[]> {
   const db = await getDb();
   const rows = await db.select<Message[]>(
     `SELECT * FROM messages
-     WHERE chat_id = $1 AND created_at <= $2
+     WHERE chat_id = $1 AND (created_at, rowid) <
+       (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)
      ORDER BY created_at DESC, rowid DESC LIMIT $3`,
-    [chatId, beforeCreatedAt, limit],
+    [chatId, beforeMessageId, limit],
   );
   return rows.reverse();
 }

@@ -85,6 +85,7 @@ export class ChatSession {
   }
   private releaseIfIdle() {
     if (this.listeners.size || this.turns.size || this.snapshot.phase !== "idle") return;
+    this.version += 1;
     this.loaded = false;
     this.snapshot = { ...this.snapshot, messages: [], hasMore: false, stream: null };
     if (!this.snapshot.drafts.length && !this.titleControllers.size && !this.titleWrites.size) {
@@ -125,18 +126,16 @@ export class ChatSession {
     const { messages, hasMore, loadingOlder } = this.snapshot;
     if (!hasMore || loadingOlder || !messages.length || messages.length >= MAX_CACHED_MESSAGES) return;
     const version = this.version;
-    const oldest = messages[0].created_at;
-    const boundary = messages.filter((m) => m.created_at === oldest).length;
     const size = Math.min(MESSAGE_PAGE, MAX_CACHED_MESSAGES - messages.length);
     this.publish({ loadingOlder: true });
     try {
-      const rows = await listOlderMessages(this.id, oldest, size + boundary);
+      const rows = await listOlderMessages(this.id, messages[0].id, size);
       if (this.version !== version) return;
       const seen = new Set(this.snapshot.messages.map((m) => m.id));
       const fresh = rows.filter((m) => !seen.has(m.id));
       this.publish({
         messages: [...fresh, ...this.snapshot.messages],
-        hasMore: fresh.length > 0 && rows.length >= size + boundary && this.snapshot.messages.length + fresh.length < MAX_CACHED_MESSAGES,
+        hasMore: rows.length >= size && this.snapshot.messages.length + fresh.length < MAX_CACHED_MESSAGES,
       });
     } finally {
       this.publish({ loadingOlder: false });
@@ -304,7 +303,7 @@ export class ChatSession {
 
   private finishTurn(turn: Turn) {
     this.turns.delete(turn);
-    if (this.streamOwner === turn) {
+    if (this.streamOwner === turn || this.turns.size === 0) {
       this.streamOwner = null;
       this.publish({ stream: null });
     }

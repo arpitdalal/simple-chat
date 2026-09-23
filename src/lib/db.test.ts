@@ -52,8 +52,19 @@ describe("db (memory sql integration)", () => {
     expect(recent[0].content).toBe("m400");
     expect(recent[1].content).toBe("m500");
 
-    const older = await listOlderMessages(chat.id, recent[0].created_at, 10);
-    expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300", "m400"]);
+    const older = await listOlderMessages(chat.id, recent[0].id, 10);
+    expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300"]);
+  });
+
+  it("pages through messages with the same timestamp", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    for (let i = 0; i < 60; i++) await addMessage(chat.id, "user", `m${i}`, 100);
+    const recent = await listRecentMessages(chat.id, 20);
+    const middle = await listOlderMessages(chat.id, recent[0].id, 20);
+    const oldest = await listOlderMessages(chat.id, middle[0].id, 20);
+    expect([...oldest, ...middle, ...recent].map((m) => m.content)).toEqual(
+      Array.from({ length: 60 }, (_, i) => `m${i}`),
+    );
   });
 
   it("deletes chat and persists settings", async () => {

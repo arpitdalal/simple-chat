@@ -222,12 +222,14 @@ class MemoryDatabase {
       return [{ n: messages.filter((m) => m.chat_id === chatId).length }] as unknown as T;
     }
 
-    if (q.includes("FROM messages") && q.includes("created_at <=")) {
+    if (q.includes("FROM messages") && q.includes("(created_at, rowid) <")) {
       const chatId = String(args[0]);
-      const before = Number(args[1]);
+      const anchor = messages.find((m) => m.id === String(args[1]) && m.chat_id === chatId);
+      if (!anchor) return [] as unknown as T;
+      const index = messages.indexOf(anchor);
       const limit = Number(args[2] ?? 40);
       return messages
-        .filter((m) => m.chat_id === chatId && m.created_at <= before)
+        .filter((m) => m.chat_id === chatId && (m.created_at < anchor.created_at || (m.created_at === anchor.created_at && messages.indexOf(m) < index)))
         .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))
         .slice(0, limit) as unknown as T;
     }

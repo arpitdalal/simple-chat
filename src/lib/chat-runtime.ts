@@ -359,7 +359,7 @@ export class ChatSession {
     for (const ac of this.titleControllers) ac.abort(reason);
   }
   async clear() {
-    if (this.snapshot.phase !== "idle") return;
+    if (this.getSnapshot().phase !== "idle") return;
     sessions.set(this.id, this);
     this.version += 1;
     this.publish({ phase: "clearing" });

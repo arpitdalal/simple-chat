@@ -549,6 +549,9 @@ function App() {
 
   async function handleDelete(id: string) {
     cancelNav();
+    // Abort active + queued turns before the chat disappears — otherwise the
+    // provider request keeps running and queued turns emit post-delete errors.
+    stopChat(id);
     await deleteChat(id);
     if (activeId === id) {
       const next = (await listChats())[0];

@@ -22,6 +22,23 @@ export const pendingSendsRef = { current: new Map<string, Message[]>() };
 export const localAddsRef = { current: new Map<string, Message[]>() };
 export const turnCancelsRef = { current: new Map<string, AbortController[]>() };
 export const abortedDraftsRef = { current: new Map<string, AbortedDraft[]>() };
+/** Title-gen ACs — aborted by stopChat but not counted as chat-busy. */
+export const titleCancelsRef = { current: new Map<string, AbortController[]>() };
+
+type StreamListener = (chatId: string) => void;
+const streamListeners = new Set<StreamListener>();
+
+/** Subscribe to stream slot mutations (remount-safe UI sync). */
+export function onStreamTick(fn: StreamListener): () => void {
+  streamListeners.add(fn);
+  return () => {
+    streamListeners.delete(fn);
+  };
+}
+
+export function notifyStreamTick(chatId: string): void {
+  for (const fn of streamListeners) fn(chatId);
+}
 
 export function getChatQueue(chatId: string): Queue {
   let q = queuesRef.current.get(chatId);
@@ -44,12 +61,16 @@ export function isChatBusy(chatId: string): boolean {
 export function stopChat(chatId: string) {
   streamsRef.current.get(chatId)?.ac.abort();
   for (const ac of turnCancelsRef.current.get(chatId) ?? []) ac.abort();
+  for (const ac of titleCancelsRef.current.get(chatId) ?? []) ac.abort();
 }
 
 export function resetChatRuntime() {
   // Abort first so in-flight ops observe cancellation before maps go empty.
   for (const slot of streamsRef.current.values()) slot.ac.abort();
   for (const list of turnCancelsRef.current.values()) {
+    for (const ac of list) ac.abort();
+  }
+  for (const list of titleCancelsRef.current.values()) {
     for (const ac of list) ac.abort();
   }
   for (const map of [
@@ -59,6 +80,7 @@ export function resetChatRuntime() {
     localAddsRef.current,
     turnCancelsRef.current,
     abortedDraftsRef.current,
+    titleCancelsRef.current,
   ]) {
     map.clear();
   }

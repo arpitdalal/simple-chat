@@ -28,9 +28,12 @@ import {
   getChatQueue,
   isChatBusy,
   localAddsRef,
+  notifyStreamTick,
+  onStreamTick,
   pendingSendsRef,
   stopChat,
   streamsRef,
+  titleCancelsRef,
   turnCancelsRef,
   type StreamSlot,
 } from "../lib/chat-runtime";
@@ -171,6 +174,20 @@ export function ChatView({
     const next = list.filter((x) => x !== ac);
     if (next.length) turnCancelsRef.current.set(chatId, next);
     else turnCancelsRef.current.delete(chatId);
+  }
+
+  function pushTitleCancel(chatId: string, ac: AbortController): void {
+    const list = titleCancelsRef.current.get(chatId) ?? [];
+    list.push(ac);
+    titleCancelsRef.current.set(chatId, list);
+  }
+
+  function clearTitleCancel(chatId: string, ac: AbortController) {
+    const list = titleCancelsRef.current.get(chatId);
+    if (!list) return;
+    const next = list.filter((x) => x !== ac);
+    if (next.length) titleCancelsRef.current.set(chatId, next);
+    else titleCancelsRef.current.delete(chatId);
   }
 
   /** Dequeue guard — only this turn's own token (never a stale stream slot). */
@@ -347,6 +364,30 @@ export function ChatView({
     };
   }, [chat?.id, reloadTick]);
 
+  // Remount-safe stream sync: stream callbacks belong to whichever ChatView
+  // started the send (may already be unmounted). Subscribe so this instance
+  // re-reads the shared slot on every token/end instead of only on mount.
+  useEffect(() => {
+    if (!chat) return;
+    return onStreamTick((chatId) => {
+      if (viewingIdRef.current !== chatId) return;
+      const slot = streamsRef.current.get(chatId);
+      if (slot) {
+        setBusy(true);
+        setViewingStream({ anchor: slot.anchor, text: slot.text });
+        stickBottom.current = true;
+        return;
+      }
+      const stillBusy = isChatBusy(chatId);
+      setBusy(stillBusy);
+      setViewingStream(null);
+      if (!stillBusy) {
+        inputRef.current?.focus();
+        requestAnimationFrame(resizeComposer);
+      }
+    });
+  }, [chat?.id]);
+
   // Tray-resident: drop scrolled-up history + draft image data URLs on hide.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -506,6 +547,7 @@ export function ChatView({
           text: "",
         };
     streamsRef.current.set(chatId, slot);
+    notifyStreamTick(chatId);
     if (viewingIdRef.current === chatId) {
       flushSync(() => {
         setBusy(true);
@@ -616,6 +658,7 @@ export function ChatView({
         onToken: (t) => {
           full += t;
           slot.text = full;
+          notifyStreamTick(chatId);
           if (viewingIdRef.current === chatId) {
             setViewingStream({ anchor: anchorUserId, text: full });
           }
@@ -624,6 +667,7 @@ export function ChatView({
           // Reset live buffer only — slot keeps last partial until new tokens
           full = "";
           slot.text = "";
+          notifyStreamTick(chatId);
           if (viewingIdRef.current === chatId) {
             setViewingStream({ anchor: anchorUserId, text: "" });
           }
@@ -677,6 +721,8 @@ export function ChatView({
       if (streamsRef.current.get(chatId) === slot) {
         streamsRef.current.delete(chatId);
       }
+      // Always tick — a remounted ChatView must clear Thinking/Stop too.
+      notifyStreamTick(chatId);
       if (viewingIdRef.current === chatId) {
         setViewingStream(null);
         inputRef.current?.focus();
@@ -731,6 +777,7 @@ export function ChatView({
       setImages([]);
       setMessages((m) => [...m, tempMsg]);
     });
+    notifyStreamTick(chatId);
     stickBottom.current = true;
     pendingSendsRef.current.set(chatId, [
       ...(pendingSendsRef.current.get(chatId) ?? []),
@@ -764,6 +811,9 @@ export function ChatView({
           // Distinct from AbortError so the user is told.
           throw chatDeletedError();
         }
+        // Clear can abort while getChat was in flight — recheck before persist
+        // or the wiped chat gets its user row re-inserted.
+        throwIfTurnAborted(turnAc);
         const userMsg = await addMessage(chatId, "user", displayText);
         userPersisted = true;
         userPersistedId = userMsg.id;
@@ -777,6 +827,7 @@ export function ChatView({
         const slot = streamsRef.current.get(chatId);
         if (slot && slot.anchor === tempId) {
           slot.anchor = userMsg.id;
+          notifyStreamTick(chatId);
           if (viewingIdRef.current === chatId) {
             setViewingStream({ anchor: userMsg.id, text: slot.text });
           }
@@ -799,18 +850,29 @@ export function ChatView({
             });
           }
           onChatUpdated();
+          // Dedicated AC so Stop/clear can cancel a detached title write after
+          // streamReply has already cleared turnAc from the cancel list.
+          const titleAc = new AbortController();
+          pushTitleCancel(chatId, titleAc);
+          if (turnAc.signal.aborted) titleAc.abort();
+          else {
+            turnAc.signal.addEventListener("abort", () => titleAc.abort(), {
+              once: true,
+            });
+          }
           const titleGen = generateChatTitle(
             chatSnap.provider as ProviderId,
             text,
-            turnAc.signal,
+            titleAc.signal,
           );
           void (async () => {
             try {
               const title = await titleGen;
-              if (turnAc.signal.aborted) return;
+              if (titleAc.signal.aborted) return;
               const titled = await getChat(chatId);
-              if (!titled) return;
+              if (!titled || titleAc.signal.aborted) return;
               await updateChat(chatId, { title });
+              if (titleAc.signal.aborted) return;
               if (viewingIdRef.current === chatId) {
                 onChatMeta({
                   ...titled,
@@ -821,6 +883,8 @@ export function ChatView({
               onChatUpdated();
             } catch {
               /* title gen / write is best-effort — never surface as a turn error */
+            } finally {
+              clearTitleCancel(chatId, titleAc);
             }
           })();
         }
@@ -844,6 +908,7 @@ export function ChatView({
       // Placeholder slot never reached streamReply — drop it so busy can clear
       if (ownsSlot && !reachedStream) {
         streamsRef.current.delete(chatId);
+        notifyStreamTick(chatId);
       }
       const deleted = await settleTurn(e, chatId, reachedStream, () => {
         if (viewingIdRef.current === chatId) {
@@ -868,6 +933,7 @@ export function ChatView({
         }
         if (!streamsRef.current.has(chatId)) {
           setViewingStream(null);
+          notifyStreamTick(chatId);
         }
       }
     } finally {
@@ -935,6 +1001,7 @@ export function ChatView({
             text: "",
           });
         });
+        notifyStreamTick(chatId);
         if (viewing) stickBottom.current = true;
 
         reachedStream = true;

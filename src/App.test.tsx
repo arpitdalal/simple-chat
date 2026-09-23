@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Chat } from "./lib/db";
 
@@ -553,6 +553,51 @@ describe("App UX", () => {
         screen.getByText("Start Simple Chat when you log in?"),
       ).toBeInTheDocument(),
     );
+  });
+
+  it("ignores a stale boot login-item probe after Settings settles", async () => {
+    const user = userEvent.setup();
+    const { getSettings } = await import("./lib/db");
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
+    });
+    let resolveBoot!: (enabled: boolean) => void;
+    const bootProbe = new Promise<boolean>((r) => {
+      resolveBoot = r;
+    });
+    let calls = 0;
+    isAutostartEnabled.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? bootProbe : Promise.resolve(false);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Ask Anything")).toBeInTheDocument());
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(1));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const box = await screen.findByRole("checkbox", { name: /start on login/i });
+    await waitFor(() => expect(box).not.toBeDisabled());
+    await user.click(box);
+    await waitFor(() => expect(setAutostartEnabled).toHaveBeenCalledWith(true));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.getByText("Ask Anything")).toBeInTheDocument());
+    expect(
+      screen.queryByText("Start Simple Chat when you log in?"),
+    ).toBeNull();
+    await act(async () => {
+      resolveBoot(false);
+    });
+    expect(
+      screen.queryByText("Start Simple Chat when you log in?"),
+    ).toBeNull();
   });
 
   it("Settings login-item toggle dismisses the first-run prompt", async () => {

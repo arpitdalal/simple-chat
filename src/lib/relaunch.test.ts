@@ -11,7 +11,7 @@ describe("relaunchVisible", () => {
     invoke.mockReset().mockResolvedValue(undefined);
   });
 
-  it("invokes relaunch_visible so Rust can drop --autostart", async () => {
+  it("invokes relaunch_visible so Rust can mark the restart user-visible", async () => {
     await relaunchVisible();
     expect(invoke).toHaveBeenCalledWith("relaunch_visible");
   });

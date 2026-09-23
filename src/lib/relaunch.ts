@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-/** Restart without `--autostart` so updater/user relaunch is visible. */
+/** Restart as a user-visible launch (Tauri restart + SIMPLE_CHAT_VISIBLE). */
 export function relaunchVisible() {
   return invoke("relaunch_visible");
 }

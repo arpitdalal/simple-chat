@@ -67,6 +67,7 @@ function App() {
   const [keyBusy, setKeyBusy] = useState(false);
   const [autostartPrompt, setAutostartPrompt] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
+  const autostartPromptGenRef = useRef(0);
 
   useEffect(() => activeSession.retain(), [activeSession]);
 
@@ -460,10 +461,11 @@ function App() {
       setReady(true);
       focusComposer();
       scheduleKeySync();
+      const promptGen = ++autostartPromptGenRef.current;
       void (async () => {
         try {
           const enabled = await isAutostartEnabled();
-          if (cancelled) return;
+          if (cancelled || promptGen !== autostartPromptGenRef.current) return;
           if (shouldPromptAutostart(s.autostart_prompted, enabled)) {
             setAutostartPrompt(true);
           }
@@ -484,6 +486,7 @@ function App() {
       cancelled = true;
       navGenRef.current += 1;
       updateCheckGenRef.current += 1;
+      autostartPromptGenRef.current += 1;
       pendingUpdateRef.current?.dismiss();
       pendingUpdateRef.current = null;
     };
@@ -657,12 +660,17 @@ function App() {
     }
   }
 
-  async function persistAutostartPrompted() {
-    await setSetting("autostart_prompted", true);
+  function settleAutostartPrompt() {
+    autostartPromptGenRef.current += 1;
+    setAutostartPrompt(false);
     setSettings((prev) =>
       prev ? { ...prev, autostart_prompted: true } : prev,
     );
-    setAutostartPrompt(false);
+  }
+
+  async function persistAutostartPrompted() {
+    await setSetting("autostart_prompted", true);
+    settleAutostartPrompt();
   }
 
   function beginDrag(e: React.MouseEvent) {
@@ -750,12 +758,7 @@ function App() {
               onNotify={notify}
               onUpdateFound={adoptUpdate}
               updateLocked={updating || restartRequired}
-              onAutostartSettled={() => {
-                setAutostartPrompt(false);
-                setSettings((prev) =>
-                  prev ? { ...prev, autostart_prompted: true } : prev,
-                );
-              }}
+              onAutostartSettled={settleAutostartPrompt}
             />
           </div>
         ) : (

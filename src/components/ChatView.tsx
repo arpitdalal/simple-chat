@@ -25,8 +25,11 @@ import {
 import { resolveModel, type ProviderId } from "../lib/models";
 import {
   abortedDraftsRef,
+  discardChatMirrors,
   getChatQueue,
   isChatBusy,
+  isChatDead,
+  lastClearedNonceRef,
   localAddsRef,
   notifyStreamTick,
   onStreamTick,
@@ -117,18 +120,16 @@ export function ChatView({
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
   const [reloadTick, setReloadTick] = useState(0);
-  const lastClearedNonceRef = useRef(0);
 
   // External clear wipes DB rows — drop local mirrors or mergeHistory resurrects them.
   // Abort active + queued turns first so a mid-flight turn cannot re-insert.
-  // Process each nonce once; deps are [cleared] so chat switches do not re-fire.
+  // lastClearedNonceRef is module-scoped: a Settings remount must not replay
+  // an old clear and discard state that landed after the wipe.
   useEffect(() => {
     if (!cleared?.nonce || cleared.nonce === lastClearedNonceRef.current) return;
     lastClearedNonceRef.current = cleared.nonce;
     stopChat(cleared.chatId);
-    localAddsRef.current.delete(cleared.chatId);
-    pendingSendsRef.current.delete(cleared.chatId);
-    abortedDraftsRef.current.delete(cleared.chatId);
+    discardChatMirrors(cleared.chatId);
     if (viewingIdRef.current === cleared.chatId) setReloadTick((t) => t + 1);
   }, [cleared]);
 
@@ -190,13 +191,10 @@ export function ChatView({
     else titleCancelsRef.current.delete(chatId);
   }
 
-  /** Dequeue guard — only this turn's own token (never a stale stream slot). */
-  function throwIfTurnAborted(turnAc: AbortController) {
-    if (turnAc.signal.aborted) {
-      const err = new Error("aborted");
-      err.name = "AbortError";
-      throw err;
-    }
+  function abortError(): Error {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    return err;
   }
 
   function chatDeletedError(): Error {
@@ -207,6 +205,29 @@ export function ChatView({
 
   function isChatDeleted(e: unknown): boolean {
     return (e as Error & { code?: string } | null)?.code === "CHAT_DELETED";
+  }
+
+  /** Dequeue guard — only this turn's own token (never a stale stream slot). */
+  function throwIfTurnAborted(turnAc: AbortController) {
+    if (turnAc.signal.aborted) throw abortError();
+  }
+
+  /**
+   * Single persist path for user + assistant rows: confirm the chat still
+   * exists, recheck the turn signal after the async lookup (Clear preserves
+   * the chat, so a wiped conversation can otherwise be repopulated), then insert.
+   */
+  async function persistMessage(
+    chatId: string,
+    role: Message["role"],
+    content: string,
+    signal: AbortSignal,
+  ): Promise<{ chat: Chat; msg: Message }> {
+    const chat = await getChat(chatId);
+    if (!chat) throw chatDeletedError();
+    if (signal.aborted) throw abortError();
+    const msg = await addMessage(chatId, role, content);
+    return { chat, msg };
   }
 
   /**
@@ -241,6 +262,9 @@ export function ChatView({
 
   /** Flush Stop'd unpersisted drafts once this chat's FIFO has fully drained. */
   function flushAbortedDrafts(chatId: string) {
+    // Dead chat: keep the stash for finalizeChatDeletion (success) or a
+    // later drain after unmarkChatDead (failed delete) — never restore now.
+    if (isChatDead(chatId)) return;
     if (turnCancelsRef.current.get(chatId)?.length) return;
     const drafts = abortedDraftsRef.current.get(chatId);
     if (!drafts?.length) return;
@@ -558,10 +582,15 @@ export function ChatView({
     const ac = slot.ac;
 
     const appendAssistant = async (content: string) => {
-      // Re-check before insert — chat may have been deleted mid-stream.
-      const still = await getChat(chatId);
-      if (!still) throw chatDeletedError();
-      const assistant = await addMessage(chatId, "assistant", content);
+      // Chat-exists + abort recheck live in persistMessage (Clear keeps the
+      // chat row, so getChat alone cannot detect a mid-flight wipe).
+      const { msg: assistant } = await persistMessage(
+        chatId,
+        "assistant",
+        content,
+        ac.signal,
+      );
+      if (isChatDead(chatId)) return;
       noteLocalAdd(chatId, assistant);
       if (viewingIdRef.current === chatId) {
         const limit =
@@ -804,17 +833,13 @@ export function ChatView({
         // Only this turn's token — a stale aborted slot from Stop must not
         // cancel a fresh send that raced into the queue window.
         throwIfTurnAborted(turnAc);
-        // Live chat check before any persist — a queued turn must not insert
-        // an orphan row into a chat deleted while it waited.
-        const freshChat = await getChat(chatId);
-        if (!freshChat) {
-          // Distinct from AbortError so the user is told.
-          throw chatDeletedError();
-        }
-        // Clear can abort while getChat was in flight — recheck before persist
-        // or the wiped chat gets its user row re-inserted.
-        throwIfTurnAborted(turnAc);
-        const userMsg = await addMessage(chatId, "user", displayText);
+        // Live chat check + abort recheck + insert (Clear can land mid-lookup).
+        const { chat: freshChat, msg: userMsg } = await persistMessage(
+          chatId,
+          "user",
+          displayText,
+          turnAc.signal,
+        );
         userPersisted = true;
         userPersistedId = userMsg.id;
         noteLocalAdd(chatId, userMsg);
@@ -921,16 +946,17 @@ export function ChatView({
         }
       });
       if (deleted) return;
+      if (!userPersisted) {
+        // Always stash unpersisted drafts regardless of which chat is viewed —
+        // dead chats keep them for finalize (success) or unmark (failed delete).
+        // flushAbortedDrafts refuses to restore while the chat is dead.
+        abortedDraftsRef.current.set(chatId, [
+          ...(abortedDraftsRef.current.get(chatId) ?? []),
+          { text, images: imageParts, gen: sendGen },
+        ]);
+      }
       if (viewingIdRef.current === chatId) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
-        if (!userPersisted) {
-          // Stop may abort several queued unpersisted turns — collect them and
-          // restore once the FIFO drains so the first restore doesn't block the rest.
-          abortedDraftsRef.current.set(chatId, [
-            ...(abortedDraftsRef.current.get(chatId) ?? []),
-            { text, images: imageParts, gen: sendGen },
-          ]);
-        }
         if (!streamsRef.current.has(chatId)) {
           setViewingStream(null);
           notifyStreamTick(chatId);
@@ -961,6 +987,7 @@ export function ChatView({
         throwIfTurnAborted(turnAc);
         const startGen = releaseGenRef.current;
         const all = await listMessages(chatId);
+        throwIfTurnAborted(turnAc);
         const idx = all.findIndex((m) => m.id === userMessageId);
         if (idx < 0 || all[idx].role !== "user") {
           onNotify("That message is no longer in this chat.", "err");
@@ -968,6 +995,7 @@ export function ChatView({
         }
 
         await deleteMessagesAfter(chatId, userMessageId);
+        throwIfTurnAborted(turnAc);
         // Truncation dropped every local row past the keep prefix (user and
         // assistant) — otherwise mergeHistory resurrects ghost rows next load.
         const keepIds = new Set(all.slice(0, idx + 1).map((m) => m.id));

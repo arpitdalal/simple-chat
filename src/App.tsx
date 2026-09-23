@@ -27,7 +27,13 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
-import { stopChat } from "./lib/chat-runtime";
+import {
+  discardChatMirrors,
+  finalizeChatDeletion,
+  markChatDead,
+  stopChat,
+  unmarkChatDead,
+} from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -549,10 +555,20 @@ function App() {
 
   async function handleDelete(id: string) {
     cancelNav();
-    // Abort active + queued turns before the chat disappears — otherwise the
-    // provider request keeps running and queued turns emit post-delete errors.
-    stopChat(id);
-    await deleteChat(id);
+    // Mark dead first so flush cannot restore drafts into the next chat
+    // while delete is in flight. Do not abort yet — a failed delete must
+    // leave in-flight turns and mirrors intact (unmark only clears the flag).
+    markChatDead(id);
+    try {
+      await deleteChat(id);
+    } catch (err) {
+      unmarkChatDead(id);
+      notify((err as Error)?.message || String(err), "err");
+      await refreshChats();
+      return;
+    }
+    // Row is gone — now it is safe to abort controllers and drop mirrors.
+    finalizeChatDeletion(id);
     if (activeId === id) {
       const next = (await listChats())[0];
       if (next) {
@@ -572,8 +588,10 @@ function App() {
     // re-insert into the chat mid-clear.
     stopChat(id);
     await clearChatMessages(id);
-    // Signal ChatView to drop localAdds/pendingSends for this chat — otherwise
-    // mergeHistory resurrects wiped rows on the next history load.
+    // Drop mirrors here (not only in ChatView) so a clear while Settings is
+    // open still prevents mergeHistory from resurrecting wiped rows on remount.
+    discardChatMirrors(id);
+    // Signal ChatView to reload the visible list after an external wipe.
     setCleared({ chatId: id, nonce: Date.now() });
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();

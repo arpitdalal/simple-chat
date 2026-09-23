@@ -25,6 +25,58 @@ export const abortedDraftsRef = { current: new Map<string, AbortedDraft[]>() };
 /** Title-gen ACs — aborted by stopChat but not counted as chat-busy. */
 export const titleCancelsRef = { current: new Map<string, AbortController[]>() };
 
+/**
+ * Last clear notification consumed. Module-scoped so Settings remounts
+ * (which recreate ChatView) cannot replay an old clear and wipe new state.
+ */
+export const lastClearedNonceRef = { current: 0 };
+
+/**
+ * Chats removed from the DB. Late async handlers check this so aborted
+ * drafts / optimistic rows for a deleted chat are never restored into the
+ * composer or the next conversation.
+ */
+export const deadChatsRef = { current: new Set<string>() };
+
+export function isChatDead(chatId: string): boolean {
+  return deadChatsRef.current.has(chatId);
+}
+
+/**
+ * Begin deletion: mark dead only — flush refuses to restore drafts into the
+ * next conversation, but in-flight controllers and mirrors stay intact so a
+ * failed delete can unmark without losing content. Irreversible teardown
+ * (abort + discard) runs in finalizeChatDeletion after deleteChat succeeds.
+ */
+export function markChatDead(chatId: string): void {
+  deadChatsRef.current.add(chatId);
+}
+
+/** Undo markChatDead when deleteChat fails — the row and local state stay live. */
+export function unmarkChatDead(chatId: string): void {
+  deadChatsRef.current.delete(chatId);
+}
+
+/**
+ * After deleteChat succeeds: stop every controller for this chat and drop
+ * per-chat mirrors. Safe to call only once the DB row is gone.
+ */
+export function finalizeChatDeletion(chatId: string): void {
+  stopChat(chatId);
+  localAddsRef.current.delete(chatId);
+  pendingSendsRef.current.delete(chatId);
+  abortedDraftsRef.current.delete(chatId);
+  turnCancelsRef.current.delete(chatId);
+  titleCancelsRef.current.delete(chatId);
+}
+
+/** Drop per-chat mirrors after Clear (chat still alive; turns already stopped). */
+export function discardChatMirrors(chatId: string): void {
+  localAddsRef.current.delete(chatId);
+  pendingSendsRef.current.delete(chatId);
+  abortedDraftsRef.current.delete(chatId);
+}
+
 type StreamListener = (chatId: string) => void;
 const streamListeners = new Set<StreamListener>();
 
@@ -84,4 +136,6 @@ export function resetChatRuntime() {
   ]) {
     map.clear();
   }
+  deadChatsRef.current.clear();
+  lastClearedNonceRef.current = 0;
 }

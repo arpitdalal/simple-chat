@@ -58,7 +58,13 @@ vi.mock("../lib/db", () => ({
 }));
 
 import { ChatView } from "./ChatView";
-import { resetChatRuntime } from "../lib/chat-runtime";
+import {
+  abortedDraftsRef,
+  lastClearedNonceRef,
+  markChatDead,
+  pendingSendsRef,
+  resetChatRuntime,
+} from "../lib/chat-runtime";
 
 const chat: Chat = {
   id: "c1",
@@ -1186,6 +1192,142 @@ describe("ChatView", () => {
     expect(streamChat).toHaveBeenCalledTimes(1);
     expect(clearChatMessages).toHaveBeenCalledWith("c1");
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  });
+
+  it("does not replay a consumed clear nonce after remount", async () => {
+    const nonce = Date.now();
+    lastClearedNonceRef.current = 0;
+
+    const first = render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+        cleared={{ chatId: "c1", nonce }}
+      />,
+    );
+    await waitFor(() => expect(lastClearedNonceRef.current).toBe(nonce));
+
+    pendingSendsRef.current.set("c1", [
+      {
+        id: "tmp-1",
+        chat_id: "c1",
+        role: "user",
+        content: "after-clear",
+        created_at: Date.now(),
+      },
+    ]);
+
+    first.unmount();
+    const runtime = await import("../lib/chat-runtime");
+    const stopSpy = vi.spyOn(runtime, "stopChat");
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={2}
+        cleared={{ chatId: "c1", nonce }}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    expect(pendingSendsRef.current.get("c1")).toHaveLength(1);
+    expect(stopSpy).not.toHaveBeenCalled();
+    stopSpy.mockRestore();
+  });
+
+  it("does not persist the assistant row when clear aborts after getChat", async () => {
+    const user = userEvent.setup();
+    // User persist succeeds; every later getChat (assistant append) blocks
+    // until stopChat has aborted the turn — then persistMessage must throw.
+    let getChatCalls = 0;
+    let releaseAssistantLookup!: () => void;
+    getChat.mockImplementation(async (id: string) => {
+      getChatCalls += 1;
+      if (getChatCalls >= 2) {
+        await new Promise<void>((r) => {
+          releaseAssistantLookup = r;
+        });
+      }
+      return { ...chat, id, title: "Thread", preview: "hi" };
+    });
+    addMessage.mockClear();
+    streamChat.mockImplementationOnce(
+      async (opts: { onToken: (t: string) => void }) => {
+        opts.onToken("Hello world");
+      },
+    );
+
+    render(
+      <ChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(box, "hi");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(getChatCalls).toBeGreaterThanOrEqual(2));
+    const { stopChat } = await import("../lib/chat-runtime");
+    stopChat("c1");
+    releaseAssistantLookup();
+    await waitFor(() => expect(releaseAssistantLookup).toBeTruthy());
+    // Give the append path a turn to settle
+    await new Promise((r) => setTimeout(r, 20));
+    const assistantWrites = addMessage.mock.calls.filter(
+      (c) => c[1] === "assistant",
+    );
+    expect(assistantWrites).toHaveLength(0);
+    const userWrites = addMessage.mock.calls.filter((c) => c[1] === "user");
+    expect(userWrites).toHaveLength(1);
+  });
+
+  it("flush refuses to restore drafts for a dead chat", async () => {
+    const user = userEvent.setup();
+    markChatDead("c1");
+    abortedDraftsRef.current.set("c1", [
+      { text: "orphan", images: [], gen: 0 },
+    ]);
+
+    render(
+      <ChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const box = await screen.findByPlaceholderText("Ask AI anything…");
+    streamChat.mockImplementationOnce(
+      async (opts: { onToken: (t: string) => void }) => {
+        opts.onToken("ok");
+      },
+    );
+    await user.type(box, "hello");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    expect(box).toHaveValue("");
+    // Stash is preserved (finalize/unmark owns deletion) but never restored.
+    expect(abortedDraftsRef.current.get("c1")).toEqual([
+      { text: "orphan", images: [], gen: 0 },
+    ]);
   });
 
   it("regenerate notifies when the message is no longer in the chat", async () => {

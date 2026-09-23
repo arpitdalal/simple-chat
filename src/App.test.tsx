@@ -416,4 +416,78 @@ describe("App UX", () => {
       ),
     );
   });
+
+  it("delete marks the chat dead so late handlers cannot restore drafts", async () => {
+    const user = userEvent.setup();
+    const chat: Chat = {
+      id: "dead-1",
+      title: "Doomed",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 1,
+      updated_at: 1,
+      preview: "hi",
+      pinned: 0,
+    };
+    chatsStore.set([chat]);
+    openOrCreateChat.mockResolvedValueOnce(chat);
+
+    const { isChatDead, abortedDraftsRef, markChatDead } = await import(
+      "./lib/chat-runtime"
+    );
+    abortedDraftsRef.current.set("dead-1", [
+      { text: "keep-me", images: [], gen: 0 },
+    ]);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const row = Array.from(document.querySelectorAll(".chat-item")).find((el) =>
+      el.textContent?.includes("Doomed"),
+    )!;
+    await user.hover(row);
+    await user.click(within(row).getByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+
+    await waitFor(() => expect(isChatDead("dead-1")).toBe(true));
+    expect(abortedDraftsRef.current.has("dead-1")).toBe(false);
+    markChatDead("dead-1");
+    expect(isChatDead("dead-1")).toBe(true);
+  });
+
+  it("failed delete unmarks the chat and notifies", async () => {
+    const user = userEvent.setup();
+    const chat: Chat = {
+      id: "fail-1",
+      title: "Sticky",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 1,
+      updated_at: 1,
+      preview: "hi",
+      pinned: 0,
+    };
+    chatsStore.set([chat]);
+    openOrCreateChat.mockResolvedValueOnce(chat);
+    const { deleteChat } = await import("./lib/db");
+    vi.mocked(deleteChat).mockRejectedValueOnce(new Error("db locked"));
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
+    );
+    const row = Array.from(document.querySelectorAll(".chat-item")).find((el) =>
+      el.textContent?.includes("Sticky"),
+    )!;
+    await user.hover(row);
+    await user.click(within(row).getByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+
+    const { isChatDead } = await import("./lib/chat-runtime");
+    await waitFor(() => expect(isChatDead("fail-1")).toBe(false));
+    expect(
+      await screen.findByText("db locked"),
+    ).toBeInTheDocument();
+  });
 });

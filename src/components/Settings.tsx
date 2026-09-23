@@ -16,6 +16,13 @@ import {
 import { PROVIDER_LABELS, PROVIDERS, pickDefaultModel, type ProviderId } from "../lib/models";
 import { ModelPicker } from "./ModelPicker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
+import {
+  arch as getArchitecture,
+  platform as getPlatform,
+  version as getOsVersion,
+} from "@tauri-apps/plugin-os";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   applyHotkey,
   clearHotkey,
@@ -27,6 +34,72 @@ import {
 } from "../lib/hotkey";
 import { checkForAppUpdate, type AvailableUpdate } from "../lib/updater";
 import { isAutostartEnabled, setAutostartEnabled } from "../lib/autostart";
+import { CheckIcon, CopyIcon } from "./Icons";
+
+const REPOSITORY_URL = "https://github.com/arpitdalal/simple-chat";
+const NEW_ISSUE_URL = `${REPOSITORY_URL}/issues/new`;
+
+type RuntimeMetadata = {
+  version: string;
+  platform: string;
+  osVersion: string;
+  architecture: string;
+};
+
+function osName(platform: string) {
+  if (platform === "macos") return "macOS";
+  if (platform) return platform[0].toUpperCase() + platform.slice(1);
+  return "Unknown";
+}
+
+export function buildIssueUrl(metadata: RuntimeMetadata) {
+  const body = [
+    `Version: ${metadata.version || "Unknown"}`,
+    `OS: ${osName(metadata.platform)} ${metadata.osVersion || "Unknown"}`.trimEnd(),
+    `Architecture: ${metadata.architecture || "Unknown"}`,
+    "",
+    "Description:",
+    "",
+    "Steps to reproduce:",
+    "",
+    "1.",
+    "",
+    "Expected behavior:",
+  ].join("\n");
+  const url = new URL(NEW_ISSUE_URL);
+  url.searchParams.set("body", body);
+  return url.toString();
+}
+
+async function readRuntimeMetadata(): Promise<RuntimeMetadata> {
+  const metadata: RuntimeMetadata = {
+    version: "Unknown",
+    platform: "",
+    osVersion: "",
+    architecture: "",
+  };
+  try {
+    metadata.version = await getVersion();
+  } catch {
+    metadata.version = "Unknown";
+  }
+  try {
+    metadata.platform = getPlatform();
+  } catch {
+    metadata.platform = "";
+  }
+  try {
+    metadata.osVersion = getOsVersion();
+  } catch {
+    metadata.osVersion = "";
+  }
+  try {
+    metadata.architecture = getArchitecture();
+  } catch {
+    metadata.architecture = "";
+  }
+  return metadata;
+}
 
 type Props = {
   onClose: () => void;
@@ -76,6 +149,10 @@ export function Settings({
   const [autostartOn, setAutostartOn] = useState<boolean | null>(null);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [autostartError, setAutostartError] = useState("");
+  const [runtimeMetadata, setRuntimeMetadata] = useState<RuntimeMetadata | null>(
+    null,
+  );
+  const [versionCopied, setVersionCopied] = useState(false);
   const updateCheckGenRef = useRef(0);
   const saveTimer = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
@@ -174,6 +251,22 @@ export function Settings({
       updateCheckGenRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readRuntimeMetadata().then((metadata) => {
+      if (!cancelled) setRuntimeMetadata(metadata);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!versionCopied) return;
+    const timer = window.setTimeout(() => setVersionCopied(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [versionCopied]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -649,6 +742,40 @@ export function Settings({
     }
   }
 
+  async function openExternal(url: string) {
+    try {
+      await openUrl(url);
+    } catch (err) {
+      onNotifyRef.current?.(
+        (err as Error).message || "Could not open the system browser.",
+        "err",
+      );
+    }
+  }
+
+  async function copyVersion() {
+    if (!runtimeMetadata) return;
+    try {
+      await navigator.clipboard.writeText(runtimeMetadata.version);
+      setVersionCopied(true);
+      onNotifyRef.current?.("Version copied", "ok");
+    } catch (err) {
+      onNotifyRef.current?.(
+        (err as Error).message || "Could not copy the version.",
+        "err",
+      );
+    }
+  }
+
+  async function reportIssue() {
+    let metadata = runtimeMetadata;
+    if (!metadata) {
+      metadata = await readRuntimeMetadata();
+      if (mountedRef.current) setRuntimeMetadata(metadata);
+    }
+    await openExternal(buildIssueUrl(metadata));
+  }
+
   if (!settings) return <div className="settings-panel">Loading…</div>;
 
   return (
@@ -848,50 +975,67 @@ export function Settings({
 
       <section>
         <h3>Updates</h3>
-        <button
-          type="button"
-          className="ghost"
-          disabled={updateBusy || updateLocked}
-          onClick={() => {
-            void (async () => {
-              const gen = ++updateCheckGenRef.current;
-              setUpdateBusy(true);
-              setStatus("Checking for updates…");
-              try {
-                const result = await checkForAppUpdate();
-                if (gen !== updateCheckGenRef.current) {
-                  if (result.status === "available") result.update.dismiss();
-                  return;
-                }
-                if (result.status === "none") {
-                  setStatus("Up to date");
-                  return;
-                }
-                if (result.status === "error") {
-                  setStatus(result.message);
-                  onNotifyRef.current?.(result.message, "err");
-                  return;
-                }
-                setStatus(`Update ${result.update.version} available`);
-                onUpdateFound?.(result.update);
-              } catch (e) {
-                if (gen !== updateCheckGenRef.current) return;
-                const msg =
-                  e instanceof Error
-                    ? e.message
-                    : typeof e === "string"
-                      ? e
-                      : "Update check failed";
-                setStatus(msg);
-                onNotifyRef.current?.(msg, "err");
-              } finally {
-                if (gen === updateCheckGenRef.current) setUpdateBusy(false);
-              }
-            })();
-          }}
-        >
-          {updateBusy ? "Checking…" : "Check for updates"}
-        </button>
+        <div className="update-row">
+          <span>Version {runtimeMetadata?.version ?? "Loading…"}</span>
+          <div className="update-actions">
+            <button
+              type="button"
+              className="ghost tiny version-copy"
+              disabled={!runtimeMetadata}
+              aria-label={versionCopied ? "Copied" : "Copy version"}
+              onClick={() => void copyVersion()}
+            >
+              {versionCopied ? <CheckIcon /> : <CopyIcon />}
+              <span>{versionCopied ? "Copied" : "Copy"}</span>
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={updateBusy || updateLocked}
+              onClick={() => {
+                void (async () => {
+                  const gen = ++updateCheckGenRef.current;
+                  setUpdateBusy(true);
+                  setStatus("Checking for updates…");
+                  try {
+                    const result = await checkForAppUpdate();
+                    if (gen !== updateCheckGenRef.current) {
+                      if (result.status === "available") result.update.dismiss();
+                      return;
+                    }
+                    if (result.status === "none") {
+                      setStatus("Up to date");
+                      return;
+                    }
+                    if (result.status === "error") {
+                      setStatus(result.message);
+                      onNotifyRef.current?.(result.message, "err");
+                      return;
+                    }
+                    setStatus(`Update ${result.update.version} available`);
+                    onUpdateFound?.(result.update);
+                  } catch (e) {
+                    if (gen !== updateCheckGenRef.current) return;
+                    const msg =
+                      e instanceof Error
+                        ? e.message
+                        : typeof e === "string"
+                          ? e
+                          : "Update check failed";
+                    setStatus(msg);
+                    onNotifyRef.current?.(msg, "err");
+                  } finally {
+                    if (gen === updateCheckGenRef.current) {
+                      setUpdateBusy(false);
+                    }
+                  }
+                })();
+              }}
+            >
+              {updateBusy ? "Checking…" : "Check for updates"}
+            </button>
+          </div>
+        </div>
       </section>
 
       <section>
@@ -906,6 +1050,30 @@ export function Settings({
         >
           Delete chats older than 6 months
         </button>
+      </section>
+
+      <section>
+        <h3>About</h3>
+        <div className="about-row">
+          <img className="about-icon" src="/logo.png" alt="" />
+          <strong>Simple Chat</strong>
+          <div className="about-actions">
+            <button
+              type="button"
+              className="ghost tiny"
+              onClick={() => void openExternal(REPOSITORY_URL)}
+            >
+              View source
+            </button>
+            <button
+              type="button"
+              className="ghost tiny"
+              onClick={() => void reportIssue()}
+            >
+              Report an issue
+            </button>
+          </div>
+        </div>
       </section>
 
       {status && <p className="hint settings-status">{status}</p>}

@@ -15,6 +15,7 @@
     "core:window:allow-start-dragging",
     "core:tray:default",
     "opener:default",
+    "os:default",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

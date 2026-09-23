@@ -4,6 +4,7 @@ const keys = new Map<string, string>([
 ]);
 
 export async function invoke<T>(cmd: string, args?: Record<string, string>): Promise<T> {
+  if (cmd === "plugin:app|version") return "0.1.0" as T;
   if (cmd === "has_api_key") {
     return (keys.has(args?.provider ?? "") && !!keys.get(args!.provider)) as T;
   }

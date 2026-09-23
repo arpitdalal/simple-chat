@@ -67,6 +67,10 @@ export default defineConfig({
         replacement: path.resolve(projectRoot, "src/test/mock-opener.ts"),
       },
       {
+        find: "@tauri-apps/plugin-os",
+        replacement: path.resolve(projectRoot, "src/test/mock-os.ts"),
+      },
+      {
         find: "@tauri-apps/plugin-updater",
         replacement: path.resolve(projectRoot, "src/test/mock-updater.ts"),
       },

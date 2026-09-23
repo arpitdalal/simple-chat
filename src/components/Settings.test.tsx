@@ -1,7 +1,24 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings } from "./Settings";
+
+const runtimeMocks = vi.hoisted(() => ({
+  getVersion: vi.fn(async () => "1.2.3"),
+  getPlatform: vi.fn(() => "macos"),
+  getOsVersion: vi.fn(() => "15.6"),
+  getArchitecture: vi.fn(() => "aarch64"),
+  openUrl: vi.fn(async () => undefined),
+  writeText: vi.fn(async () => undefined),
+}));
+
+vi.mock("@tauri-apps/api/app", () => ({ getVersion: runtimeMocks.getVersion }));
+vi.mock("@tauri-apps/plugin-os", () => ({
+  arch: runtimeMocks.getArchitecture,
+  platform: runtimeMocks.getPlatform,
+  version: runtimeMocks.getOsVersion,
+}));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: runtimeMocks.openUrl }));
 
 const hasApiKey = vi.fn();
 const setApiKey = vi.fn();
@@ -75,6 +92,16 @@ vi.mock("@tauri-apps/api/window", () => ({
 describe("Settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runtimeMocks.getVersion.mockResolvedValue("1.2.3");
+    runtimeMocks.getPlatform.mockReturnValue("macos");
+    runtimeMocks.getOsVersion.mockReturnValue("15.6");
+    runtimeMocks.getArchitecture.mockReturnValue("aarch64");
+    runtimeMocks.openUrl.mockResolvedValue(undefined);
+    runtimeMocks.writeText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: runtimeMocks.writeText },
+    });
     getSettings.mockResolvedValue({
       resume_minutes: 5,
       always_on_top: true,
@@ -98,6 +125,73 @@ describe("Settings", () => {
     });
     setApiKey.mockResolvedValue(undefined);
     clearApiKey.mockResolvedValue(undefined);
+  });
+
+  it("loads the installed version beside the update action and copies it", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: runtimeMocks.writeText },
+    });
+    let resolveVersion!: (version: string) => void;
+    runtimeMocks.getVersion.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveVersion = resolve;
+      }),
+    );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    expect(await screen.findByText("Version Loading…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy version" })).toBeDisabled();
+    resolveVersion("1.2.3");
+    expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
+    const updates = screen.getByRole("heading", { name: "Updates" }).closest("section");
+    expect(within(updates!).getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+
+    await user.click(within(updates!).getByRole("button", { name: "Copy version" }));
+    expect(runtimeMocks.writeText).toHaveBeenCalledWith("1.2.3");
+    expect(await within(updates!).findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("opens source and builds a prefilled issue report from runtime metadata", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await screen.findByText("Version 1.2.3");
+    const history = screen.getByRole("heading", { name: "History" }).closest("section");
+    const about = screen.getByRole("heading", { name: "About" }).closest("section");
+    expect(history!.compareDocumentPosition(about!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(about!).getByText("Simple Chat")).toBeInTheDocument();
+    expect(about!.querySelector("img")).toHaveAttribute("src", "/logo.png");
+
+    await user.click(within(about!).getByRole("button", { name: "View source" }));
+    expect(runtimeMocks.openUrl).toHaveBeenNthCalledWith(
+      1,
+      "https://github.com/arpitdalal/simple-chat",
+    );
+
+    await user.click(within(about!).getByRole("button", { name: "Report an issue" }));
+    expect(runtimeMocks.openUrl).toHaveBeenCalledTimes(2);
+    const issueUrl = new URL(runtimeMocks.openUrl.mock.calls[1][0] as string);
+    expect(`${issueUrl.origin}${issueUrl.pathname}`).toBe(
+      "https://github.com/arpitdalal/simple-chat/issues/new",
+    );
+    expect(issueUrl.searchParams.get("title")).toBeNull();
+    expect(issueUrl.searchParams.get("body")).toBe(
+      [
+        "Version: 1.2.3",
+        "OS: macOS 15.6",
+        "Architecture: aarch64",
+        "",
+        "Description:",
+        "",
+        "Steps to reproduce:",
+        "",
+        "1.",
+        "",
+        "Expected behavior:",
+      ].join("\n"),
+    );
   });
 
   it("shows Clear for saved keys and clears on click", async () => {

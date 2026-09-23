@@ -207,9 +207,7 @@ describe("Settings", () => {
 
   it("keeps an unavailable version disabled and retries loading", async () => {
     const user = userEvent.setup();
-    runtimeMocks.getVersion.mockRejectedValueOnce(
-      new Error("IPC unavailable"),
-    );
+    runtimeMocks.getVersion.mockResolvedValueOnce("Unknown");
     render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
 
     expect(await screen.findByText("Version Unavailable")).toBeInTheDocument();

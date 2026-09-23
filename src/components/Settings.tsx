@@ -48,6 +48,10 @@ type RuntimeMetadata = {
   complete: boolean;
 };
 
+function isKnownMetadataValue(value: string) {
+  return Boolean(value) && value.toLowerCase() !== "unknown";
+}
+
 function osName(platform: string) {
   if (platform === "macos") return "macOS";
   return platform[0].toUpperCase() + platform.slice(1);
@@ -110,7 +114,7 @@ async function readRuntimeMetadata(): Promise<RuntimeMetadata> {
     osVersion,
     architecture,
     complete: [version, platform, osVersion, architecture].every(
-      (value) => Boolean(value) && value.toLowerCase() !== "unknown",
+      isKnownMetadataValue,
     ),
   };
 }
@@ -778,7 +782,13 @@ export function Settings({
   }
 
   async function copyVersion() {
-    if (!runtimeMetadata?.version || copyBusy) return;
+    if (
+      !runtimeMetadata?.version ||
+      !isKnownMetadataValue(runtimeMetadata.version)
+    ) {
+      return;
+    }
+    if (copyBusy) return;
     setVersionCopied(false);
     setCopyBusy(true);
     try {
@@ -1019,23 +1029,30 @@ export function Settings({
           <span>
             Version{" "}
             {runtimeMetadata
-              ? runtimeMetadata.version || "Unavailable"
+              ? isKnownMetadataValue(runtimeMetadata.version)
+                ? runtimeMetadata.version
+                : "Unavailable"
               : "Loading…"}
           </span>
-          {runtimeMetadata && !runtimeMetadata.version && (
-            <button
-              type="button"
-              className="ghost tiny"
-              onClick={() => void probeRuntimeMetadata()}
-            >
-              Retry
-            </button>
-          )}
+          {runtimeMetadata &&
+            !isKnownMetadataValue(runtimeMetadata.version) && (
+              <button
+                type="button"
+                className="ghost tiny"
+                onClick={() => void probeRuntimeMetadata()}
+              >
+                Retry
+              </button>
+            )}
           <div className="update-actions">
             <button
               type="button"
               className="ghost tiny version-copy"
-              disabled={!runtimeMetadata?.version || copyBusy}
+              disabled={
+                !runtimeMetadata?.version ||
+                !isKnownMetadataValue(runtimeMetadata.version) ||
+                copyBusy
+              }
               aria-label={versionCopied ? "Copied" : "Copy version"}
               onClick={() => void copyVersion()}
             >

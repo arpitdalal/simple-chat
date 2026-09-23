@@ -256,6 +256,26 @@ export async function updateChat(
   );
 }
 
+/** Set the first prompt title only while this is still an unnamed chat. */
+export async function setInitialChatTitle(id: string, title: string, preview: string): Promise<boolean> {
+  const db = await getDb();
+  const result = await db.execute(
+    "UPDATE chats SET title = $1, preview = $2, updated_at = $3 WHERE id = $4 AND title = 'New Chat'",
+    [title, preview, Date.now(), id],
+  );
+  return result.rowsAffected > 0;
+}
+
+/** A generated title must not overwrite a later manual rename or Clear. */
+export async function replaceChatTitle(id: string, previous: string, title: string): Promise<boolean> {
+  const db = await getDb();
+  const result = await db.execute(
+    "UPDATE chats SET title = $1 WHERE id = $2 AND title = $3",
+    [title, id, previous],
+  );
+  return result.rowsAffected > 0;
+}
+
 export async function deleteChat(id: string) {
   const db = await getDb();
   await db.execute("DELETE FROM messages WHERE chat_id = $1", [id]);
@@ -275,7 +295,7 @@ export async function deleteChatsOlderThan(days: number) {
 export async function listMessages(chatId: string): Promise<Message[]> {
   const db = await getDb();
   return db.select<Message[]>(
-    "SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at ASC",
+    "SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at ASC, rowid ASC",
     [chatId],
   );
 }
@@ -287,13 +307,13 @@ export async function listRecentMessages(
 ): Promise<Message[]> {
   const db = await getDb();
   const rows = await db.select<Message[]>(
-    `SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    `SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT $2`,
     [chatId, limit],
   );
   return rows.reverse();
 }
 
-/** Older page before a timestamp (oldest→newest within page). */
+/** Older page including the boundary timestamp; caller deduplicates by id. */
 export async function listOlderMessages(
   chatId: string,
   beforeCreatedAt: number,
@@ -302,8 +322,8 @@ export async function listOlderMessages(
   const db = await getDb();
   const rows = await db.select<Message[]>(
     `SELECT * FROM messages
-     WHERE chat_id = $1 AND created_at < $2
-     ORDER BY created_at DESC LIMIT $3`,
+     WHERE chat_id = $1 AND created_at <= $2
+     ORDER BY created_at DESC, rowid DESC LIMIT $3`,
     [chatId, beforeCreatedAt, limit],
   );
   return rows.reverse();
@@ -361,13 +381,13 @@ export async function deleteMessagesAfter(
   chatId: string,
   afterMessageId: string,
 ): Promise<void> {
-  const all = await listMessages(chatId);
-  const idx = all.findIndex((m) => m.id === afterMessageId);
-  if (idx < 0) return;
   const db = await getDb();
-  for (const m of all.slice(idx + 1)) {
-    await db.execute("DELETE FROM messages WHERE id = $1", [m.id]);
-  }
+  await db.execute(
+    `DELETE FROM messages WHERE chat_id = $1
+     AND (created_at, rowid) >
+       (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)`,
+    [chatId, afterMessageId],
+  );
 }
 
 export async function clearChatMessages(chatId: string) {

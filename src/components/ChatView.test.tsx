@@ -11,6 +11,9 @@ const listOlderMessages = vi.fn();
 const listMessages = vi.fn();
 const deleteMessagesAfter = vi.fn();
 const updateChat = vi.fn();
+const setInitialChatTitle = vi.fn();
+const replaceChatTitle = vi.fn();
+const getChat = vi.fn();
 
 const hiddenListeners = vi.hoisted(() => new Set<() => void>());
 
@@ -51,9 +54,13 @@ vi.mock("../lib/db", () => ({
   listMessages: (...a: unknown[]) => listMessages(...a),
   deleteMessagesAfter: (...a: unknown[]) => deleteMessagesAfter(...a),
   updateChat: (...a: unknown[]) => updateChat(...a),
+  setInitialChatTitle: (...a: unknown[]) => setInitialChatTitle(...a),
+  replaceChatTitle: (...a: unknown[]) => replaceChatTitle(...a),
+  getChat: (...a: unknown[]) => getChat(...a),
 }));
 
 import { ChatView } from "./ChatView";
+import { resetChatSessions } from "../lib/chat-runtime";
 
 const chat: Chat = {
   id: "c1",
@@ -79,12 +86,16 @@ function msg(
 describe("ChatView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetChatSessions();
     hiddenListeners.clear();
     listRecentMessages.mockResolvedValue([]);
     listOlderMessages.mockResolvedValue([]);
     listMessages.mockResolvedValue([]);
     deleteMessagesAfter.mockResolvedValue(undefined);
     updateChat.mockResolvedValue(undefined);
+    setInitialChatTitle.mockResolvedValue(true);
+    replaceChatTitle.mockResolvedValue(true);
+    getChat.mockImplementation(async (id: string) => ({ ...chat, id }));
     generateChatTitle.mockResolvedValue("Auto Title");
     addMessage.mockImplementation(async (_id, role, content) =>
       msg({ id: crypto.randomUUID(), role, content }),
@@ -183,10 +194,7 @@ describe("ChatView", () => {
     await user.type(screen.getByPlaceholderText("Ask AI anything…"), "domains");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(generateChatTitle).toHaveBeenCalled());
-    expect(updateChat).toHaveBeenCalledWith(
-      "c1",
-      expect.objectContaining({ title: "domains", preview: "domains" }),
-    );
+    expect(setInitialChatTitle).toHaveBeenCalledWith("c1", "domains", "domains");
     await waitFor(() =>
       expect(onChatMeta).toHaveBeenCalledWith(
         expect.objectContaining({ title: "Auto Title" }),

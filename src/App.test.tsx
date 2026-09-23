@@ -125,6 +125,8 @@ vi.mock("./lib/db", () => ({
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
   updateChat: vi.fn(),
+  setInitialChatTitle: vi.fn(async () => true),
+  replaceChatTitle: vi.fn(async () => true),
   messageCount: vi.fn(async () => 0),
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),
@@ -139,6 +141,8 @@ import { applyHotkey } from "./lib/hotkey";
 
 describe("App UX", () => {
   beforeEach(async () => {
+    const { resetChatSessions } = await import("./lib/chat-runtime");
+    resetChatSessions();
     chatsStore.reset();
     vi.mocked(applyHotkey).mockReset();
     vi.mocked(applyHotkey).mockResolvedValue(undefined);

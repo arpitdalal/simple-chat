@@ -6,9 +6,7 @@ import { Settings } from "./components/Settings";
 import { Toast, type ToastState } from "./components/Toast";
 import {
   branchChat,
-  clearChatMessages,
   createChat,
-  deleteChat,
   getChat,
   getSettings,
   listChats,
@@ -27,6 +25,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
+import { chatHasPendingTurns, getChatSession } from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -276,10 +275,13 @@ function App() {
       }
       setActiveIdNow(id);
       const toDelete = chats.filter(
-        (c) => c.id !== id && isEmptyNewChat(c),
+        (c) =>
+          c.id !== id &&
+          isEmptyNewChat(c) &&
+          !chatHasPendingTurns(c.id),
       );
       if (toDelete.length) {
-        for (const c of toDelete) await deleteChat(c.id);
+        for (const c of toDelete) await getChatSession(c.id).delete();
         await refreshChats();
       }
       focusComposer();
@@ -327,7 +329,9 @@ function App() {
 
         const liveChats = await listChats();
         if (isCancelled()) return;
-        const existing = liveChats.find(isEmptyNewChat);
+        const existing = liveChats.find(
+          (c) => isEmptyNewChat(c) && !chatHasPendingTurns(c.id),
+        );
         if (existing) {
           const aligned = await alignEmptyChat(existing, alignTo, readyList);
           if (isCancelled()) return;
@@ -342,7 +346,7 @@ function App() {
         if (active) {
           const freshActive = await getChat(active.id);
           if (isCancelled()) return;
-          if (freshActive && isEmptyNewChat(freshActive)) {
+          if (freshActive && isEmptyNewChat(freshActive) && !chatHasPendingTurns(freshActive.id)) {
             const aligned = await alignEmptyChat(
               freshActive,
               alignTo,
@@ -362,7 +366,7 @@ function App() {
           alignTo?.modelId ?? nextSettings.default_model,
         );
         if (isCancelled()) {
-          await deleteChat(chat.id);
+          await getChatSession(chat.id).delete();
           return;
         }
         setActiveIdNow(chat.id);
@@ -544,7 +548,12 @@ function App() {
 
   async function handleDelete(id: string) {
     cancelNav();
-    await deleteChat(id);
+    try {
+      await getChatSession(id).delete();
+    } catch (err) {
+      notify((err as Error).message || String(err), "err");
+      return;
+    }
     if (activeId === id) {
       const next = (await listChats())[0];
       if (next) {
@@ -560,7 +569,12 @@ function App() {
 
   async function handleClear(id: string) {
     cancelNav();
-    await clearChatMessages(id);
+    try {
+      await getChatSession(id).clear();
+    } catch (err) {
+      notify((err as Error).message || String(err), "err");
+      return;
+    }
     if (activeId === id) setActive(await getChat(id));
     await refreshChats();
     focusComposer();
@@ -701,7 +715,9 @@ function App() {
           <ChatView
             chat={active}
             onChatUpdated={() => void refreshChats()}
-            onChatMeta={setActive}
+            onChatMeta={(updated) => {
+              if (activeIdRef.current === updated.id) setActive(updated);
+            }}
             onNew={() => void newChat()}
             onBranch={handleBranch}
             onNotify={notify}

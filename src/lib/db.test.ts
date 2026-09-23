@@ -17,6 +17,8 @@ import {
   updateChat,
   branchChat,
   deleteMessagesAfter,
+  setInitialChatTitle,
+  replaceChatTitle,
 } from "./db";
 import { resetMemoryDb } from "../test/memory-sql";
 
@@ -51,7 +53,7 @@ describe("db (memory sql integration)", () => {
     expect(recent[1].content).toBe("m500");
 
     const older = await listOlderMessages(chat.id, recent[0].created_at, 10);
-    expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300"]);
+    expect(older.map((m) => m.content)).toEqual(["m100", "m200", "m300", "m400"]);
   });
 
   it("deletes chat and persists settings", async () => {
@@ -112,6 +114,14 @@ describe("db (memory sql integration)", () => {
     await addMessage(chat.id, "user", "three", 30);
     await deleteMessagesAfter(chat.id, a.id);
     expect((await listMessages(chat.id)).map((m) => m.content)).toEqual(["one"]);
+  });
+
+  it("generated titles do not overwrite a manual rename", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    expect(await setInitialChatTitle(chat.id, "Prompt", "prompt")).toBe(true);
+    await updateChat(chat.id, { title: "Mine" });
+    expect(await replaceChatTitle(chat.id, "Prompt", "Generated")).toBe(false);
+    expect((await getChat(chat.id))?.title).toBe("Mine");
   });
 
   it("setDefaultModel CAS skips when live defaults already moved", async () => {

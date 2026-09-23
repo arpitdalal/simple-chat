@@ -1,36 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ModelMessage } from "ai";
-import {
-  addMessage,
-  deleteMessagesAfter,
-  listMessages,
-  listOlderMessages,
-  listRecentMessages,
-  updateChat,
-  type Chat,
-  type Message,
-} from "../lib/db";
-import { generateChatTitle, streamChat } from "../lib/chat";
-import {
-  MAX_CACHED_MESSAGES,
-  MESSAGE_PAGE,
-  onMainWindowHidden,
-  trimRecentMessages,
-} from "../lib/memory";
+import { updateChat, type Chat, type Message } from "../lib/db";
+import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
+import { getChatSession } from "../lib/chat-runtime";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
-import {
-  AiIcon,
-  BranchIcon,
-  CheckIcon,
-  CopyIcon,
-  RegenerateIcon,
-  UserIcon,
-} from "./Icons";
+import { AiIcon, BranchIcon, CheckIcon, CopyIcon, RegenerateIcon, UserIcon } from "./Icons";
 import type { ToastKind } from "./Toast";
 
 const LINE_H = 22;
@@ -45,114 +23,66 @@ type Props = {
   onBranch: (throughMessageId: string) => Promise<void>;
   onNotify: (text: string, kind?: ToastKind) => void;
   focusNonce: number;
-  /** False once probed and this chat's provider has no usable key. */
   hasProviderKey?: boolean | null;
-  /** True when probe finished and no provider has a key. */
   noKeysConfigured?: boolean;
-  /** True while App is switching chats (e.g. New Chat probes) — block send. */
   sendLocked?: boolean;
   onNeedKey?: () => void;
-  /** ModelPicker probe result; null = credential store unknown. */
   onProvidersReady?: (ready: ProviderId[] | null) => void;
 };
 
 export function ChatView({
-  chat,
-  onChatUpdated,
-  onChatMeta,
-  onNew,
-  onBranch,
-  onNotify,
-  focusNonce,
-  hasProviderKey = true,
-  noKeysConfigured = false,
-  sendLocked = false,
-  onNeedKey,
-  onProvidersReady,
+  chat, onChatUpdated, onChatMeta, onNew, onBranch, onNotify, focusNonce,
+  hasProviderKey = true, noKeysConfigured = false, sendLocked = false,
+  onNeedKey, onProvidersReady,
 }: Props) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const session = getChatSession(chat?.id ?? "__empty__");
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const { messages, stream, busy, hasMore, loadingOlder } = state;
+  const showStream = stream !== null;
+  const streaming = stream?.text ?? "";
+  const anchorIndex = stream ? messages.findIndex((m) => m.id === stream.anchor) : -1;
+  const streamIndex = anchorIndex < 0 ? messages.length : anchorIndex + 1;
+  const rowCount = messages.length + (showStream ? 1 : 0);
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const [images, setImages] = useState<string[]>([]);
+  const [showJump, setShowJump] = useState(false);
   const parentRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [images, setImages] = useState<string[]>([]);
   const stickBottom = useRef(true);
-  const [showJump, setShowJump] = useState(false);
-  const viewingIdRef = useRef<string | null>(chat?.id ?? null);
-  const streamOwnerRef = useRef<string | null>(null);
-  const streamTextRef = useRef("");
-  const messagesRef = useRef<Message[]>([]);
   const imagesRef = useRef<string[]>([]);
-  /** In-flight FileReaders — composer not "empty" until they settle. */
   const pendingImageReadsRef = useRef(0);
-  /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
-
-  viewingIdRef.current = chat?.id ?? null;
-  messagesRef.current = messages;
   imagesRef.current = images;
-  const showStream = busy && streamOwnerRef.current === chat?.id;
-  // null = unknown (probe still running) — do not block. false = probed, no key.
+
   const noKey = hasProviderKey === false;
-  // send() / regenerate() only — drafting stays enabled while queues are busy.
-  const blocked = noKey || sendLocked;
+  const blocked = noKey || sendLocked || state.phase !== "idle";
   const setupNeeded = noKeysConfigured;
-
-  const rowCount = messages.length + (showStream ? 1 : 0);
-
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 120,
     overscan: 8,
   });
-
   const scrollToBottom = useCallback(() => {
     const el = parentRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
   useEffect(() => {
-    if (!chat) {
-      setMessages([]);
-      setHasMore(false);
-      setStreaming("");
-      setShowJump(false);
-      return;
-    }
-    let cancelled = false;
+    if (!chat) return;
     setShowJump(false);
-    // Restore in-flight stream text when returning to the owning chat
-    if (streamOwnerRef.current === chat.id && busy) {
-      setStreaming(streamTextRef.current);
-    } else {
-      setStreaming("");
-    }
-    void (async () => {
-      const page = await listRecentMessages(chat.id, MESSAGE_PAGE);
-      if (cancelled) return;
-      setMessages(page);
-      setHasMore(page.length >= MESSAGE_PAGE);
-      stickBottom.current = true;
-      requestAnimationFrame(() => {
-        virtualizer.scrollToIndex(Math.max(page.length - 1, 0), {
-          align: "end",
-        });
-        scrollToBottom();
-      });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [chat?.id]);
+    void session.loadRecent().catch((e) => onNotify((e as Error).message || String(e), "err"));
+  }, [chat?.id, session, onNotify]);
 
-  // Tray-resident: drop scrolled-up history + draft image data URLs on hide.
+  useEffect(() => {
+    if (!chat || state.phase !== "idle" || !state.drafts.length) return;
+    if (inputRef.current?.value || imagesRef.current.length || pendingImageReadsRef.current) return;
+    const drafts = session.takeDrafts();
+    setInput(drafts.map((d) => d.text).join("\n"));
+    setImages(drafts.flatMap((d) => d.images));
+  }, [chat?.id, session, state.drafts, state.phase]);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -160,20 +90,15 @@ export function ChatView({
       releaseGenRef.current += 1;
       setImages([]);
       if (fileRef.current) fileRef.current.value = "";
-      const cur = messagesRef.current;
-      if (cur.length <= MESSAGE_PAGE) return;
-      setMessages(trimRecentMessages(cur, MESSAGE_PAGE));
-      setHasMore(true);
+      session.trim();
+      session.dropDraftImages();
       stickBottom.current = true;
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+    return () => { cancelled = true; unlisten?.(); };
+  }, [session]);
 
   useLayoutEffect(() => {
     if (stickBottom.current) scrollToBottom();
@@ -182,7 +107,6 @@ export function ChatView({
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    // rAF: textarea may mount after first paint / window show
     const id = requestAnimationFrame(() => {
       el.focus();
       const len = el.value.length;
@@ -190,353 +114,73 @@ export function ChatView({
     });
     return () => cancelAnimationFrame(id);
   }, [focusNonce, chat?.id]);
-
-  // always focus once when chat view mounts
   useEffect(() => {
     const t = window.setTimeout(() => inputRef.current?.focus(), 50);
     return () => window.clearTimeout(t);
   }, []);
-
-  useEffect(() => {
-    resizeComposer();
-  }, [input]);
+  useEffect(() => { resizeComposer(); }, [input]);
 
   function resizeComposer() {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const min = LINE_H * MIN_LINES;
-    const max = LINE_H * MAX_LINES;
-    const next = Math.min(Math.max(el.scrollHeight, min), max);
+    const next = Math.min(Math.max(el.scrollHeight, LINE_H * MIN_LINES), LINE_H * MAX_LINES);
     el.style.height = `${next}px`;
   }
 
   async function loadOlder() {
-    if (!chat || loadingOlder || !hasMore || messages.length === 0) return;
-    if (messages.length >= MAX_CACHED_MESSAGES) return;
+    if (!chat || !hasMore || loadingOlder) return;
     const el = parentRef.current;
-    const prevHeight = el?.scrollHeight ?? 0;
-    const prevTop = el?.scrollTop ?? 0;
-    const gen = releaseGenRef.current;
-    setLoadingOlder(true);
-    try {
-      const room = MAX_CACHED_MESSAGES - messages.length;
-      const older = await listOlderMessages(
-        chat.id,
-        messages[0].created_at,
-        Math.min(MESSAGE_PAGE, room),
-      );
-      if (gen !== releaseGenRef.current) return;
-      if (older.length === 0) {
-        setHasMore(false);
-        return;
-      }
-      setHasMore(
-        older.length >= Math.min(MESSAGE_PAGE, room) &&
-          messages.length + older.length < MAX_CACHED_MESSAGES,
-      );
-      stickBottom.current = false;
-      setMessages((m) => [...older, ...m]);
-      requestAnimationFrame(() => {
-        if (!el || gen !== releaseGenRef.current) return;
-        const delta = el.scrollHeight - prevHeight;
-        el.scrollTop = prevTop + delta;
-      });
-    } finally {
-      setLoadingOlder(false);
-    }
+    const height = el?.scrollHeight ?? 0;
+    const top = el?.scrollTop ?? 0;
+    await session.loadOlder();
+    stickBottom.current = false;
+    requestAnimationFrame(() => {
+      if (el) el.scrollTop = top + el.scrollHeight - height;
+    });
   }
-
   function onScroll() {
     const el = parentRef.current;
     if (!el) return;
-    const distBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distBottom < 80;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     stickBottom.current = nearBottom;
     setShowJump(!nearBottom && (messages.length > 0 || showStream));
     if (el.scrollTop < 80) void loadOlder();
   }
-
   function jumpToBottom() {
     stickBottom.current = true;
     setShowJump(false);
     scrollToBottom();
   }
-
   async function changeModel(provider: ProviderId, modelId: string) {
-    if (!chat) return;
+    if (!chat || busy || state.phase !== "idle") return;
     await updateChat(chat.id, { provider, model_id: modelId });
     onChatMeta({ ...chat, provider, model_id: modelId });
     onChatUpdated();
   }
-
-  /** Stream an assistant reply for `history` (last must be the user turn). */
-  async function streamReply(
-    chatSnap: Chat,
-    history: Message[],
-    lastUserContent?: ModelMessage["content"],
-  ) {
-    const chatId = chatSnap.id;
-    const startGen = releaseGenRef.current;
-    streamOwnerRef.current = chatId;
-    streamTextRef.current = "";
-    flushSync(() => {
-      setBusy(true);
-      setStreaming("");
-    });
-    stickBottom.current = true;
-
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    const modelMessages: ModelMessage[] = history.map((m) => ({
-      role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    }));
-    if (lastUserContent !== undefined && modelMessages.length > 0) {
-      modelMessages[modelMessages.length - 1] = {
-        role: "user",
-        content: lastUserContent as never,
-      };
-    }
-
-    const appendAssistant = async (full: string) => {
-      const assistant = await addMessage(chatId, "assistant", full);
-      if (viewingIdRef.current === chatId) {
-        const limit =
-          startGen !== releaseGenRef.current
-            ? MESSAGE_PAGE
-            : MAX_CACHED_MESSAGES;
-        const wouldTrim = messagesRef.current.length >= limit;
-        setMessages((m) => trimRecentMessages([...m, assistant], limit));
-        if (wouldTrim) setHasMore(true);
-        setStreaming("");
-      }
-      // Preview update is best-effort — don't re-enter append on metadata failure
-      try {
-        await updateChat(chatId, { preview: full.slice(0, 120) });
-      } catch {
-        /* ignore */
-      }
-      onChatUpdated();
-    };
-
-    let full = "";
-    let assistantSaved = false;
-    let streamed = false;
-    try {
-      await streamChat({
-        provider: chatSnap.provider as ProviderId,
-        modelId: chatSnap.model_id,
-        messages: modelMessages,
-        webSearch: true,
-        abortSignal: ac.signal,
-        onToken: (t) => {
-          full += t;
-          streamTextRef.current = full;
-          if (viewingIdRef.current === chatId) setStreaming(full);
-        },
-        onRetry: () => {
-          // Reset live buffer only — streamTextRef keeps last partial until new tokens
-          full = "";
-          if (viewingIdRef.current === chatId) setStreaming("");
-        },
-      });
-      streamed = true;
-
-      await appendAssistant(full);
-      assistantSaved = true;
-    } catch (e) {
-      const aborted = (e as Error).name === "AbortError";
-      if (!aborted && streamed && !assistantSaved && full) {
-        // Stream finished — retry persist once; success = no error toast
-        try {
-          await appendAssistant(full);
-          assistantSaved = true;
-          return;
-        } catch {
-          if (viewingIdRef.current === chatId) setStreaming("");
-          onNotify((e as Error).message || String(e), "err");
-          throw e;
-        }
-      }
-      const partial = full || streamTextRef.current;
-      // Keep partial reply only when the stream itself failed
-      if (!aborted && !streamed && !assistantSaved && partial) {
-        try {
-          await appendAssistant(partial);
-          assistantSaved = true;
-        } catch {
-          if (viewingIdRef.current === chatId) setStreaming("");
-        }
-      } else if (viewingIdRef.current === chatId && !assistantSaved) {
-        setStreaming("");
-      }
-      if (!aborted) {
-        onNotify((e as Error).message || String(e), "err");
-      }
-      throw e;
-    } finally {
-      if (streamOwnerRef.current === chatId) {
-        streamOwnerRef.current = null;
-        streamTextRef.current = "";
-        setBusy(false);
-      }
-      abortRef.current = null;
-      if (viewingIdRef.current === chatId) {
-        inputRef.current?.focus();
-        requestAnimationFrame(resizeComposer);
-      }
-    }
-  }
-
-  async function send() {
-    if (!chat || busy || blocked) {
+  function send() {
+    if (!chat || blocked) {
       if (setupNeeded) onNeedKey?.();
       return;
     }
-    const chatId = chat.id;
-    const chatSnap = chat;
     const text = input.trim();
-    if (!text && images.length === 0) return;
-    const imageParts = [...images];
-    const displayText =
-      text || (imageParts.length ? `[${imageParts.length} image(s)]` : "");
-    const tempId = `tmp-${crypto.randomUUID()}`;
-
-    // Paint user + Thinking before any await
-    flushSync(() => {
-      setBusy(true);
-      setStreaming("");
-      setInput("");
-      setImages([]);
-      streamOwnerRef.current = chatId;
-      streamTextRef.current = "";
-      setMessages((m) => [
-        ...m,
-        {
-          id: tempId,
-          chat_id: chatId,
-          role: "user",
-          content: displayText,
-          created_at: Date.now(),
-        },
-      ]);
+    if (!text && !images.length) return;
+    const sent = session.send(chat, text, [...images], {
+      onChatUpdated, onChatMeta, onNotify: (message, kind) => onNotify(message, kind),
     });
+    if (!sent) return;
+    flushSync(() => { setInput(""); setImages([]); });
     stickBottom.current = true;
-
-    const userContent =
-      imageParts.length === 0
-        ? text
-        : [
-            { type: "text" as const, text: text || "Describe these images." },
-            ...imageParts.map((data) => ({
-              type: "image" as const,
-              image: data,
-            })),
-          ];
-
-    let userPersisted = false;
-    const sendGen = releaseGenRef.current;
-    try {
-      const userMsg = await addMessage(chatId, "user", displayText);
-      userPersisted = true;
-      if (viewingIdRef.current === chatId) {
-        setMessages((m) => m.map((x) => (x.id === tempId ? userMsg : x)));
-      }
-
-      if (chatSnap.title === "New Chat" && text) {
-        const provisional =
-          text.slice(0, 48) + (text.length > 48 ? "…" : "");
-        await updateChat(chatId, {
-          title: provisional,
-          preview: text.slice(0, 120),
-        });
-        onChatMeta({
-          ...chatSnap,
-          title: provisional,
-          preview: text.slice(0, 120),
-        });
-        onChatUpdated();
-        void generateChatTitle(chatSnap.provider as ProviderId, text).then(
-          async (title) => {
-            await updateChat(chatId, { title });
-            if (viewingIdRef.current === chatId) {
-              onChatMeta({ ...chatSnap, title, preview: text.slice(0, 120) });
-            }
-            onChatUpdated();
-          },
-        );
-      }
-
-      const history = [...messages, userMsg];
-      await streamReply(chatSnap, history, userContent as never);
-    } catch (e) {
-      if (viewingIdRef.current === chatId) {
-        setMessages((m) => m.filter((x) => x.id !== tempId));
-        // Restore only if whole composer still empty — don't merge into a newer draft
-        if (
-          !userPersisted &&
-          (inputRef.current?.value ?? "") === "" &&
-          imagesRef.current.length === 0 &&
-          pendingImageReadsRef.current === 0
-        ) {
-          setInput(text);
-          // Hide bumps releaseGen and drops image data URLs — don't undo that
-          if (sendGen === releaseGenRef.current) {
-            setImages(imageParts);
-          }
-        }
-        setStreaming("");
-      }
-      if ((e as Error).name !== "AbortError") {
-        // streamReply already notified for stream errors; only notify if we never got there
-        if (streamOwnerRef.current === chatId) {
-          onNotify((e as Error).message || String(e), "err");
-        }
-      }
-      if (streamOwnerRef.current === chatId) {
-        streamOwnerRef.current = null;
-        streamTextRef.current = "";
-        setBusy(false);
-      }
-    }
   }
-
-  async function regenerate(userMessageId: string) {
-    if (!chat || busy || blocked) {
+  function regenerate(userMessageId: string) {
+    if (!chat || blocked) {
       if (setupNeeded) onNeedKey?.();
       return;
     }
-    const chatId = chat.id;
-    const chatSnap = chat;
-    const startGen = releaseGenRef.current;
-    const all = await listMessages(chatId);
-    const idx = all.findIndex((m) => m.id === userMessageId);
-    if (idx < 0 || all[idx].role !== "user") return;
-
-    await deleteMessagesAfter(chatId, userMessageId);
-    const keep = all.slice(0, idx + 1);
-    const limit =
-      startGen !== releaseGenRef.current ? MESSAGE_PAGE : MAX_CACHED_MESSAGES;
-    const visible = trimRecentMessages(keep, limit);
-    flushSync(() => {
-      setMessages(visible);
-      if (visible.length < keep.length) setHasMore(true);
-      setBusy(true);
-      setStreaming("");
-      streamOwnerRef.current = chatId;
-      streamTextRef.current = "";
+    session.regenerate(chat, userMessageId, {
+      onChatUpdated, onChatMeta, onNotify: (message, kind) => onNotify(message, kind),
     });
-    stickBottom.current = true;
-
-    try {
-      await streamReply(chatSnap, keep);
-    } catch {
-      /* notified in streamReply */
-    }
   }
-
   function onPaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -621,8 +265,10 @@ export function ChatView({
             style={{ height: virtualizer.getTotalSize(), position: "relative" }}
           >
             {items.map((row) => {
-              const isStream = showStream && row.index === messages.length;
-              const m = isStream ? null : messages[row.index];
+              const isStream = showStream && row.index === streamIndex;
+              const m = isStream
+                ? null
+                : messages[showStream && row.index > streamIndex ? row.index - 1 : row.index];
               return (
                 <div
                   key={isStream ? "stream" : m!.id}
@@ -789,7 +435,7 @@ export function ChatView({
                 }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (!sendLocked) void send();
+                  if (!sendLocked) send();
                 }
               }}
             />
@@ -801,7 +447,7 @@ export function ChatView({
               <ModelPicker
                 provider={chat.provider}
                 modelId={chat.model_id}
-                disabled={showStream || sendLocked}
+                disabled={busy || sendLocked}
                 knownNoKeys={noKeysConfigured}
                 onChange={(p, m) => void changeModel(p, m)}
                 onNeedKey={onNeedKey}
@@ -812,11 +458,11 @@ export function ChatView({
             )}
           </div>
           <div className="composer-bar-right">
-            {showStream ? (
+            {busy ? (
               <button
                 type="button"
                 className="ghost"
-                onClick={() => abortRef.current?.abort()}
+                onClick={() => session.stop()}
               >
                 Stop
               </button>

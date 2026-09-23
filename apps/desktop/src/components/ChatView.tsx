@@ -59,6 +59,7 @@ export function ChatView({
   const stickBottom = useRef(true);
   const imagesRef = useRef<string[]>([]);
   const pendingImageReadsRef = useRef(0);
+  const pendingImageValuesRef = useRef(new Set<string>());
   const imageReadTailRef = useRef<Promise<void>>(Promise.resolve());
   const releaseGenRef = useRef(0);
   const focusAfterStopRef = useRef(false);
@@ -86,7 +87,7 @@ export function ChatView({
 
   useEffect(() => {
     if (!chat || state.phase !== "idle" || !state.drafts.length) return;
-    if (inputRef.current?.value || imagesRef.current.length || pendingImageReadsRef.current) return;
+    if (inputRef.current?.value || imagesRef.current.length) return;
     const drafts = session.takeDrafts();
     setInput(drafts.map((d) => d.text).join("\n"));
     setImages(drafts.flatMap((d) => d.images));
@@ -98,6 +99,7 @@ export function ChatView({
     void onMainWindowHidden(() => {
       releaseGenRef.current += 1;
       setImages([]);
+      pendingImageValuesRef.current.clear();
       if (fileRef.current) fileRef.current.value = "";
       session.trim();
       session.dropDraftImages();
@@ -252,6 +254,7 @@ export function ChatView({
               );
               continue;
             }
+            let pendingImage: string | undefined;
             try {
               const dataUrl = await new Promise<string>((resolve, reject) => {
                 const reader = new FileReader();
@@ -276,6 +279,8 @@ export function ChatView({
                 onNotify(dimensionError, "err");
                 continue;
               }
+              pendingImage = normalized.image;
+              pendingImageValuesRef.current.add(pendingImage);
               const next = [...imagesRef.current, normalized.image];
               const nextError = imageLimitError(next);
               if (nextError) {
@@ -289,9 +294,12 @@ export function ChatView({
                 preview.src = normalized.image;
               });
               if (releaseGeneration !== releaseGenRef.current) continue;
+              if (!pendingImage || !pendingImageValuesRef.current.has(pendingImage)) continue;
+              pendingImageValuesRef.current.delete(pendingImage);
               imagesRef.current = next;
               setImages(next);
             } catch (error) {
+              if (pendingImage) pendingImageValuesRef.current.delete(pendingImage);
               if (releaseGeneration === releaseGenRef.current) {
                 onNotify((error as Error).message || String(error), "err");
               }
@@ -456,7 +464,12 @@ export function ChatView({
                 key={i}
                 type="button"
                 className="thumb"
-                onClick={() => setImages(images.filter((_, j) => j !== i))}
+                onClick={() => {
+                  pendingImageValuesRef.current.delete(images[i]);
+                  const next = images.filter((_, j) => j !== i);
+                  imagesRef.current = next;
+                  setImages(next);
+                }}
                 title="Remove"
               >
                 <img src={src} alt="" />

@@ -39,7 +39,7 @@ function messageMetadata(message: Message): Message {
   return {
     ...message,
     images: [],
-    image_count: message.images.length,
+    image_count: message.image_count ?? message.images.length,
   };
 }
 
@@ -125,7 +125,8 @@ class MemoryDatabase {
         role: args[2] as Message["role"],
         content: String(args[3]),
         images,
-        created_at: Number(args[5]),
+        image_count: Number(args[5]),
+        created_at: Number(args[6]),
       });
       return { rowsAffected: 1 };
     }

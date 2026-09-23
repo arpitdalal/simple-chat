@@ -24,9 +24,7 @@ export type Message = {
 type MessageImageRow = { id: string; images: unknown };
 type MessageImageResult = { id: string; image: string | null };
 
-const MESSAGE_COLUMNS = `id, chat_id, role, content,
-  CASE WHEN images = '[]' THEN 0 ELSE json_array_length(images) END AS image_count,
-  created_at`;
+const MESSAGE_COLUMNS = `id, chat_id, role, content, image_count, created_at`;
 
 function parseImages(value: unknown): string[] {
   let images: unknown = value;
@@ -402,11 +400,11 @@ export async function loadMessageImages(
          SUM(length(images)) OVER (
            ORDER BY created_at DESC, rowid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
          ) AS total_chars,
-         SUM(json_array_length(images)) OVER (
+         SUM(image_count) OVER (
            ORDER BY created_at DESC, rowid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
          ) AS total_images
        FROM messages
-       WHERE chat_id = $1 AND images <> '[]' AND (created_at, rowid) <=
+       WHERE chat_id = $1 AND image_count > 0 AND (created_at, rowid) <=
          (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)
      )
      WHERE total_chars <= $3 AND total_images <= $4
@@ -434,14 +432,15 @@ export async function addMessage(
     created_at: createdAt,
   };
   await db.execute(
-    `INSERT INTO messages (id, chat_id, role, content, images, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO messages (id, chat_id, role, content, images, image_count, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       msg.id,
       msg.chat_id,
       msg.role,
       msg.content,
       JSON.stringify(msg.images),
+      msg.images.length,
       msg.created_at,
     ],
   );
@@ -469,8 +468,8 @@ export async function branchChat(
     await updateChat(branched.id, { title, preview });
     const db = await getDb();
     await db.execute(
-      `INSERT INTO messages (id, chat_id, role, content, images, created_at)
-       SELECT lower(hex(randomblob(16))), $1, role, content, images, created_at
+      `INSERT INTO messages (id, chat_id, role, content, images, image_count, created_at)
+       SELECT lower(hex(randomblob(16))), $1, role, content, images, image_count, created_at
        FROM messages
        WHERE chat_id = $2 AND (created_at, rowid) <=
          (SELECT created_at, rowid FROM messages WHERE id = $3 AND chat_id = $2)

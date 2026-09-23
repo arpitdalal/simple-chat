@@ -47,6 +47,15 @@ ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]';
 "#,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "index_message_image_counts",
+            sql: r#"
+ALTER TABLE messages ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0;
+UPDATE messages SET image_count = json_array_length(images) WHERE images <> '[]';
+"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -71,5 +80,15 @@ mod tests {
         assert!(m
             .sql
             .contains("ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'"));
+    }
+
+    #[test]
+    fn image_count_migration_backfills_existing_messages() {
+        let m = &migrations()[2];
+        assert_eq!(m.version, 3);
+        assert!(m
+            .sql
+            .contains("ALTER TABLE messages ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0"));
+        assert!(m.sql.contains("json_array_length(images)"));
     }
 }

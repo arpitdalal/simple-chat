@@ -6,6 +6,7 @@ const streamChat = vi.fn();
 const addMessage = vi.fn();
 const getChat = vi.fn();
 const listRecentMessages = vi.fn();
+const listOlderMessages = vi.fn();
 const clearChatMessages = vi.fn();
 const deleteChat = vi.fn();
 const updateChat = vi.fn();
@@ -21,7 +22,7 @@ vi.mock("./db", () => ({
   addMessage: (...args: unknown[]) => addMessage(...args),
   getChat: (...args: unknown[]) => getChat(...args),
   listRecentMessages: (...args: unknown[]) => listRecentMessages(...args),
-  listOlderMessages: vi.fn(async () => []),
+  listOlderMessages: (...args: unknown[]) => listOlderMessages(...args),
   listMessages: vi.fn(async () => []),
   deleteMessagesAfter: vi.fn(async () => {}),
   clearChatMessages: (...args: unknown[]) => clearChatMessages(...args),
@@ -51,6 +52,7 @@ beforeEach(() => {
   listRecentMessages.mockImplementation(async (id: string, limit: number) =>
     (store.get(id) ?? []).slice(-limit),
   );
+  listOlderMessages.mockResolvedValue([]);
   addMessage.mockImplementation(async (id: string, role: Message["role"], content: string) => {
     const message: Message = { id: crypto.randomUUID(), chat_id: id, role, content, created_at: ++clock };
     store.set(id, [...(store.get(id) ?? []), message]);
@@ -66,6 +68,35 @@ beforeEach(() => {
 });
 
 describe("ChatSession", () => {
+  it("does not reload older history after the window hides", async () => {
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    store.set("a", Array.from({ length: 50 }, (_, i) => ({
+      id: `m${i}`, chat_id: "a", role: "user" as const, content: `m${i}`, created_at: i,
+    })));
+    await session.loadRecent();
+    let release!: (rows: Message[]) => void;
+    listOlderMessages.mockImplementationOnce(() => new Promise<Message[]>((resolve) => { release = resolve; }));
+    const loading = session.loadOlder();
+    session.trim();
+    release([{ id: "old", chat_id: "a", role: "user", content: "old", created_at: -1 }]);
+    await loading;
+    expect(session.getSnapshot().messages).toHaveLength(50);
+    unsubscribe();
+  });
+
+  it("drops failed-send image data after the window hides", async () => {
+    let failInsert!: (error: Error) => void;
+    addMessage.mockImplementationOnce(() => new Promise((_resolve, reject) => { failInsert = reject; }));
+    const session = getChatSession("a");
+    session.send(chat("a"), "image", ["data:image/png;base64,AAA"], callbacks);
+    await waitFor(() => expect(failInsert).toBeTruthy());
+    session.dropDraftImages();
+    failInsert(new Error("database unavailable"));
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(session.getSnapshot().drafts).toEqual([{ text: "image", images: [] }]);
+  });
+
   it("keeps an App-owned session canonical across view unmounts", () => {
     const session = getChatSession("a");
     const release = session.retain();

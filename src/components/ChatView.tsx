@@ -53,6 +53,7 @@ export function ChatView({
   const imagesRef = useRef<string[]>([]);
   const pendingImageReadsRef = useRef(0);
   const releaseGenRef = useRef(0);
+  const focusAfterStopRef = useRef(false);
   imagesRef.current = images;
 
   const noKey = hasProviderKey === false;
@@ -114,6 +115,11 @@ export function ChatView({
     });
     return () => cancelAnimationFrame(id);
   }, [focusNonce, chat?.id]);
+  useEffect(() => {
+    if (busy || !focusAfterStopRef.current) return;
+    focusAfterStopRef.current = false;
+    inputRef.current?.focus();
+  }, [busy]);
   useEffect(() => {
     const t = window.setTimeout(() => inputRef.current?.focus(), 50);
     return () => window.clearTimeout(t);
@@ -467,7 +473,10 @@ export function ChatView({
               <button
                 type="button"
                 className="ghost"
-                onClick={() => session.stop()}
+                onClick={() => {
+                  focusAfterStopRef.current = true;
+                  session.stop();
+                }}
               >
                 Stop
               </button>

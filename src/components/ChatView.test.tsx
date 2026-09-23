@@ -243,6 +243,7 @@ describe("ChatView", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Stop" })).toBeNull(),
     );
+    await waitFor(() => expect(screen.getByPlaceholderText("Ask AI anything…")).toHaveFocus());
     expect(screen.queryByText(/aborted/i)).toBeNull();
   });
 

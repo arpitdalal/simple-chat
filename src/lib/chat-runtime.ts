@@ -35,7 +35,7 @@ type Callbacks = {
   onChatMeta: (chat: Chat) => void;
   onNotify: (message: string, kind: "err") => void;
 };
-type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[] };
+type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
 
 const sessions = new Map<string, ChatSession>();
 export function chatIsUnavailable(id: string): boolean {
@@ -65,6 +65,7 @@ export class ChatSession {
   private titleWrites = new Set<Promise<unknown>>();
   private loaded = false;
   private version = 0;
+  private hideVersion = 0;
   private loadPromise: Promise<void> | null = null;
   private loadVersion = 0;
   private streamOwner: Turn | null = null;
@@ -157,6 +158,7 @@ export class ChatSession {
   }
 
   trim() {
+    if (this.snapshot.loadingOlder) this.version += 1;
     if (this.snapshot.messages.length <= MESSAGE_PAGE) return;
     this.publish({ messages: trimRecentMessages(this.snapshot.messages, MESSAGE_PAGE), hasMore: true });
   }
@@ -166,6 +168,7 @@ export class ChatSession {
     return drafts;
   }
   dropDraftImages() {
+    this.hideVersion += 1;
     if (!this.snapshot.drafts.some((d) => d.images.length)) return;
     this.publish({ drafts: this.snapshot.drafts.map((d) => ({ ...d, images: [] })) });
   }
@@ -173,7 +176,7 @@ export class ChatSession {
   send(chat: Chat, text: string, images: string[], callbacks: Callbacks): boolean {
     if (this.snapshot.phase !== "idle" || (!text && !images.length)) return false;
     sessions.set(this.id, this);
-    const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images };
+    const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images, hideVersion: this.hideVersion };
     const display = text || `[${images.length} image(s)]`;
     const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: display, created_at: Date.now() };
     this.turns.add(turn);
@@ -213,7 +216,7 @@ export class ChatSession {
       if (!persisted) {
         this.publish({
           messages: this.snapshot.messages.filter((m) => m.id !== turn.tempId),
-          drafts: [...this.snapshot.drafts, { text: turn.text!, images: turn.images! }],
+          drafts: [...this.snapshot.drafts, { text: turn.text!, images: turn.hideVersion === this.hideVersion ? turn.images! : [] }],
         });
       }
     } finally {

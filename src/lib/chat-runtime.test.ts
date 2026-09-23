@@ -33,7 +33,7 @@ vi.mock("./db", () => ({
   replaceChatTitle: vi.fn(async () => true),
 }));
 
-import { getChatSession, resetChatSessions } from "./chat-runtime";
+import { chatIsUnavailable, getChatSession, resetChatSessions } from "./chat-runtime";
 
 const chat = (id: string): Chat => ({
   id, title: "Thread", provider: "google", model_id: "gemini-3.8-flash",
@@ -83,6 +83,23 @@ describe("ChatSession", () => {
     await loading;
     expect(session.getSnapshot().messages).toHaveLength(50);
     unsubscribe();
+  });
+
+  it("keeps unrestored drafts from empty-chat deletion", async () => {
+    addMessage.mockRejectedValueOnce(new Error("db down"));
+    const session = getChatSession("a");
+    session.send(chat("a"), "keep", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().drafts).toEqual([{ text: "keep", images: [] }]));
+    expect(chatIsUnavailable("a")).toBe(true);
+  });
+
+  it("drops leftover drafts when a later send starts", async () => {
+    addMessage.mockRejectedValueOnce(new Error("db down"));
+    const session = getChatSession("a");
+    session.send(chat("a"), "first", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().drafts).toEqual([{ text: "first", images: [] }]));
+    session.send(chat("a"), "second", [], callbacks);
+    expect(session.getSnapshot().drafts).toEqual([]);
   });
 
   it("drops failed-send image data after the window hides", async () => {

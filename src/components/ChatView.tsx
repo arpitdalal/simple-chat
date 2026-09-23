@@ -139,15 +139,18 @@ export function ChatView({
     const el = parentRef.current;
     const height = el?.scrollHeight ?? 0;
     const top = el?.scrollTop ?? 0;
+    const gen = releaseGenRef.current;
     try {
       await session.loadOlder();
     } catch (e) {
       onNotify((e as Error).message || String(e), "err");
       return;
     }
+    if (gen !== releaseGenRef.current) return;
     stickBottom.current = false;
     requestAnimationFrame(() => {
-      if (el) el.scrollTop = top + el.scrollHeight - height;
+      if (gen !== releaseGenRef.current || !el) return;
+      el.scrollTop = top + el.scrollHeight - height;
     });
   }
   function onScroll() {

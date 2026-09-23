@@ -40,7 +40,7 @@ type Turn = { ac: AbortController; tempId?: string; text?: string; images?: stri
 const sessions = new Map<string, ChatSession>();
 export function chatIsUnavailable(id: string): boolean {
   const state = sessions.get(id)?.getSnapshot();
-  return !!state && (state.busy || state.phase !== "idle");
+  return !!state && (state.busy || state.phase !== "idle" || state.drafts.length > 0);
 }
 export function getChatSession(id: string): ChatSession {
   let session = sessions.get(id);
@@ -181,7 +181,7 @@ export class ChatSession {
     const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: display, created_at: Date.now() };
     this.turns.add(turn);
     this.publish({
-      messages: [...this.snapshot.messages, temp], busy: true,
+      messages: [...this.snapshot.messages, temp], busy: true, drafts: [],
       stream: this.snapshot.stream ?? { anchor: temp.id, text: "" },
     });
     void this.queue.run(() => this.runSend(turn, chat, display, callbacks));

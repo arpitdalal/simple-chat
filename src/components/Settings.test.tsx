@@ -1,7 +1,28 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings } from "./Settings";
+
+const runtimeMocks = vi.hoisted(() => ({
+  getVersion: vi.fn(async () => "1.2.3"),
+  getPlatform: vi.fn(() => "macos"),
+  getOsVersion: vi.fn(() => "15.6"),
+  getArchitecture: vi.fn(() => "aarch64"),
+  openUrl: vi.fn(async () => undefined),
+  writeText: vi.fn(async () => undefined),
+  checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
+}));
+
+vi.mock("@tauri-apps/api/app", () => ({ getVersion: runtimeMocks.getVersion }));
+vi.mock("@tauri-apps/plugin-os", () => ({
+  arch: runtimeMocks.getArchitecture,
+  platform: runtimeMocks.getPlatform,
+  version: runtimeMocks.getOsVersion,
+}));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: runtimeMocks.openUrl }));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: runtimeMocks.writeText,
+}));
 
 const hasApiKey = vi.fn();
 const setApiKey = vi.fn();
@@ -53,7 +74,7 @@ vi.mock("../lib/hotkey", () => ({
 }));
 
 vi.mock("../lib/updater", () => ({
-  checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
+  checkForAppUpdate: runtimeMocks.checkForAppUpdate,
 }));
 
 const isAutostartEnabled = vi.hoisted(() => vi.fn(async () => false));
@@ -75,6 +96,13 @@ vi.mock("@tauri-apps/api/window", () => ({
 describe("Settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runtimeMocks.getVersion.mockResolvedValue("1.2.3");
+    runtimeMocks.getPlatform.mockReturnValue("macos");
+    runtimeMocks.getOsVersion.mockReturnValue("15.6");
+    runtimeMocks.getArchitecture.mockReturnValue("aarch64");
+    runtimeMocks.openUrl.mockResolvedValue(undefined);
+    runtimeMocks.writeText.mockResolvedValue(undefined);
+    runtimeMocks.checkForAppUpdate.mockResolvedValue({ status: "none" });
     getSettings.mockResolvedValue({
       resume_minutes: 5,
       always_on_top: true,
@@ -98,6 +126,142 @@ describe("Settings", () => {
     });
     setApiKey.mockResolvedValue(undefined);
     clearApiKey.mockResolvedValue(undefined);
+  });
+
+  it("loads the installed version beside the update action and copies it", async () => {
+    const user = userEvent.setup();
+    let resolveVersion!: (version: string) => void;
+    runtimeMocks.getVersion.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveVersion = resolve;
+      }),
+    );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    expect(await screen.findByText("Version Loading…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy version" })).toBeDisabled();
+    resolveVersion("1.2.3");
+    expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
+    const updates = screen.getByRole("heading", { name: "Updates" }).closest("section");
+    expect(within(updates!).getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+
+    await user.click(within(updates!).getByRole("button", { name: "Copy version" }));
+    expect(runtimeMocks.writeText).toHaveBeenCalledWith("1.2.3");
+    expect(await within(updates!).findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("opens source and builds a prefilled issue report from runtime metadata", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await screen.findByText("Version 1.2.3");
+    const updates = screen.getByRole("heading", { name: "Updates" }).closest("section");
+    const history = screen.getByRole("heading", { name: "History" }).closest("section");
+    const about = screen.getByRole("heading", { name: "About" }).closest("section");
+    expect(updates!.compareDocumentPosition(history!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(history!.compareDocumentPosition(about!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(about!).getByText("Simple Chat")).toBeInTheDocument();
+    expect(about!.querySelector("img")).toHaveAttribute("src", "/logo.png");
+
+    await user.click(within(about!).getByRole("button", { name: "View source" }));
+    expect(runtimeMocks.openUrl).toHaveBeenNthCalledWith(
+      1,
+      "https://github.com/arpitdalal/simple-chat",
+    );
+
+    await user.click(within(about!).getByRole("button", { name: "Report an issue" }));
+    expect(runtimeMocks.openUrl).toHaveBeenCalledTimes(2);
+    const issueUrl = new URL(runtimeMocks.openUrl.mock.calls[1][0] as string);
+    expect(`${issueUrl.origin}${issueUrl.pathname}`).toBe(
+      "https://github.com/arpitdalal/simple-chat/issues/new",
+    );
+    expect(issueUrl.searchParams.get("title")).toBeNull();
+    expect(issueUrl.searchParams.get("body")).toBe(
+      [
+        "Version: 1.2.3",
+        "OS: macOS 15.6",
+        "Architecture: aarch64",
+        "",
+        "Description:",
+        "",
+        "Steps to reproduce:",
+        "",
+        "1.",
+        "",
+        "Expected behavior:",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps update checks working from Settings", async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await screen.findByText("Version 1.2.3");
+    await user.click(
+      screen.getByRole("button", { name: "Check for updates" }),
+    );
+    expect(runtimeMocks.checkForAppUpdate).toHaveBeenCalledOnce();
+    expect(await screen.findByText("Up to date")).toBeInTheDocument();
+  });
+
+  it("keeps an unavailable version disabled and retries loading", async () => {
+    const user = userEvent.setup();
+    runtimeMocks.getVersion.mockResolvedValueOnce("Unknown");
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    expect(await screen.findByText("Version Unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy version" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy version" })).toBeEnabled();
+  });
+
+  it("does not open an issue report with incomplete runtime metadata", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    runtimeMocks.getOsVersion.mockReturnValue("Unknown");
+    render(
+      <Settings
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onNotify={onNotify}
+      />,
+    );
+
+    await screen.findByText("Version 1.2.3");
+    await user.click(
+      screen.getByRole("button", { name: "Report an issue" }),
+    );
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(
+        "Could not read complete app details. Try again.",
+        "err",
+      ),
+    );
+    expect(runtimeMocks.openUrl).not.toHaveBeenCalled();
+  });
+
+  it("clears stale copy feedback before a new write settles", async () => {
+    const user = userEvent.setup();
+    let finishWrite!: () => void;
+    runtimeMocks.writeText
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+      );
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await screen.findByText("Version 1.2.3");
+    await user.click(screen.getByRole("button", { name: "Copy version" }));
+    await screen.findByRole("button", { name: "Copied" });
+    await user.click(screen.getByRole("button", { name: "Copied" }));
+    expect(screen.getByRole("button", { name: "Copy version" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
+    finishWrite();
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
   it("shows Clear for saved keys and clears on click", async () => {

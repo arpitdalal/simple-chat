@@ -934,6 +934,38 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+.update-row,
+.about-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-row {
+  justify-content: space-between;
+}
+.update-actions,
+.about-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.version-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 0;
+}
+.about-row {
+  flex-wrap: wrap;
+}
+.about-row strong {
+  margin-right: auto;
+}
+.about-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
 .field {
   display: grid;
   gap: 4px;

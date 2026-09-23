@@ -14,6 +14,8 @@ const updateChat = vi.fn();
 const setInitialChatTitle = vi.fn();
 const replaceChatTitle = vi.fn();
 const getChat = vi.fn();
+const loadMessageImage = vi.fn();
+const loadMessageImages = vi.fn();
 
 const hiddenListeners = vi.hoisted(() => new Set<() => void>());
 
@@ -58,6 +60,8 @@ vi.mock("../lib/db", () => ({
   refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: (...a: unknown[]) => replaceChatTitle(...a),
   getChat: (...a: unknown[]) => getChat(...a),
+  loadMessageImage: (...a: unknown[]) => loadMessageImage(...a),
+  loadMessageImages: (...a: unknown[]) => loadMessageImages(...a),
 }));
 
 import { ChatView } from "./ChatView";
@@ -102,6 +106,8 @@ describe("ChatView", () => {
     setInitialChatTitle.mockResolvedValue(true);
     replaceChatTitle.mockResolvedValue(true);
     getChat.mockImplementation(async (id: string) => ({ ...chat, id }));
+    loadMessageImage.mockResolvedValue(null);
+    loadMessageImages.mockResolvedValue(new Map());
     generateChatTitle.mockResolvedValue("Auto Title");
     addMessage.mockImplementation(async (_id, role, content, _createdAt, images: string[] = []) =>
       msg({ id: crypto.randomUUID(), role, content, images }),
@@ -579,6 +585,77 @@ describe("ChatView", () => {
     await waitFor(() => expect(document.querySelector(".thumb img")).toBeTruthy());
   });
 
+  it("preserves selected image order across asynchronous reads", async () => {
+    const user = userEvent.setup();
+    let readCount = 0;
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: (() => void) | null = null;
+        readAsDataURL() {
+          const index = readCount++;
+          const result = index === 0
+            ? "data:image/png;base64,Zmlyc3Q="
+            : "data:image/png;base64,c2Vjb25k";
+          window.setTimeout(() => {
+            this.result = result;
+            this.onload?.();
+          }, index === 0 ? 20 : 0);
+        }
+      },
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 100;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await screen.findByPlaceholderText("Ask AI anything…");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        value: [
+          new File(["first"], "first.png", { type: "image/png" }),
+          new File(["second"], "second.png", { type: "image/png" }),
+        ],
+        configurable: true,
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitFor(() => expect(document.querySelectorAll(".thumb img")).toHaveLength(2));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(addMessage).toHaveBeenCalled());
+    expect(addMessage).toHaveBeenCalledWith(
+      "c1",
+      "user",
+      "",
+      expect.any(Number),
+      [
+        "data:image/png;base64,Zmlyc3Q=",
+        "data:image/png;base64,c2Vjb25k",
+      ],
+    );
+    vi.unstubAllGlobals();
+  });
+
   it("renders an attached image in the sent user message", async () => {
     const user = userEvent.setup();
     const image = "data:image/png;base64,c2VudC1pbWFnZQ==";
@@ -590,6 +667,18 @@ describe("ChatView", () => {
         readAsDataURL() {
           this.result = image;
           this.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+        }
+      },
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 100;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
         }
       },
     );
@@ -626,7 +715,36 @@ describe("ChatView", () => {
     vi.unstubAllGlobals();
   });
 
-  it("rejects image files larger than 4 MB", async () => {
+  it("loads persisted message images only when rendered", async () => {
+    const image = "data:image/png;base64,cGVyc2lzdGVk";
+    listRecentMessages.mockResolvedValue([
+      msg({ id: "saved", role: "user", content: "look", image_count: 2 }),
+    ]);
+    loadMessageImage
+      .mockResolvedValueOnce(image)
+      .mockResolvedValueOnce("data:image/webp;base64,dHdv");
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+
+    expect(await screen.findByAltText("Attached image 1")).toHaveAttribute("src", image);
+    expect(await screen.findByAltText("Attached image 2")).toHaveAttribute(
+      "src",
+      "data:image/webp;base64,dHdv",
+    );
+    expect(loadMessageImage).toHaveBeenCalledWith("c1", "saved", 0);
+    expect(loadMessageImage).toHaveBeenCalledWith("c1", "saved", 1);
+  });
+
+  it("rejects image files larger than 3 MB", async () => {
     const onNotify = vi.fn();
     render(
       <TestChatView
@@ -642,14 +760,14 @@ describe("ChatView", () => {
     await screen.findByPlaceholderText("Ask AI anything…");
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(["x"], "large.png", { type: "image/png" });
-    Object.defineProperty(file, "size", { value: 4 * 1024 * 1024 + 1 });
+    Object.defineProperty(file, "size", { value: 3 * 1024 * 1024 + 1 });
 
     await act(async () => {
       Object.defineProperty(input, "files", { value: [file], configurable: true });
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(onNotify).toHaveBeenCalledWith(
-      "Each attached image must be 4 MB or smaller.",
+      "Each attached image must be 3 MB or smaller.",
       "err",
     );
     expect(document.querySelector(".thumb")).toBeNull();

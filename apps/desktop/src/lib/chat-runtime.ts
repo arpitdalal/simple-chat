@@ -8,6 +8,7 @@ import {
   getChat,
   listMessages,
   listOlderMessages,
+  loadMessageImages,
   listRecentMessages,
   messageCount,
   refreshChatPreview,
@@ -41,10 +42,11 @@ type UserContent = Extract<ModelMessage, { role: "user" }>["content"];
 
 export const MAX_IMAGES_PER_MESSAGE = 4;
 export const MAX_IMAGE_DATA_CHARS = 5 * 1024 * 1024;
-export const MAX_IMAGE_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_IMAGE_FILE_BYTES = 3 * 1024 * 1024;
+export const MAX_IMAGE_DIMENSION = 8000;
 const MAX_HISTORY_IMAGES = 20;
-const MAX_HISTORY_IMAGE_CHARS = 20 * 1024 * 1024;
-const IMAGE_DATA_URL = /^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]*={0,2}$/i;
+const MAX_HISTORY_IMAGE_CHARS = 16 * 1024 * 1024;
+const IMAGE_DATA_URL = /^data:image\/(png|jpeg|jpg|webp);base64,[a-z0-9+/]*={0,2}$/i;
 
 export function imageDataSize(images: string[]): number {
   return images.reduce((total, image) => total + image.length, 0);
@@ -61,25 +63,6 @@ export function imageLimitError(images: string[]): string | null {
     return "The attached images are too large to send together.";
   }
   return null;
-}
-
-function boundHistoryImages(history: Message[]): Message[] {
-  const bounded = [...history];
-  let remainingImages = MAX_HISTORY_IMAGES;
-  let remainingChars = MAX_HISTORY_IMAGE_CHARS;
-  for (let i = bounded.length - 1; i >= 0; i--) {
-    const message = bounded[i];
-    if (message.role !== "user" || !message.images.length) continue;
-    const images: string[] = [];
-    for (const image of message.images) {
-      if (remainingImages === 0 || remainingChars < image.length) break;
-      images.push(image);
-      remainingImages -= 1;
-      remainingChars -= image.length;
-    }
-    bounded[i] = { ...message, images };
-  }
-  return bounded;
 }
 
 function userContent(message: Pick<Message, "content" | "images">): UserContent {
@@ -329,8 +312,15 @@ export class ChatSession {
   private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: UserContent | undefined, callbacks: Callbacks) {
     this.streamOwner = turn;
     this.publish({ stream: { anchor, text: "" } });
-    const messages = boundHistoryImages(trimRecentMessages(history, MAX_CACHED_MESSAGES)).map((m): ModelMessage => {
-      if (m.role === "user") return { role: "user", content: userContent(m) };
+    const storedImages = await loadMessageImages(
+      chat.id,
+      anchor,
+      MAX_HISTORY_IMAGE_CHARS,
+      MAX_HISTORY_IMAGES,
+    );
+    const messages = trimRecentMessages(history, MAX_CACHED_MESSAGES).map((m): ModelMessage => {
+      const images = m.images.length ? m.images : (storedImages.get(m.id) ?? []);
+      if (m.role === "user") return { role: "user", content: userContent({ ...m, images }) };
       if (m.role === "assistant") return { role: "assistant", content: m.content };
       return { role: "system", content: m.content };
     });

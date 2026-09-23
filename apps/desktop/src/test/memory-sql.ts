@@ -5,6 +5,7 @@
 import type { Chat, Message, AppSettings } from "../lib/db";
 
 type Row = Record<string, unknown>;
+type MessageImageRow = { id: string; images: unknown };
 
 const settings = new Map<string, string>();
 let chats: Chat[] = [];
@@ -30,7 +31,15 @@ function snapshot() {
   return {
     settings: new Map(settings),
     chats: chats.map((c) => ({ ...c })),
-    messages: messages.map((m) => ({ ...m })),
+    messages: messages.map((m) => ({ ...m, images: [...m.images] })),
+  };
+}
+
+function messageMetadata(message: Message): Message {
+  return {
+    ...message,
+    images: [],
+    image_count: message.images.length,
   };
 }
 
@@ -137,7 +146,9 @@ class MemoryDatabase {
         const preview = latest
           ? latest.content
             ? Array.from(latest.content).slice(0, 120).join("")
-            : "Image"
+            : latest.images.length
+              ? "Image"
+              : ""
           : "Ask AI anything…";
         chats[i] = { ...chats[i], updated_at: Number(args[1]), preview };
       }
@@ -257,6 +268,46 @@ class MemoryDatabase {
       return [{ n: messages.filter((m) => m.chat_id === chatId).length }] as unknown as T;
     }
 
+    if (q.includes("json_extract(images")) {
+      const message = messages.find(
+        (candidate) =>
+          candidate.chat_id === String(args[0]) && candidate.id === String(args[1]),
+      );
+      return [{
+        image: message?.images[Number(args[2])] ?? null,
+      }] as unknown as T;
+    }
+
+    if (q.includes("SELECT id, images FROM (") && q.includes("total_chars")) {
+      const chatId = String(args[0]);
+      const throughId = String(args[1]);
+      const maxChars = Number(args[2]);
+      const maxImages = Number(args[3]);
+      const sourceMessages = messages
+        .filter((message) => message.chat_id === chatId)
+        .sort((a, b) => a.created_at - b.created_at || messages.indexOf(a) - messages.indexOf(b));
+      const throughIndex = sourceMessages.findIndex(
+        (message) => message.id === throughId,
+      );
+      if (throughIndex < 0) return [] as unknown as T;
+      const source = sourceMessages
+        .slice(0, throughIndex + 1)
+        .reverse()
+        .filter((message) => message.images.length);
+      const selected: MessageImageRow[] = [];
+      let chars = 0;
+      let images = 0;
+      for (const message of source) {
+        const nextChars = chars + JSON.stringify(message.images).length;
+        const nextImages = images + message.images.length;
+        if (nextChars > maxChars || nextImages > maxImages) break;
+        selected.push({ id: message.id, images: message.images });
+        chars = nextChars;
+        images = nextImages;
+      }
+      return selected as unknown as T;
+    }
+
     if (q.includes("FROM messages") && q.includes("(created_at, rowid) <")) {
       const chatId = String(args[0]);
       const anchor = messages.find((m) => m.id === String(args[1]) && m.chat_id === chatId);
@@ -266,7 +317,8 @@ class MemoryDatabase {
       return messages
         .filter((m) => m.chat_id === chatId && (m.created_at < anchor.created_at || (m.created_at === anchor.created_at && messages.indexOf(m) < index)))
         .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))
-        .slice(0, limit) as unknown as T;
+        .slice(0, limit)
+        .map(messageMetadata) as unknown as T;
     }
 
     if (q.includes("FROM messages") && q.includes("ORDER BY created_at DESC")) {
@@ -275,14 +327,16 @@ class MemoryDatabase {
       return messages
         .filter((m) => m.chat_id === chatId)
         .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))
-        .slice(0, limit) as unknown as T;
+        .slice(0, limit)
+        .map(messageMetadata) as unknown as T;
     }
 
     if (q.includes("FROM messages")) {
       const chatId = String(args[0]);
       return messages
         .filter((m) => m.chat_id === chatId)
-        .sort((a, b) => a.created_at - b.created_at || messages.indexOf(a) - messages.indexOf(b)) as unknown as T;
+        .sort((a, b) => a.created_at - b.created_at || messages.indexOf(a) - messages.indexOf(b))
+        .map(messageMetadata) as unknown as T;
     }
 
     return [] as unknown as T;

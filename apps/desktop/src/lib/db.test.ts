@@ -11,6 +11,8 @@ import {
   addMessage,
   listOlderMessages,
   listMessages,
+  loadMessageImage,
+  loadMessageImages,
   setSetting,
   setDefaultModel,
   getSettings,
@@ -116,7 +118,9 @@ describe("db (memory sql integration)", () => {
     expect(branched.title).toMatch(/^Branch · Parent/);
     const msgs = await listMessages(branched.id);
     expect(msgs.map((m) => m.content)).toEqual(["one", "two"]);
-    expect(msgs[0].images).toEqual([image]);
+    expect(msgs[0]).toMatchObject({ images: [], image_count: 1 });
+    expect((await loadMessageImages(branched.id, msgs[1].id, 5_000_000, 4)).get(msgs[0].id)).toEqual([image]);
+    expect(await loadMessageImage(branched.id, msgs[0].id, 0)).toBe(image);
     expect(msgs.map((m) => m.created_at)).toEqual([10, 20]);
     // source unchanged
     const orig = await listMessages(source.id);
@@ -183,11 +187,49 @@ describe("db (memory sql integration)", () => {
     await refreshChatPreview(chat.id);
     vi.spyOn(Date, "now").mockRestore();
 
-    expect((await listMessages(chat.id))[0]).toMatchObject({
+    const [stored] = await listMessages(chat.id);
+    expect(stored).toMatchObject({
       id: message.id,
-      images: [image],
+      images: [],
+      image_count: 1,
     });
+    expect(await loadMessageImage(chat.id, message.id, 0)).toBe(image);
     expect(await getChat(chat.id)).toMatchObject({ preview: "Image", updated_at: 500 });
+  });
+
+  it("loads only the newest images within provider budgets", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    const first = await addMessage(
+      chat.id,
+      "user",
+      "first",
+      10,
+      ["data:image/png;base64,AAA"],
+    );
+    const second = await addMessage(
+      chat.id,
+      "user",
+      "second",
+      20,
+      ["data:image/png;base64,BBB"],
+    );
+    const third = await addMessage(
+      chat.id,
+      "user",
+      "third",
+      30,
+      ["data:image/png;base64,CCC"],
+    );
+    const loaded = await loadMessageImages(chat.id, third.id, 5_000_000, 2);
+    expect(new Set(loaded.keys())).toEqual(new Set([second.id, third.id]));
+    expect(loaded.has(first.id)).toBe(false);
+  });
+
+  it("does not label an empty text response as an image", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    await addMessage(chat.id, "assistant", "", 200);
+    await refreshChatPreview(chat.id);
+    expect(await getChat(chat.id)).toMatchObject({ preview: "" });
   });
 
   it("setDefaultModel CAS skips when live defaults already moved", async () => {

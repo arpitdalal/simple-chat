@@ -2,11 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { updateChat, type Chat, type Message } from "../lib/db";
+import { loadMessageImage, updateChat, type Chat, type Message } from "../lib/db";
 import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
 import {
   imageLimitError,
+  MAX_IMAGE_DIMENSION,
   MAX_IMAGE_FILE_BYTES,
   MAX_IMAGES_PER_MESSAGE,
   type ChatSession,
@@ -57,6 +58,7 @@ export function ChatView({
   const stickBottom = useRef(true);
   const imagesRef = useRef<string[]>([]);
   const pendingImageReadsRef = useRef(0);
+  const imageReadTailRef = useRef<Promise<void>>(Promise.resolve());
   const releaseGenRef = useRef(0);
   const focusAfterStopRef = useRef(false);
   imagesRef.current = images;
@@ -221,46 +223,75 @@ export function ChatView({
 
   function readImageFiles(files: File[]) {
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imagesRef.current.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
-      onNotify(`Attach no more than ${MAX_IMAGES_PER_MESSAGE} images per message.`, "err");
-      return;
-    }
-    for (const file of imageFiles) {
-      if (file.size > MAX_IMAGE_FILE_BYTES) {
-        onNotify(
-          `Each attached image must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`,
-          "err",
-        );
-        continue;
-      }
-      const gen = releaseGenRef.current;
-      pendingImageReadsRef.current += 1;
-      const reader = new FileReader();
-      reader.onload = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-        if (gen !== releaseGenRef.current || typeof reader.result !== "string") return;
-        const next = [...imagesRef.current, reader.result];
-        const error = imageLimitError(next);
-        if (error) onNotify(error, "err");
-        else {
-          imagesRef.current = next;
-          setImages(next);
+    imageReadTailRef.current = imageReadTailRef.current
+      .catch(() => {})
+      .then(async () => {
+        if (imagesRef.current.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
+          onNotify(`Attach no more than ${MAX_IMAGES_PER_MESSAGE} images per message.`, "err");
+          return;
         }
-      };
-      reader.onerror = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-        if (gen === releaseGenRef.current) {
-          onNotify("The attached image could not be read.", "err");
+        for (const file of imageFiles) {
+          if (file.size > MAX_IMAGE_FILE_BYTES) {
+            onNotify(
+              `Each attached image must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`,
+              "err",
+            );
+            continue;
+          }
+          const releaseGeneration = releaseGenRef.current;
+          pendingImageReadsRef.current += 1;
+          try {
+            const image = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                if (typeof reader.result === "string") resolve(reader.result);
+                else reject(new Error("The attached image could not be read."));
+              };
+              reader.onerror = () => reject(new Error("The attached image could not be read."));
+              reader.readAsDataURL(file);
+            });
+            if (releaseGeneration !== releaseGenRef.current) continue;
+            const error = imageLimitError([...imagesRef.current, image]);
+            if (error) {
+              onNotify(error, "err");
+              continue;
+            }
+            const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+              const preview = new Image();
+              preview.onload = () => resolve({ width: preview.naturalWidth, height: preview.naturalHeight });
+              preview.onerror = () => reject(new Error("The attached image could not be decoded."));
+              preview.src = image;
+            });
+            if (releaseGeneration !== releaseGenRef.current) continue;
+            if (
+              dimensions.width > MAX_IMAGE_DIMENSION ||
+              dimensions.height > MAX_IMAGE_DIMENSION
+            ) {
+              onNotify(
+                `Each image must be ${MAX_IMAGE_DIMENSION}×${MAX_IMAGE_DIMENSION} pixels or smaller.`,
+                "err",
+              );
+              continue;
+            }
+            const next = [...imagesRef.current, image];
+            const nextError = imageLimitError(next);
+            if (nextError) onNotify(nextError, "err");
+            else {
+              imagesRef.current = next;
+              setImages(next);
+            }
+          } catch (error) {
+            if (releaseGeneration === releaseGenRef.current) {
+              onNotify((error as Error).message || String(error), "err");
+            }
+          } finally {
+            pendingImageReadsRef.current = Math.max(
+              0,
+              pendingImageReadsRef.current - 1,
+            );
+          }
         }
-      };
-      reader.readAsDataURL(file);
-    }
+      });
   }
 
   const model = chat ? resolveModel(chat.provider, chat.model_id) : null;
@@ -327,13 +358,17 @@ export function ChatView({
                         ) : (
                           <>
                             {m!.content && <div className="msg-user">{m!.content}</div>}
-                            {m!.images.length > 0 && (
+                            {(m!.images.length > 0 || (m!.image_count ?? 0) > 0) && (
                               <div className="sent-images">
-                                {m!.images.map((image, index) => (
-                                  <img
+                                {Array.from({
+                                  length: m!.images.length || (m!.image_count ?? 0),
+                                }, (_, index) => (
+                                  <SentImage
                                     key={`${m!.id}-${index}`}
-                                    src={image}
-                                    alt={`Attached image ${index + 1}`}
+                                    chatId={m!.chat_id}
+                                    messageId={m!.id}
+                                    index={index}
+                                    src={m!.images[index]}
                                   />
                                 ))}
                               </div>
@@ -439,7 +474,7 @@ export function ChatView({
             <input
               ref={fileRef}
               type="file"
-              accept="image/*"
+              accept="image/png,image/jpeg,image/webp"
               multiple
               hidden
               onChange={(e) => onFiles(e.target.files)}
@@ -522,6 +557,46 @@ export function ChatView({
       </div>
     </div>
   );
+}
+
+function SentImage({
+  chatId,
+  messageId,
+  index,
+  src,
+}: {
+  chatId: string;
+  messageId: string;
+  index: number;
+  src?: string;
+}) {
+  const [image, setImage] = useState(src ?? null);
+
+  useEffect(() => {
+    if (src) {
+      setImage(src);
+      return;
+    }
+    let cancelled = false;
+    void loadMessageImage(chatId, messageId, index)
+      .then((loaded) => {
+        if (!cancelled) setImage(loaded);
+      })
+      .catch(() => {
+        if (!cancelled) setImage(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, index, messageId, src]);
+
+  return image ? (
+    <img
+      src={image}
+      alt={`Attached image ${index + 1}`}
+      loading="lazy"
+    />
+  ) : null;
 }
 
 function MsgActions({

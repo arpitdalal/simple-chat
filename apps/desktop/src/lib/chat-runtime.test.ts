@@ -8,6 +8,7 @@ const getChat = vi.fn();
 const listRecentMessages = vi.fn();
 const listOlderMessages = vi.fn();
 const listMessages = vi.fn();
+const loadMessageImages = vi.fn();
 const clearChatMessages = vi.fn();
 const deleteChat = vi.fn();
 const updateChat = vi.fn();
@@ -26,6 +27,7 @@ vi.mock("./db", () => ({
   listRecentMessages: (...args: unknown[]) => listRecentMessages(...args),
   listOlderMessages: (...args: unknown[]) => listOlderMessages(...args),
   listMessages: (...args: unknown[]) => listMessages(...args),
+  loadMessageImages: (...args: unknown[]) => loadMessageImages(...args),
   deleteMessagesAfter: vi.fn(async () => {}),
   clearChatMessages: (...args: unknown[]) => clearChatMessages(...args),
   deleteChat: (...args: unknown[]) => deleteChat(...args),
@@ -53,10 +55,32 @@ beforeEach(() => {
   clock = 0;
   getChat.mockImplementation(async (id: string) => chat(id));
   listRecentMessages.mockImplementation(async (id: string, limit: number) =>
-    (store.get(id) ?? []).slice(-limit),
+    (store.get(id) ?? []).slice(-limit).map((message) => ({ ...message, images: [] })),
   );
   listOlderMessages.mockResolvedValue([]);
-  listMessages.mockImplementation(async (id: string) => store.get(id) ?? []);
+  listMessages.mockImplementation(async (id: string) =>
+    (store.get(id) ?? []).map((message) => ({ ...message, images: [] })),
+  );
+  loadMessageImages.mockImplementation(async (
+    id: string,
+    _throughMessageId: string,
+    maxChars: number,
+    maxImages: number,
+  ) => {
+    const selected = new Map<string, string[]>();
+    let chars = 0;
+    let images = 0;
+    for (const message of [...(store.get(id) ?? [])].reverse()) {
+      if (!message.images.length) continue;
+      const nextChars = chars + JSON.stringify(message.images).length;
+      const nextImages = images + message.images.length;
+      if (nextChars > maxChars || nextImages > maxImages) break;
+      selected.set(message.id, message.images);
+      chars = nextChars;
+      images = nextImages;
+    }
+    return selected;
+  });
   addMessage.mockImplementation(async (id: string, role: Message["role"], content: string, createdAt = Date.now(), images: string[] = []) => {
     const message: Message = { id: crypto.randomUUID(), chat_id: id, role, content, images, created_at: createdAt };
     store.set(id, [...(store.get(id) ?? []), message]);

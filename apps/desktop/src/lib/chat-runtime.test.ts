@@ -47,6 +47,7 @@ const chat = (id: string): Chat => ({
 const callbacks = {
   onChatUpdated: vi.fn(), onChatMeta: vi.fn(), onNotify: vi.fn(),
 };
+const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAA";
 
 beforeEach(() => {
   resetChatSessions();
@@ -146,7 +147,7 @@ describe("ChatSession", () => {
     let failInsert!: (error: Error) => void;
     addMessage.mockImplementationOnce(() => new Promise((_resolve, reject) => { failInsert = reject; }));
     const session = getChatSession("a");
-    session.send(chat("a"), "image", ["data:image/png;base64,AAA"], callbacks);
+    session.send(chat("a"), "image", [pngImage], callbacks);
     await waitFor(() => expect(failInsert).toBeTruthy());
     session.dropDraftImages();
     failInsert(new Error("database unavailable"));
@@ -155,7 +156,7 @@ describe("ChatSession", () => {
   });
 
   it("keeps sent images in optimistic, persisted, and provider messages", async () => {
-    const image = "data:image/png;base64,AAA";
+    const image = pngImage;
     const session = getChatSession("a");
     const unsubscribe = session.subscribe(() => {});
     session.send(chat("a"), "describe", [image], callbacks);
@@ -185,10 +186,7 @@ describe("ChatSession", () => {
   });
 
   it("rejects oversized image sets before sending", () => {
-    const images = Array.from(
-      { length: 5 },
-      (_, index) => `data:image/png;base64,${index}`,
-    );
+    const images = Array.from({ length: 5 }, () => pngImage);
     const session = getChatSession("a");
     expect(session.send(chat("a"), "look", images, callbacks)).toBe(false);
     expect(callbacks.onNotify).toHaveBeenCalledWith(
@@ -205,7 +203,7 @@ describe("ChatSession", () => {
       chat_id: "a",
       role: "user" as const,
       content: "",
-      images: [`data:image/png;base64,${index}`],
+      images: [pngImage],
       created_at: index,
     })));
     const session = getChatSession("a");
@@ -226,7 +224,7 @@ describe("ChatSession", () => {
   });
 
   it("includes persisted images when regenerating a response", async () => {
-    const image = "data:image/png;base64,BBB";
+    const image = pngImage;
     store.set("a", [{
       id: "u1",
       chat_id: "a",

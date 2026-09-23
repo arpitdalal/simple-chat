@@ -6,10 +6,11 @@ import { loadMessageImage, updateChat, type Chat, type Message } from "../lib/db
 import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
 import {
+  imageCountLimitError,
+  imageDimensionLimitError,
   imageLimitError,
-  MAX_IMAGE_DIMENSION,
   MAX_IMAGE_FILE_BYTES,
-  MAX_IMAGES_PER_MESSAGE,
+  normalizeImageDataUrl,
   type ChatSession,
 } from "../lib/chat-runtime";
 import { ModelPicker } from "./ModelPicker";
@@ -180,6 +181,10 @@ export function ChatView({
     onChatUpdated();
   }
   function send() {
+    if (pendingImageReadsRef.current) {
+      onNotify("Wait for attached images to finish loading.", "err");
+      return;
+    }
     if (!chat || blocked) {
       if (setupNeeded) onNeedKey?.();
       return;
@@ -223,73 +228,80 @@ export function ChatView({
 
   function readImageFiles(files: File[]) {
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    const queuedCount = imageFiles.length;
+    const countError = imageCountLimitError(
+      imagesRef.current.length + pendingImageReadsRef.current + queuedCount,
+    );
+    if (countError) {
+      onNotify(countError, "err");
+      return;
+    }
+    if (!queuedCount) return;
+    const releaseGeneration = releaseGenRef.current;
+    pendingImageReadsRef.current += queuedCount;
     imageReadTailRef.current = imageReadTailRef.current
       .catch(() => {})
       .then(async () => {
-        if (imagesRef.current.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
-          onNotify(`Attach no more than ${MAX_IMAGES_PER_MESSAGE} images per message.`, "err");
-          return;
-        }
-        for (const file of imageFiles) {
-          if (file.size > MAX_IMAGE_FILE_BYTES) {
-            onNotify(
-              `Each attached image must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`,
-              "err",
-            );
-            continue;
-          }
-          const releaseGeneration = releaseGenRef.current;
-          pendingImageReadsRef.current += 1;
-          try {
-            const image = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                if (typeof reader.result === "string") resolve(reader.result);
-                else reject(new Error("The attached image could not be read."));
-              };
-              reader.onerror = () => reject(new Error("The attached image could not be read."));
-              reader.readAsDataURL(file);
-            });
-            if (releaseGeneration !== releaseGenRef.current) continue;
-            const error = imageLimitError([...imagesRef.current, image]);
-            if (error) {
-              onNotify(error, "err");
-              continue;
-            }
-            const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-              const preview = new Image();
-              preview.onload = () => resolve({ width: preview.naturalWidth, height: preview.naturalHeight });
-              preview.onerror = () => reject(new Error("The attached image could not be decoded."));
-              preview.src = image;
-            });
-            if (releaseGeneration !== releaseGenRef.current) continue;
-            if (
-              dimensions.width > MAX_IMAGE_DIMENSION ||
-              dimensions.height > MAX_IMAGE_DIMENSION
-            ) {
+        try {
+          if (releaseGeneration !== releaseGenRef.current) return;
+          for (const file of imageFiles) {
+            if (file.size > MAX_IMAGE_FILE_BYTES) {
               onNotify(
-                `Each image must be ${MAX_IMAGE_DIMENSION}×${MAX_IMAGE_DIMENSION} pixels or smaller.`,
+                `Each attached image must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`,
                 "err",
               );
               continue;
             }
-            const next = [...imagesRef.current, image];
-            const nextError = imageLimitError(next);
-            if (nextError) onNotify(nextError, "err");
-            else {
+            try {
+              const dataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  if (typeof reader.result === "string") resolve(reader.result);
+                  else reject(new Error("The attached image could not be read."));
+                };
+                reader.onerror = () => reject(new Error("The attached image could not be read."));
+                reader.readAsDataURL(file);
+              });
+              if (releaseGeneration !== releaseGenRef.current) continue;
+              const normalized = normalizeImageDataUrl(dataUrl);
+              if (!normalized) {
+                onNotify("Attach a PNG, JPEG, or WebP image.", "err");
+                continue;
+              }
+              const dimensionError = imageDimensionLimitError(
+                normalized.width,
+                normalized.height,
+              );
+              if (dimensionError) {
+                onNotify(dimensionError, "err");
+                continue;
+              }
+              const next = [...imagesRef.current, normalized.image];
+              const nextError = imageLimitError(next);
+              if (nextError) {
+                onNotify(nextError, "err");
+                continue;
+              }
+              await new Promise<void>((resolve, reject) => {
+                const preview = new Image();
+                preview.onload = () => resolve();
+                preview.onerror = () => reject(new Error("The attached image could not be decoded."));
+                preview.src = normalized.image;
+              });
+              if (releaseGeneration !== releaseGenRef.current) continue;
               imagesRef.current = next;
               setImages(next);
+            } catch (error) {
+              if (releaseGeneration === releaseGenRef.current) {
+                onNotify((error as Error).message || String(error), "err");
+              }
             }
-          } catch (error) {
-            if (releaseGeneration === releaseGenRef.current) {
-              onNotify((error as Error).message || String(error), "err");
-            }
-          } finally {
-            pendingImageReadsRef.current = Math.max(
-              0,
-              pendingImageReadsRef.current - 1,
-            );
           }
+        } finally {
+          pendingImageReadsRef.current = Math.max(
+            0,
+            pendingImageReadsRef.current - queuedCount,
+          );
         }
       });
   }

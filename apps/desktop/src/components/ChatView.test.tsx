@@ -71,6 +71,9 @@ function TestChatView(props: Omit<Parameters<typeof ChatView>[0], "session">) {
   return <ChatView key={props.chat?.id ?? "__empty__"} {...props} session={getChatSession(props.chat?.id ?? "__empty__")} />;
 }
 
+const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAA";
+const pngBytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAQAAAQAA"), (character) => character.charCodeAt(0));
+
 const chat: Chat = {
   id: "c1",
   title: "New Chat",
@@ -341,6 +344,16 @@ describe("ChatView", () => {
 
   it("does not restore failed images into a text-only newer draft", async () => {
     const user = userEvent.setup();
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
     let rejectAdd!: (e: Error) => void;
     addMessage.mockImplementationOnce(
       () =>
@@ -364,7 +377,7 @@ describe("ChatView", () => {
     );
     const ta = screen.getByPlaceholderText("Ask AI anything…");
     // Attach image then send
-    const file = new File(["x"], "a.png", { type: "image/png" });
+    const file = new File([pngBytes], "a.png", { type: "image/png" });
     await act(async () => {
       const input = document.querySelector(
         'input[type="file"]',
@@ -381,6 +394,7 @@ describe("ChatView", () => {
     });
     await waitFor(() => expect(ta).toHaveValue("typed after"));
     expect(screen.queryByTitle("Remove")).toBeNull();
+    vi.unstubAllGlobals();
   });
 
   it("keeps partial assistant reply when stream fails mid-way", async () => {
@@ -473,7 +487,7 @@ describe("ChatView", () => {
 
     const readAsDataURL = vi.fn(function (this: FileReader) {
       Object.defineProperty(this, "result", {
-        value: "data:image/png;base64,aaa",
+        value: pngImage,
       });
       this.onload?.(new ProgressEvent("load") as unknown as ProgressEvent<FileReader>);
     });
@@ -483,6 +497,16 @@ describe("ChatView", () => {
         result: string | null = null;
         onload: ((ev: ProgressEvent<FileReader>) => void) | null = null;
         readAsDataURL = readAsDataURL;
+      },
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
       },
     );
 
@@ -522,7 +546,7 @@ describe("ChatView", () => {
               {
                 type: "image/png",
                 getAsFile: () =>
-                  new File([new Uint8Array([1])], "pic.png", {
+                  new File([pngBytes], "pic.png", {
                     type: "image/png",
                   }),
               },
@@ -546,6 +570,16 @@ describe("ChatView", () => {
   });
 
   it("attaches pasted images", async () => {
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
     render(
       <TestChatView
         chat={chat}
@@ -561,7 +595,7 @@ describe("ChatView", () => {
       expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument(),
     );
 
-    const file = new File([new Uint8Array([1, 2, 3])], "pic.png", {
+    const file = new File([pngBytes], "pic.png", {
       type: "image/png",
     });
     const ta = screen.getByPlaceholderText("Ask AI anything…");
@@ -583,6 +617,7 @@ describe("ChatView", () => {
 
     // FileReader is async
     await waitFor(() => expect(document.querySelector(".thumb img")).toBeTruthy());
+    vi.unstubAllGlobals();
   });
 
   it("preserves selected image order across asynchronous reads", async () => {
@@ -596,8 +631,8 @@ describe("ChatView", () => {
         readAsDataURL() {
           const index = readCount++;
           const result = index === 0
-            ? "data:image/png;base64,Zmlyc3Q="
-            : "data:image/png;base64,c2Vjb25k";
+            ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQUFB"
+            : "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQkJC";
           window.setTimeout(() => {
             this.result = result;
             this.onload?.();
@@ -649,16 +684,104 @@ describe("ChatView", () => {
       "",
       expect.any(Number),
       [
-        "data:image/png;base64,Zmlyc3Q=",
-        "data:image/png;base64,c2Vjb25k",
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQUFB",
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQkJC",
       ],
     );
     vi.unstubAllGlobals();
   });
 
+  it("does not send text while selected images are still loading", async () => {
+    const user = userEvent.setup();
+    const onNotify = vi.fn();
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: (() => void) | null = null;
+        readAsDataURL() {}
+      },
+    );
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={onNotify}
+        focusNonce={1}
+      />,
+    );
+    const textarea = await screen.findByPlaceholderText("Ask AI anything…");
+    await user.type(textarea, "wait");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        value: [new File(["image"], "image.png", { type: "image/png" })],
+        configurable: true,
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await user.keyboard("{Enter}");
+
+    expect(onNotify).toHaveBeenCalledWith(
+      "Wait for attached images to finish loading.",
+      "err",
+    );
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("wait");
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects image bytes that do not match a supported format", async () => {
+    const onNotify = vi.fn();
+    const gif = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: (() => void) | null = null;
+        readAsDataURL() {
+          this.result = `data:image/png;base64,${gif}`;
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={onNotify}
+        focusNonce={1}
+      />,
+    );
+    await screen.findByPlaceholderText("Ask AI anything…");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        value: [new File(["gif"], "spoof.png", { type: "image/png" })],
+        configurable: true,
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(
+        "Attach a PNG, JPEG, or WebP image.",
+        "err",
+      ),
+    );
+    expect(document.querySelector(".thumb")).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it("renders an attached image in the sent user message", async () => {
     const user = userEvent.setup();
-    const image = "data:image/png;base64,c2VudC1pbWFnZQ==";
+    const image = pngImage;
     vi.stubGlobal(
       "FileReader",
       class {
@@ -716,7 +839,7 @@ describe("ChatView", () => {
   });
 
   it("loads persisted message images only when rendered", async () => {
-    const image = "data:image/png;base64,cGVyc2lzdGVk";
+    const image = pngImage;
     listRecentMessages.mockResolvedValue([
       msg({ id: "saved", role: "user", content: "look", image_count: 2 }),
     ]);

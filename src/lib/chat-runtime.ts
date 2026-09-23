@@ -43,7 +43,12 @@ export function chatIsUnavailable(id: string): boolean {
   return !!state && (state.busy || state.phase !== "idle");
 }
 export function getChatSession(id: string): ChatSession {
-  return sessions.get(id) ?? new ChatSession(id);
+  let session = sessions.get(id);
+  if (!session) {
+    session = new ChatSession(id);
+    sessions.set(id, session);
+  }
+  return session;
 }
 export function resetChatSessions() {
   for (const session of sessions.values()) session.stop();
@@ -60,6 +65,7 @@ export class ChatSession {
   private loaded = false;
   private version = 0;
   private loadPromise: Promise<void> | null = null;
+  private loadVersion = 0;
   private streamOwner: Turn | null = null;
   private snapshot: ChatSnapshot = {
     messages: [], stream: null, busy: false, phase: "idle", drafts: [],
@@ -68,7 +74,6 @@ export class ChatSession {
 
   constructor(readonly id: string) {}
   subscribe = (listener: () => void) => {
-    sessions.set(this.id, this);
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -98,10 +103,14 @@ export class ChatSession {
     }
   }
 
-  async loadRecent() {
+  async loadRecent(): Promise<void> {
     if (this.loaded) return;
-    if (this.loadPromise) return this.loadPromise;
+    if (this.loadPromise) {
+      if (this.loadVersion === this.version) return this.loadPromise;
+      return this.loadPromise.catch(() => {}).then(() => this.loadRecent());
+    }
     const version = this.version;
+    this.loadVersion = version;
     this.loadPromise = (async () => {
       const page = await listRecentMessages(this.id, MESSAGE_PAGE);
       if (this.version !== version || this.snapshot.phase === "deleted") return;
@@ -365,8 +374,9 @@ export class ChatSession {
     } catch (e) {
       this.loaded = false;
       this.publish({ phase: "idle", messages: [], hasMore: false });
-      const live = await getChat(this.id).catch(() => null);
-      if (live) await this.loadRecent().catch(() => {});
+      let live: Chat | null | undefined;
+      try { live = await getChat(this.id); } catch { /* state is uncertain; leave retryable */ }
+      if (live !== null) await this.loadRecent().catch(() => {});
       else {
         this.publish({ phase: "deleted" });
         if (sessions.get(this.id) === this) sessions.delete(this.id);

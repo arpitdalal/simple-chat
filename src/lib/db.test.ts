@@ -19,6 +19,7 @@ import {
   deleteMessagesAfter,
   setInitialChatTitle,
   replaceChatTitle,
+  refreshChatPreview,
 } from "./db";
 import { resetMemoryDb } from "../test/memory-sql";
 
@@ -133,6 +134,15 @@ describe("db (memory sql integration)", () => {
     await updateChat(chat.id, { title: "Mine" });
     expect(await replaceChatTitle(chat.id, "Prompt", "Generated")).toBe(false);
     expect((await getChat(chat.id))?.title).toBe("Mine");
+  });
+
+  it("refreshes activity time when a message changes the preview", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    await addMessage(chat.id, "user", "later message", 200);
+    vi.spyOn(Date, "now").mockReturnValue(500);
+    await refreshChatPreview(chat.id);
+    vi.spyOn(Date, "now").mockRestore();
+    expect(await getChat(chat.id)).toMatchObject({ preview: "later message", updated_at: 500 });
   });
 
   it("setDefaultModel CAS skips when live defaults already moved", async () => {

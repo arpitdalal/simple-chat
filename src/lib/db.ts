@@ -270,11 +270,11 @@ export async function setInitialChatTitle(id: string, title: string): Promise<bo
 export async function refreshChatPreview(id: string): Promise<void> {
   const db = await getDb();
   await db.execute(
-    `UPDATE chats SET preview = COALESCE(
+    `UPDATE chats SET updated_at = $2, preview = COALESCE(
        (SELECT substr(content, 1, 120) FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
        'Ask AI anything…'
      ) WHERE id = $1`,
-    [id],
+    [id, Date.now()],
   );
 }
 

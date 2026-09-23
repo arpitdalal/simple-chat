@@ -25,7 +25,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
-import { chatIsUnavailable, getChatSession } from "./lib/chat-runtime";
+import { ChatSession, chatIsUnavailable, getChatSession } from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -38,6 +38,7 @@ function App() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [active, setActive] = useState<Chat | null>(null);
+  const [activeSession, setActiveSession] = useState(() => new ChatSession("__empty__"));
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -59,6 +60,11 @@ function App() {
   const [navBusy, setNavBusy] = useState(false);
   /** Derived from keychain queue pending count (OS prompts included). */
   const [keyBusy, setKeyBusy] = useState(false);
+
+  function setActiveChat(chat: Chat | null) {
+    setActive(chat);
+    setActiveSession(chat ? getChatSession(chat.id) : new ChatSession("__empty__"));
+  }
 
   /** Currently offered update; dismiss before replace. */
   const pendingUpdateRef = useRef<AvailableUpdate | null>(null);
@@ -172,7 +178,7 @@ function App() {
         const aligned = await alignEmptyChat(chat, alignTo, ready);
         if (isCancelled()) return;
         if (activeIdRef.current === aligned.id) {
-          setActive(aligned);
+          setActiveChat(aligned);
           if (aligned !== chat) await refreshChats();
         }
       } catch (err) {
@@ -336,7 +342,7 @@ function App() {
           const aligned = await alignEmptyChat(existing, alignTo, readyList);
           if (isCancelled()) return;
           setActiveIdNow(aligned.id);
-          setActive(aligned);
+          setActiveChat(aligned);
           setShowSettings(false);
           if (aligned !== existing) await refreshChats();
           else setChats(liveChats);
@@ -353,7 +359,7 @@ function App() {
               readyList,
             );
             if (isCancelled()) return;
-            setActive(aligned);
+            setActiveChat(aligned);
             setShowSettings(false);
             if (aligned !== freshActive) await refreshChats();
             else setChats(liveChats);
@@ -370,7 +376,7 @@ function App() {
           return;
         }
         setActiveIdNow(chat.id);
-        setActive(chat);
+        setActiveChat(chat);
         setShowSettings(false);
         await refreshChats();
         focusComposer();
@@ -436,7 +442,7 @@ function App() {
       await setSetting("last_opened_at", Date.now());
       await setSetting("last_chat_id", chat.id);
       setActiveIdNow(chat.id);
-      setActive(chat);
+      setActiveChat(chat);
       await refreshChats();
       if (cancelled) return;
       setReady(true);
@@ -558,7 +564,7 @@ function App() {
       const next = (await listChats())[0];
       if (next) {
         setActiveIdNow(next.id);
-        setActive(next);
+        setActiveChat(next);
       } else if (settings) {
         await newChat();
         return;
@@ -575,7 +581,7 @@ function App() {
       notify((err as Error).message || String(err), "err");
       return;
     }
-    if (activeId === id) setActive(await getChat(id));
+    if (activeId === id) setActiveChat(await getChat(id));
     await refreshChats();
     focusComposer();
   }
@@ -593,7 +599,7 @@ function App() {
       const branched = await branchChat(activeId, throughMessageId);
       setShowSettings(false);
       setActiveIdNow(branched.id);
-      setActive(branched);
+      setActiveChat(branched);
       await refreshChats();
       focusComposer();
       notify("Branched chat", "ok");
@@ -713,7 +719,9 @@ function App() {
           </div>
         ) : (
           <ChatView
+            key={active?.id ?? "__empty__"}
             chat={active}
+            session={activeSession}
             onChatUpdated={() => void refreshChats()}
             onChatMeta={(updated) => {
               if (activeIdRef.current === updated.id) setActive(updated);

@@ -61,6 +61,8 @@ function App() {
   /** Derived from keychain queue pending count (OS prompts included). */
   const [keyBusy, setKeyBusy] = useState(false);
 
+  useEffect(() => activeSession.retain(), [activeSession]);
+
   function setActiveChat(chat: Chat | null) {
     setActive(chat);
     setActiveSession(chat ? getChatSession(chat.id) : new ChatSession("__empty__"));

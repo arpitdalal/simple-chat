@@ -59,6 +59,7 @@ export function resetChatSessions() {
 export class ChatSession {
   private queue = createQueue();
   private listeners = new Set<() => void>();
+  private holders = 0;
   private turns = new Set<Turn>();
   private titleControllers = new Set<AbortController>();
   private titleWrites = new Set<Promise<unknown>>();
@@ -73,6 +74,13 @@ export class ChatSession {
   };
 
   constructor(readonly id: string) {}
+  retain = () => {
+    this.holders += 1;
+    return () => {
+      this.holders -= 1;
+      this.releaseIfIdle();
+    };
+  };
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
@@ -86,7 +94,7 @@ export class ChatSession {
     for (const listener of this.listeners) listener();
   }
   private releaseIfIdle() {
-    if (this.listeners.size || this.turns.size || this.snapshot.phase !== "idle") return;
+    if (this.holders || this.listeners.size || this.turns.size || this.snapshot.phase !== "idle") return;
     this.version += 1;
     this.loaded = false;
     this.snapshot = { ...this.snapshot, messages: [], hasMore: false, stream: null };

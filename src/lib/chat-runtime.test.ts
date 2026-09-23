@@ -66,6 +66,16 @@ beforeEach(() => {
 });
 
 describe("ChatSession", () => {
+  it("keeps an App-owned session canonical across view unmounts", () => {
+    const session = getChatSession("a");
+    const release = session.retain();
+    const unsubscribe = session.subscribe(() => {});
+    unsubscribe();
+    expect(getChatSession("a")).toBe(session);
+    release();
+    expect(getChatSession("a")).not.toBe(session);
+  });
+
   it("removes the pending stream if stopped before the request starts", async () => {
     let release!: () => void;
     getChat.mockImplementationOnce(async () => {

@@ -47,6 +47,11 @@ export function stopChat(chatId: string) {
 }
 
 export function resetChatRuntime() {
+  // Abort first so in-flight ops observe cancellation before maps go empty.
+  for (const slot of streamsRef.current.values()) slot.ac.abort();
+  for (const list of turnCancelsRef.current.values()) {
+    for (const ac of list) ac.abort();
+  }
   for (const map of [
     streamsRef.current,
     queuesRef.current,

@@ -4,9 +4,15 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
 let html = "";
+let robots = "";
+let sitemap = "";
 
 beforeAll(async () => {
-  html = await readFile(`${distDirectory}index.html`, "utf8");
+  [html, robots, sitemap] = await Promise.all([
+    readFile(`${distDirectory}index.html`, "utf8"),
+    readFile(`${distDirectory}robots.txt`, "utf8"),
+    readFile(`${distDirectory}sitemap-0.xml`, "utf8"),
+  ]);
 });
 
 describe("production landing page", () => {
@@ -33,6 +39,13 @@ describe("production landing page", () => {
     expect(html).toContain('name="twitter:card"');
     expect(html).toContain('alt="Simple Chat showing a short Lisbon packing conversation"');
     expect(html).toContain('href="#main-content"');
+  });
+
+  it("ships crawler directives for the canonical site", () => {
+    expect(robots).toContain("User-agent: *");
+    expect(robots).toContain("Allow: /");
+    expect(robots).toContain("Sitemap: https://arpitdalal.github.io/simple-chat/sitemap-index.xml");
+    expect(sitemap).toContain("<loc>https://arpitdalal.github.io/simple-chat</loc>");
   });
 
   it("has no client scripts or third-party runtime resources", () => {

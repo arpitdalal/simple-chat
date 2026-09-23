@@ -83,6 +83,7 @@ function msg(
 ): Message {
   return {
     chat_id: "c1",
+    images: [],
     created_at: Date.now(),
     ...partial,
   };
@@ -102,8 +103,8 @@ describe("ChatView", () => {
     replaceChatTitle.mockResolvedValue(true);
     getChat.mockImplementation(async (id: string) => ({ ...chat, id }));
     generateChatTitle.mockResolvedValue("Auto Title");
-    addMessage.mockImplementation(async (_id, role, content) =>
-      msg({ id: crypto.randomUUID(), role, content }),
+    addMessage.mockImplementation(async (_id, role, content, _createdAt, images: string[] = []) =>
+      msg({ id: crypto.randomUUID(), role, content, images }),
     );
     streamChat.mockImplementation(async (opts: { onToken: (t: string) => void }) => {
       opts.onToken("Hello ");
@@ -576,6 +577,53 @@ describe("ChatView", () => {
 
     // FileReader is async
     await waitFor(() => expect(document.querySelector(".thumb img")).toBeTruthy());
+  });
+
+  it("renders an attached image in the sent user message", async () => {
+    const user = userEvent.setup();
+    const image = "data:image/png;base64,sent-image";
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: ((ev: ProgressEvent<FileReader>) => void) | null = null;
+        readAsDataURL() {
+          this.result = image;
+          this.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+        }
+      },
+    );
+
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await user.type(await screen.findByPlaceholderText("Ask AI anything…"), "look");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["x"], "photo.png", { type: "image/png" });
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await user.keyboard("{Enter}");
+
+    const sentImage = await screen.findByAltText("Attached image 1");
+    expect(sentImage).toHaveAttribute("src", image);
+    expect(addMessage).toHaveBeenCalledWith(
+      "c1",
+      "user",
+      "look",
+      expect.any(Number),
+      [image],
+    );
+    vi.unstubAllGlobals();
   });
 
   it("grows composer height with multiline input up to cap", async () => {

@@ -452,6 +452,22 @@ select {
   white-space: pre-wrap;
   padding-top: 3px;
 }
+.sent-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.sent-images img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(100%, 320px);
+  max-height: 320px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
 .thinking-pill {
   display: inline-flex;
   margin-bottom: 8px;

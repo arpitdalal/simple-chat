@@ -315,7 +315,20 @@ export function ChatView({
                         {m!.role === "assistant" ? (
                           <Markdown content={m!.content} />
                         ) : (
-                          <div className="msg-user">{m!.content}</div>
+                          <>
+                            {m!.content && <div className="msg-user">{m!.content}</div>}
+                            {m!.images.length > 0 && (
+                              <div className="sent-images">
+                                {m!.images.map((image, index) => (
+                                  <img
+                                    key={`${m!.id}-${index}`}
+                                    src={image}
+                                    alt={`Attached image ${index + 1}`}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </>
                         )}
                         <MsgActions
                           content={m!.content}

@@ -37,6 +37,16 @@ type Callbacks = {
   onNotify: (message: string, kind: "err") => void;
 };
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
+type UserContent = Extract<ModelMessage, { role: "user" }>["content"];
+
+function userContent(message: Pick<Message, "content" | "images">): UserContent {
+  return message.images.length
+    ? [
+        { type: "text" as const, text: message.content || "Describe these images." },
+        ...message.images.map((image) => ({ type: "image" as const, image })),
+      ]
+    : message.content;
+}
 
 const sessions = new Map<string, ChatSession>();
 export function sessionHasWork(id: string): boolean {
@@ -186,25 +196,24 @@ export class ChatSession {
     if (this.snapshot.phase !== "idle" || (!text && !images.length)) return false;
     sessions.set(this.id, this);
     const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images, hideVersion: this.hideVersion };
-    const display = text || `[${images.length} image(s)]`;
-    const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: display, created_at: Date.now() };
+    const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: text, images, created_at: Date.now() };
     this.turns.add(turn);
     this.publish({
       messages: [...this.snapshot.messages, temp], busy: true, drafts: [],
       stream: this.snapshot.stream ?? { anchor: temp.id, text: "" },
     });
-    void this.queue.run(() => this.runSend(turn, chat, display, callbacks));
+    void this.queue.run(() => this.runSend(turn, chat, callbacks));
     return true;
   }
 
-  private async runSend(turn: Turn, chat: Chat, display: string, callbacks: Callbacks) {
+  private async runSend(turn: Turn, chat: Chat, callbacks: Callbacks) {
     let persisted = false;
     try {
       this.abortIfNeeded(turn.ac);
       const live = await getChat(this.id);
       if (!live) throw new Error("Chat was deleted.");
       this.abortIfNeeded(turn.ac);
-      const user = await addMessage(this.id, "user", display);
+      const user = await addMessage(this.id, "user", turn.text!, Date.now(), turn.images);
       persisted = true;
       this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? user : m) });
       this.updatePreview(callbacks);
@@ -215,11 +224,14 @@ export class ChatSession {
       this.abortIfNeeded(turn.ac);
       const history = await listRecentMessages(this.id, MAX_CACHED_MESSAGES);
       this.abortIfNeeded(turn.ac);
-      const content: ModelMessage["content"] = turn.images!.length ? [
-        { type: "text", text: turn.text || "Describe these images." },
-        ...turn.images!.map((image) => ({ type: "image" as const, image })),
-      ] : turn.text!;
-      await this.reply(turn, chat, history, user.id, content, callbacks);
+      await this.reply(
+        turn,
+        chat,
+        history,
+        user.id,
+        userContent({ content: turn.text!, images: turn.images! }),
+        callbacks,
+      );
     } catch (e) {
       this.notifyError(e, callbacks);
       if (!persisted) {
@@ -266,13 +278,17 @@ export class ChatSession {
     })();
   }
 
-  private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: ModelMessage["content"] | undefined, callbacks: Callbacks) {
+  private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: UserContent | undefined, callbacks: Callbacks) {
     this.streamOwner = turn;
     this.publish({ stream: { anchor, text: "" } });
-    const messages: ModelMessage[] = trimRecentMessages(history, MAX_CACHED_MESSAGES).map((m) => ({ role: m.role, content: m.content }));
+    const messages = trimRecentMessages(history, MAX_CACHED_MESSAGES).map((m): ModelMessage => {
+      if (m.role === "user") return { role: "user", content: userContent(m) };
+      if (m.role === "assistant") return { role: "assistant", content: m.content };
+      return { role: "system", content: m.content };
+    });
     if (content !== undefined) {
-      if (history[history.length - 1]?.id === anchor && messages.length) messages[messages.length - 1] = { role: "user", content: content as never };
-      else messages.push({ role: "user", content: content as never });
+      if (history[history.length - 1]?.id === anchor && messages.length) messages[messages.length - 1] = { role: "user", content };
+      else messages.push({ role: "user", content });
     }
     let full = "";
     try {

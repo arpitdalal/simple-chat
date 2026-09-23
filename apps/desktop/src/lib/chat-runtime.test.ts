@@ -7,6 +7,7 @@ const addMessage = vi.fn();
 const getChat = vi.fn();
 const listRecentMessages = vi.fn();
 const listOlderMessages = vi.fn();
+const listMessages = vi.fn();
 const clearChatMessages = vi.fn();
 const deleteChat = vi.fn();
 const updateChat = vi.fn();
@@ -24,7 +25,7 @@ vi.mock("./db", () => ({
   getChat: (...args: unknown[]) => getChat(...args),
   listRecentMessages: (...args: unknown[]) => listRecentMessages(...args),
   listOlderMessages: (...args: unknown[]) => listOlderMessages(...args),
-  listMessages: vi.fn(async () => []),
+  listMessages: (...args: unknown[]) => listMessages(...args),
   deleteMessagesAfter: vi.fn(async () => {}),
   clearChatMessages: (...args: unknown[]) => clearChatMessages(...args),
   deleteChat: (...args: unknown[]) => deleteChat(...args),
@@ -55,8 +56,9 @@ beforeEach(() => {
     (store.get(id) ?? []).slice(-limit),
   );
   listOlderMessages.mockResolvedValue([]);
-  addMessage.mockImplementation(async (id: string, role: Message["role"], content: string) => {
-    const message: Message = { id: crypto.randomUUID(), chat_id: id, role, content, created_at: ++clock };
+  listMessages.mockImplementation(async (id: string) => store.get(id) ?? []);
+  addMessage.mockImplementation(async (id: string, role: Message["role"], content: string, createdAt = Date.now(), images: string[] = []) => {
+    const message: Message = { id: crypto.randomUUID(), chat_id: id, role, content, images, created_at: createdAt };
     store.set(id, [...(store.get(id) ?? []), message]);
     return message;
   });
@@ -75,14 +77,14 @@ describe("ChatSession", () => {
     const session = getChatSession("a");
     const unsubscribe = session.subscribe(() => {});
     store.set("a", Array.from({ length: 50 }, (_, i) => ({
-      id: `m${i}`, chat_id: "a", role: "user" as const, content: `m${i}`, created_at: i,
+      id: `m${i}`, chat_id: "a", role: "user" as const, content: `m${i}`, images: [], created_at: i,
     })));
     await session.loadRecent();
     let release!: (rows: Message[]) => void;
     listOlderMessages.mockImplementationOnce(() => new Promise<Message[]>((resolve) => { release = resolve; }));
     const loading = session.loadOlder();
     session.trim();
-    release([{ id: "old", chat_id: "a", role: "user", content: "old", created_at: -1 }]);
+    release([{ id: "old", chat_id: "a", role: "user", content: "old", images: [], created_at: -1 }]);
     await loading;
     expect(session.getSnapshot().messages).toHaveLength(50);
     unsubscribe();
@@ -98,7 +100,7 @@ describe("ChatSession", () => {
   });
 
   it("does not discard a chat that already has messages", async () => {
-    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", created_at: 1 }]);
+    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", images: [], created_at: 1 }]);
     expect(sessionHasWork("a")).toBe(false);
     expect(await chatCanBeDiscarded("a")).toBe(false);
   });
@@ -126,6 +128,58 @@ describe("ChatSession", () => {
     failInsert(new Error("database unavailable"));
     await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
     expect(session.getSnapshot().drafts).toEqual([{ text: "image", images: [] }]);
+  });
+
+  it("keeps sent images in optimistic, persisted, and provider messages", async () => {
+    const image = "data:image/png;base64,AAA";
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    session.send(chat("a"), "describe", [image], callbacks);
+
+    expect(session.getSnapshot().messages[0]).toMatchObject({
+      content: "describe",
+      images: [image],
+    });
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(addMessage).toHaveBeenCalledWith(
+      "a",
+      "user",
+      "describe",
+      expect.any(Number),
+      [image],
+    );
+    expect(store.get("a")?.[0].images).toEqual([image]);
+    expect(session.getSnapshot().messages[0].images).toEqual([image]);
+    expect(streamChat.mock.calls[0][0].messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "describe" },
+        { type: "image", image },
+      ],
+    });
+    unsubscribe();
+  });
+
+  it("includes persisted images when regenerating a response", async () => {
+    const image = "data:image/png;base64,BBB";
+    store.set("a", [{
+      id: "u1",
+      chat_id: "a",
+      role: "user",
+      content: "",
+      images: [image],
+      created_at: 1,
+    }]);
+    const session = getChatSession("a");
+    expect(session.regenerate(chat("a"), "u1", callbacks)).toBe(true);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "Describe these images." },
+        { type: "image", image },
+      ],
+    }]);
   });
 
   it("keeps an App-owned session canonical across view unmounts", () => {
@@ -256,7 +310,7 @@ describe("ChatSession", () => {
     });
     const session = getChatSession("a");
     const unsubscribe = session.subscribe(() => {});
-    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", created_at: 1 }]);
+    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", images: [], created_at: 1 }]);
     const clearing = session.clear();
     await waitFor(() => expect(session.getSnapshot().phase).toBe("clearing"));
     const deleting = session.delete();
@@ -273,7 +327,7 @@ describe("ChatSession", () => {
     let finishInsert!: () => void;
     addMessage.mockImplementationOnce(async (id: string, role: Message["role"], content: string) => {
       await new Promise<void>((resolve) => { finishInsert = resolve; });
-      const message: Message = { id: "u1", chat_id: id, role, content, created_at: ++clock };
+      const message: Message = { id: "u1", chat_id: id, role, content, images: [], created_at: ++clock };
       store.set(id, [...(store.get(id) ?? []), message]);
       return message;
     });

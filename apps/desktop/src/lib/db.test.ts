@@ -103,7 +103,8 @@ describe("db (memory sql integration)", () => {
     const source = await createChat("google", "gemini-3.8-flash");
     await updateChat(source.id, { title: "Parent", preview: "c" });
     vi.spyOn(Date, "now").mockReturnValue(10);
-    const a = await addMessage(source.id, "user", "one", 10);
+    const image = "data:image/png;base64,AAA";
+    const a = await addMessage(source.id, "user", "one", 10, [image]);
     vi.spyOn(Date, "now").mockReturnValue(20);
     const b = await addMessage(source.id, "assistant", "two", 20);
     vi.spyOn(Date, "now").mockReturnValue(30);
@@ -115,6 +116,7 @@ describe("db (memory sql integration)", () => {
     expect(branched.title).toMatch(/^Branch · Parent/);
     const msgs = await listMessages(branched.id);
     expect(msgs.map((m) => m.content)).toEqual(["one", "two"]);
+    expect(msgs[0].images).toEqual([image]);
     expect(msgs.map((m) => m.created_at)).toEqual([10, 20]);
     // source unchanged
     const orig = await listMessages(source.id);
@@ -145,6 +147,21 @@ describe("db (memory sql integration)", () => {
     await refreshChatPreview(chat.id);
     vi.spyOn(Date, "now").mockRestore();
     expect(await getChat(chat.id)).toMatchObject({ preview: "later message", updated_at: 500 });
+  });
+
+  it("persists image-only messages with a useful preview", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    const image = "data:image/png;base64,BBB";
+    const message = await addMessage(chat.id, "user", "", 200, [image]);
+    vi.spyOn(Date, "now").mockReturnValue(500);
+    await refreshChatPreview(chat.id);
+    vi.spyOn(Date, "now").mockRestore();
+
+    expect((await listMessages(chat.id))[0]).toMatchObject({
+      id: message.id,
+      images: [image],
+    });
+    expect(await getChat(chat.id)).toMatchObject({ preview: "Image", updated_at: 500 });
   });
 
   it("setDefaultModel CAS skips when live defaults already moved", async () => {

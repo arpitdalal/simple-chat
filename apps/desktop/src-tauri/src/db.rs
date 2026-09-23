@@ -4,10 +4,11 @@ pub const DB_URL: &str = "sqlite:simple-chat.db";
 
 /// Versioned schema for `simple-chat.db`. Applied by tauri-plugin-sql / sqlx.
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "initial_schema",
-        sql: r#"
+    vec![
+        Migration {
+            version: 1,
+            description: "initial_schema",
+            sql: r#"
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
@@ -36,8 +37,17 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chats_updated ON chats(updated_at DESC);
 "#,
-        kind: MigrationKind::Up,
-    }]
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "add_message_images",
+            sql: r#"
+ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]';
+"#,
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -52,5 +62,14 @@ mod tests {
         assert!(m.sql.contains("CREATE TABLE IF NOT EXISTS chats"));
         assert!(m.sql.contains("CREATE TABLE IF NOT EXISTS messages"));
         assert!(m.sql.contains("pinned INTEGER NOT NULL DEFAULT 0"));
+    }
+
+    #[test]
+    fn image_migration_adds_message_metadata() {
+        let m = &migrations()[1];
+        assert_eq!(m.version, 2);
+        assert!(m
+            .sql
+            .contains("ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'"));
     }
 }

@@ -92,12 +92,14 @@ class MemoryDatabase {
     }
 
     if (q.includes("INSERT INTO messages")) {
+      const images = JSON.parse(String(args[4])) as string[];
       messages.push({
         id: String(args[0]),
         chat_id: String(args[1]),
         role: args[2] as Message["role"],
         content: String(args[3]),
-        created_at: Number(args[4]),
+        images,
+        created_at: Number(args[5]),
       });
       return { rowsAffected: 1 };
     }
@@ -114,7 +116,14 @@ class MemoryDatabase {
       const i = chats.findIndex((c) => c.id === id);
       const latest = messages.filter((m) => m.chat_id === id)
         .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))[0];
-      if (i >= 0) chats[i] = { ...chats[i], updated_at: Number(args[1]), preview: latest ? Array.from(latest.content).slice(0, 120).join("") : "Ask AI anything…" };
+      if (i >= 0) {
+        const preview = latest
+          ? latest.content
+            ? Array.from(latest.content).slice(0, 120).join("")
+            : "Image"
+          : "Ask AI anything…";
+        chats[i] = { ...chats[i], updated_at: Number(args[1]), preview };
+      }
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 

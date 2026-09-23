@@ -114,7 +114,7 @@ class MemoryDatabase {
       const i = chats.findIndex((c) => c.id === id);
       const latest = messages.filter((m) => m.chat_id === id)
         .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))[0];
-      if (i >= 0) chats[i] = { ...chats[i], updated_at: Number(args[1]), preview: latest?.content.slice(0, 120) ?? "Ask AI anything…" };
+      if (i >= 0) chats[i] = { ...chats[i], updated_at: Number(args[1]), preview: latest ? Array.from(latest.content).slice(0, 120).join("") : "Ask AI anything…" };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 

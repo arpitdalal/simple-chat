@@ -133,7 +133,12 @@ export function ChatView({
     const el = parentRef.current;
     const height = el?.scrollHeight ?? 0;
     const top = el?.scrollTop ?? 0;
-    await session.loadOlder();
+    try {
+      await session.loadOlder();
+    } catch (e) {
+      onNotify((e as Error).message || String(e), "err");
+      return;
+    }
     stickBottom.current = false;
     requestAnimationFrame(() => {
       if (el) el.scrollTop = top + el.scrollHeight - height;

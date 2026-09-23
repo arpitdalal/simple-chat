@@ -471,9 +471,13 @@ function App() {
 
   useEffect(() => {
     if (!activeId) return;
-    void getChat(activeId).then(setActive);
+    let cancelled = false;
+    void getChat(activeId).then((chat) => {
+      if (!cancelled && activeIdRef.current === activeId) setActiveChat(chat);
+    });
     void setSetting("last_chat_id", activeId);
     void setSetting("last_opened_at", Date.now());
+    return () => { cancelled = true; };
   }, [activeId]);
 
   useEffect(() => {

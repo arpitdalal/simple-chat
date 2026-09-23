@@ -323,9 +323,9 @@ export class ChatSession {
         const at = all.findIndex((m) => m.id === userId && m.role === "user");
         if (at < 0) throw new Error("That message is no longer in this chat.");
         await deleteMessagesAfter(this.id, userId);
-        this.abortIfNeeded(turn.ac);
         const keep = all.slice(0, at + 1);
         this.publish({ messages: trimRecentMessages(keep, MAX_CACHED_MESSAGES), hasMore: keep.length > MAX_CACHED_MESSAGES });
+        this.abortIfNeeded(turn.ac);
         await this.reply(turn, chat, keep, userId, undefined, callbacks);
       } catch (e) { this.notifyError(e, callbacks); }
       finally { this.finishTurn(turn); }

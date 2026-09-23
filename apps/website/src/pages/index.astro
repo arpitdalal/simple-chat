@@ -1,0 +1,258 @@
+---
+import "@fontsource-variable/onest";
+import { formatFileSize, getRelease } from "../lib/release";
+import "../styles/global.css";
+
+const release = await getRelease();
+const base = import.meta.env.BASE_URL;
+const title = "Simple Chat — Your AI, one keystroke away";
+const description = "A minimal macOS AI chat app with your own keys, local history, and a global shortcut.";
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const socialImage = new URL(`${base}/og-image.png`, Astro.site);
+const downloads = [
+  {
+    architecture: "Apple Silicon",
+    description: "M-series Mac",
+    href: release.appleSilicon.browser_download_url,
+    size: formatFileSize(release.appleSilicon.size),
+  },
+  {
+    architecture: "Intel",
+    description: "Intel processor",
+    href: release.intel.browser_download_url,
+    size: formatFileSize(release.intel.size),
+  },
+];
+const features = [
+  ["01", "Global shortcut", "Summon Simple Chat from anywhere, centered on the display under your cursor."],
+  ["02", "Your keys", "Connect OpenAI, Anthropic, or Google with keys saved in your operating system keychain."],
+  ["03", "Local history", "Chats live in SQLite on your Mac. There is no Simple Chat account or history service."],
+  ["04", "Pick up quickly", "Resume your recent conversation or start a fresh thread without opening a browser."],
+  ["05", "Images and search", "Attach images for vision models and use provider-native web search when available."],
+  ["06", "Useful models", "Choose from models your saved keys can use, or enter a custom model ID."],
+];
+const faqs = [
+  ["Do I need a Simple Chat account?", "No. There is no account, subscription, or Simple Chat backend. Add an API key for the provider you want to use."],
+  ["Where are my chats stored?", "Your chat history is stored in a local SQLite database on your Mac. Prompts and responses are sent to the provider you select."],
+  ["Can I use Simple Chat offline?", "The interface and history work locally. Calling a model or using web search requires a network connection."],
+  ["Do you ship a Windows or Linux app?", "Not yet. Prebuilt DMGs are available for Apple Silicon and Intel Macs. Other systems can build the project from source."],
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#f3f6fa" />
+    <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:alt" content="Simple Chat on macOS" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImage} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Simple Chat home">
+        <img src={`${base}/logo.svg`} width="28" height="28" alt="" />
+        <span>Simple Chat</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#how-it-works">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#download">Download</a>
+        <a class="nav-source" href="https://github.com/arpitdalal/simple-chat" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero section" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> macOS · open source · BYOK</p>
+          <h1 id="hero-title">Your AI, one <span>keystroke</span> away.</h1>
+          <p class="hero-lede">Bring your own keys. Keep your chat history on your Mac. Send every prompt directly to the provider you choose.</p>
+          <div class="hero-actions download-actions">
+            {downloads.map((download, index) => (
+              <a
+                class:list={["button", index === 0 ? "button-primary" : "button-secondary"]}
+                href={download.href}
+                download
+              >
+                <span>Download for {download.architecture}</span>
+                <span aria-hidden="true">↓</span>
+              </a>
+            ))}
+          </div>
+          <p class="download-note">{release.name} · {downloads.map((download) => `${download.architecture} ${download.size}`).join(" · ")}</p>
+          <p class="source-note">Not on a Mac? Prebuilt releases are currently macOS-only. <a href="https://github.com/arpitdalal/simple-chat#local-build">Build from source</a>.</p>
+        </div>
+
+        <div class="hero-demo" aria-label="Simple Chat app preview">
+          <div class="shortcut-sequence" aria-hidden="true">
+            <div class="shortcut-label">GLOBAL SHORTCUT</div>
+            <div class="key-row">
+              <span class="key key-command">⌘</span>
+              <span class="key">⇧</span>
+              <span class="key key-wide">Space</span>
+            </div>
+          </div>
+          <div class="app-window">
+            <img src={`${base}/simple-chat-app.png`} width="1180" height="820" alt="Simple Chat showing a short Lisbon packing conversation" />
+          </div>
+        </div>
+      </section>
+
+      <section class="route-section section" aria-labelledby="route-title">
+        <div class="section-heading route-heading">
+          <p class="eyebrow">THE DIRECT ROUTE</p>
+          <h2 id="route-title">A clear path from your question to your chosen model.</h2>
+        </div>
+        <div class="provider-route" aria-label="Your Mac sends prompts directly to the provider you select">
+          <div class="route-node">
+            <span class="node-index">01</span>
+            <strong>Your Mac</strong>
+            <small>prompt + your API key</small>
+          </div>
+          <div class="route-arrow" aria-hidden="true">→</div>
+          <div class="route-node route-node-primary">
+            <img src={`${base}/logo.svg`} width="22" height="22" alt="" />
+            <strong>Simple Chat</strong>
+            <small>UI + local SQLite history</small>
+          </div>
+          <div class="route-arrow" aria-hidden="true">→</div>
+          <div class="route-node">
+            <span class="node-index">03</span>
+            <strong>Selected provider</strong>
+            <small>OpenAI · Anthropic · Google</small>
+          </div>
+        </div>
+        <p class="route-caption">No Simple Chat server sits between you and the model. Prompts still reach the provider whose key you selected.</p>
+      </section>
+
+      <section class="workflow section" id="how-it-works" aria-labelledby="workflow-title">
+        <div class="section-heading split-heading">
+          <div>
+            <p class="eyebrow">THE LOOP</p>
+            <h2 id="workflow-title">One shortcut. Four small moves.</h2>
+          </div>
+          <p>No new tab to find. No workspace to configure. The app appears where your cursor already is.</p>
+        </div>
+        <ol class="workflow-grid">
+          <li>
+            <span class="step-number">01</span>
+            <h3>Press the shortcut</h3>
+            <p>Simple Chat appears over the display under your cursor.</p>
+          </li>
+          <li>
+            <span class="step-number">02</span>
+            <h3>Ask your question</h3>
+            <p>Choose a model backed by one of your saved provider keys.</p>
+          </li>
+          <li>
+            <span class="step-number">03</span>
+            <h3>Read the answer</h3>
+            <p>Watch the response in the focused app, then hide it when you are done.</p>
+          </li>
+          <li>
+            <span class="step-number">04</span>
+            <h3>Pick up later</h3>
+            <p>Return to recent local history or start clean with one keystroke.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="features section" id="features" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="eyebrow">BUILT FOR THE GAP</p>
+          <h2 id="features-title">Six useful defaults.<br />Nothing else asking for attention.</h2>
+        </div>
+        <div class="feature-grid">
+          {features.map(([number, name, copy]) => (
+            <article>
+              <span>{number}</span>
+              <h3>{name}</h3>
+              <p>{copy}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section class="difference section" aria-labelledby="difference-title">
+        <div class="difference-copy">
+          <p class="eyebrow">WHY SIMPLE CHAT</p>
+          <h2 id="difference-title">A small companion, not another platform.</h2>
+          <p>Launchers, assistants, and chat products often bundle accounts, subscriptions, or a long list of workspaces. Simple Chat keeps the useful part: summon a model, ask, and return to your work.</p>
+        </div>
+        <dl class="difference-list">
+          <div><dt>Account</dt><dd>None</dd></div>
+          <div><dt>Chat history</dt><dd>Local SQLite</dd></div>
+          <div><dt>Model access</dt><dd>Your provider keys</dd></div>
+          <div><dt>Prompt route</dt><dd>Direct to provider</dd></div>
+          <div><dt>License</dt><dd>MIT</dd></div>
+        </dl>
+      </section>
+
+      <section class="download-section section" id="download" aria-labelledby="download-title">
+        <div class="download-panel">
+          <div>
+            <p class="eyebrow">READY WHEN YOU ARE</p>
+            <h2 id="download-title">Download Simple Chat for macOS.</h2>
+            <p>Choose your Mac architecture. No installer account, no bundled provider key, no subscription.</p>
+          </div>
+          <div class="download-list">
+            {downloads.map((download) => (
+              <a href={download.href} download>
+                <span><strong>{download.architecture} Mac</strong><small>{download.description} · {download.size}</small></span>
+                <span aria-hidden="true">↓</span>
+              </a>
+            ))}
+          </div>
+          <p class="release-meta">Serving <a href={release.url}>{release.name}</a>. Downloads and this page come from the same stable release.</p>
+        </div>
+      </section>
+
+      <section class="faq section" aria-labelledby="faq-title">
+        <div class="section-heading split-heading">
+          <div>
+            <p class="eyebrow">THE SHORT ANSWERS</p>
+            <h2 id="faq-title">Frequently asked.</h2>
+          </div>
+          <p>More detail lives in the <a href="https://github.com/arpitdalal/simple-chat#readme">README</a>.</p>
+        </div>
+        <div class="faq-list">
+          {faqs.map(([question, answer], index) => (
+            <details open={index === 0}>
+              <summary>{question}<span aria-hidden="true">+</span></summary>
+              <p>{answer}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <img src={`${base}/logo.svg`} width="32" height="32" alt="" />
+        <div><strong>Simple Chat</strong><span>One shortcut to your own AI.</span></div>
+      </div>
+      <nav aria-label="Footer navigation">
+        <a href="https://github.com/arpitdalal/simple-chat">Repository</a>
+        <a href="https://github.com/arpitdalal/simple-chat/releases">Releases</a>
+        <a href="https://github.com/arpitdalal/simple-chat/issues">Issues</a>
+        <a href="https://github.com/arpitdalal/simple-chat/blob/main/LICENSE">MIT license</a>
+      </nav>
+      <p>© {new Date().getFullYear()} Simple Chat</p>
+    </footer>
+  </body>
+</html>

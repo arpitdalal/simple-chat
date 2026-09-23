@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://arpitdalal.github.io/simple-chat/sitemap-index.xml

@@ -1,0 +1,268 @@
+name: Website
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable release tag to deploy (for example, v1.2.3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Validate website
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+      deploy: ${{ steps.release.outputs.deploy }}
+      release_manifest: ${{ steps.manifest.outputs.manifest }}
+      source_commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Resolve release
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISHED_PRERELEASE: ${{ github.event.release.prerelease }}
+          PUBLISHED_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          build=true
+          deploy=false
+          if [ "$EVENT_NAME" = "release" ]; then
+            tag="$PUBLISHED_TAG"
+            if [ "$PUBLISHED_PRERELEASE" = "true" ]; then
+              build=false
+            else
+              deploy=true
+            fi
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+            deploy=true
+          else
+            tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          fi
+          if [ -z "$tag" ] || [[ "$tag" != v* ]]; then
+            echo "::error::A stable release tag beginning with v is required"
+            exit 1
+          fi
+          {
+            echo "build=$build"
+            echo "tag=$tag"
+            echo "deploy=$deploy"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out source
+        if: steps.release.outputs.build == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.deploy == 'true' && steps.release.outputs.tag || github.sha }}
+
+      - name: Verify selected release checkout
+        if: steps.release.outputs.deploy == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+
+      - name: Record source commit
+        if: steps.release.outputs.build == 'true'
+        id: source
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v6
+        if: steps.release.outputs.build == 'true'
+        with:
+          version: 12.6.0
+
+      - uses: actions/setup-node@v7
+        if: steps.release.outputs.build == 'true'
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.release.outputs.build == 'true'
+
+      - name: Require website source in deployment tag
+        if: steps.release.outputs.deploy == 'true'
+        run: test -f apps/website/package.json
+
+      - name: Type-check
+        if: steps.release.outputs.build == 'true'
+        run: pnpm --filter @simple-chat/website check
+
+      - name: Build static site
+        if: steps.release.outputs.build == 'true'
+        env:
+          RELEASE_MANIFEST_PATH: release-manifest.json
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: pnpm --filter @simple-chat/website build
+
+      - name: Record release manifest
+        if: steps.release.outputs.build == 'true'
+        id: manifest
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const manifest = JSON.parse(fs.readFileSync("apps/website/release-manifest.json", "utf8"));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `manifest=${JSON.stringify(manifest)}\n`);
+          NODE
+
+      - name: Smoke tests
+        if: steps.release.outputs.build == 'true'
+        run: pnpm --filter @simple-chat/website test
+
+      - name: Package Pages artifact
+        if: steps.release.outputs.deploy == 'true'
+        id: upload
+        uses: actions/upload-pages-artifact@v5
+        with:
+          name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/website/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: needs.build.outputs.deploy == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      EXPECTED_RELEASE_MANIFEST: ${{ needs.build.outputs.release_manifest }}
+      EXPECTED_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+      EXPECTED_TAG: ${{ needs.build.outputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REQUIRE_LATEST_RELEASE: ${{ github.event_name == 'release' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Revalidate release snapshot
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${EXPECTED_TAG}" > "$RUNNER_TEMP/release.json"
+          EXPECTED_RELEASE_MANIFEST="$EXPECTED_RELEASE_MANIFEST" RELEASE_FILE="$RUNNER_TEMP/release.json" node <<'NODE'
+          const fs = require("node:fs");
+          const expected = JSON.parse(process.env.EXPECTED_RELEASE_MANIFEST);
+          const release = JSON.parse(fs.readFileSync(process.env.RELEASE_FILE, "utf8"));
+          if (release.draft !== false || release.prerelease !== false) {
+            throw new Error(`Release ${expected.tag} is no longer stable`);
+          }
+          if ((release.name?.trim() || release.tag_name) !== expected.name) {
+            throw new Error(`Release ${expected.tag} name changed after the build`);
+          }
+          if (release.id !== expected.id || release.tag_name !== expected.tag) {
+            throw new Error(`Release ${expected.tag} identity changed after the build`);
+          }
+          for (const expectedAsset of expected.assets) {
+            const asset = release.assets.find((candidate) => candidate.id === expectedAsset.id);
+            if (!asset || asset.name !== expectedAsset.name || asset.size !== expectedAsset.size || asset.state !== expectedAsset.state || asset.browser_download_url !== expectedAsset.browser_download_url) {
+              throw new Error(`Release asset ${expectedAsset.name} changed after the build`);
+            }
+          }
+          NODE
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}" --jq .object.type)"
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}" --jq .object.sha)"
+          if [ "$tag_type" = "tag" ]; then
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq .object.sha)"
+          fi
+          test "$tag_sha" = "$EXPECTED_SOURCE_COMMIT"
+          if [ "$REQUIRE_LATEST_RELEASE" = "true" ]; then
+            test "$EXPECTED_TAG" = "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          fi
+
+      - name: Deploy
+        id: deployment
+        run: |
+          set -euo pipefail
+          oidc_token="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://GitHub" | jq -er .value)"
+          build_version="$(node -e 'const { createHash } = require("node:crypto"); process.stdout.write(createHash("sha1").update(process.argv[1]).digest("hex"))' "${EXPECTED_SOURCE_COMMIT}:${ARTIFACT_ID}:${GITHUB_RUN_ATTEMPT}")"
+          deployment_response="$(
+            jq -n \
+              --arg artifact_id "$ARTIFACT_ID" \
+              --arg build_version "$build_version" \
+              --arg oidc_token "$oidc_token" \
+              '{ artifact_id: ($artifact_id | tonumber), pages_build_version: $build_version, oidc_token: $oidc_token }' |
+              curl --fail-with-body --silent --show-error \
+                -X POST \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pages/deployments"
+          )"
+          unset oidc_token
+          deployment_id="$(jq -er .id <<< "$deployment_response")"
+          deployment_active=true
+          cancel_deployment() {
+            if [ "$deployment_active" = "true" ] && [ -n "$deployment_id" ]; then
+              curl --fail-with-body --silent --show-error \
+                -X POST \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pages/deployments/${deployment_id}/cancel" >/dev/null || true
+            fi
+          }
+          trap cancel_deployment EXIT
+          status_url="$(jq -er .status_url <<< "$deployment_response")"
+          page_url="$(jq -er .page_url <<< "$deployment_response")"
+          case "$status_url" in
+            http*) status_endpoint="$status_url" ;;
+            *) status_endpoint="${GITHUB_API_URL}${status_url}" ;;
+          esac
+          status=""
+          for attempt in $(seq 1 60); do
+            if ! status_response="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$status_endpoint")"; then
+              echo "::warning::Transient Pages status request failed on attempt $attempt"
+              status=""
+            elif ! status="$(jq -er .status <<< "$status_response")"; then
+              echo "::warning::Pages status response was unreadable on attempt $attempt"
+              status=""
+            fi
+            if [ "$status" = "succeed" ]; then
+              break
+            fi
+            case "$status" in
+              deployment_cancelled|deployment_failed|deployment_content_failed|deployment_lost)
+                echo "::error::Pages deployment ended with status $status"
+                exit 1
+                ;;
+            esac
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::Pages deployment did not finish before the timeout"
+              exit 1
+            fi
+            sleep 10
+          done
+          test "$status" = "succeed"
+          deployment_active=false
+          trap - EXIT
+          echo "page_url=$page_url" >> "$GITHUB_OUTPUT"

@@ -118,10 +118,10 @@ export function ChatView({
   const pendingImageReadsRef = useRef(0);
   /** Bumps on hide so in-flight loadOlder / FileReader cannot restore heavy state. */
   const releaseGenRef = useRef(0);
-  /** Unpersisted drafts aborted by Stop — flushed together when the FIFO drains. */
+  /** Unpersisted drafts aborted by Stop — keyed so background chats keep theirs. */
   const abortedDraftsRef = useRef<
-    Array<{ text: string; images: string[]; gen: number }>
-  >([]);
+    Map<string, Array<{ text: string; images: string[]; gen: number }>>
+  >(new Map());
   const [reloadTick, setReloadTick] = useState(0);
   const lastClearedNonceRef = useRef(0);
 
@@ -132,6 +132,7 @@ export function ChatView({
     lastClearedNonceRef.current = cleared.nonce;
     localAddsRef.current.delete(cleared.chatId);
     pendingSendsRef.current.delete(cleared.chatId);
+    abortedDraftsRef.current.delete(cleared.chatId);
     if (viewingIdRef.current === cleared.chatId) setReloadTick((t) => t + 1);
   }, [cleared]);
 
@@ -244,9 +245,9 @@ export function ChatView({
   /** Flush Stop'd unpersisted drafts once this chat's FIFO has fully drained. */
   function flushAbortedDrafts(chatId: string) {
     if (turnCancelsRef.current.get(chatId)?.length) return;
-    const drafts = abortedDraftsRef.current;
-    if (!drafts.length) return;
-    abortedDraftsRef.current = [];
+    const drafts = abortedDraftsRef.current.get(chatId);
+    if (!drafts?.length) return;
+    abortedDraftsRef.current.delete(chatId);
     if (
       viewingIdRef.current !== chatId ||
       (inputRef.current?.value ?? "") !== "" ||
@@ -797,9 +798,8 @@ export function ChatView({
           }
         }
 
-        // Kick title gen without blocking the stream; settle it after streamReply
-        // so a slow title call cannot hold the FIFO / delay first tokens.
-        let titlePromise: Promise<string> | undefined;
+        // Kick title gen without blocking the stream or the FIFO; settle it
+        // fire-and-forget so a slow title call cannot hold the queue open.
         if (freshChat.title === "New Chat" && text) {
           const provisional =
             text.slice(0, 48) + (text.length > 48 ? "…" : "");
@@ -815,11 +815,30 @@ export function ChatView({
             });
           }
           onChatUpdated();
-          titlePromise = generateChatTitle(
+          const titleGen = generateChatTitle(
             chatSnap.provider as ProviderId,
             text,
             turnAc.signal,
           );
+          void (async () => {
+            try {
+              const title = await titleGen;
+              if (turnAc.signal.aborted) return;
+              const titled = await getChat(chatId);
+              if (!titled) return;
+              await updateChat(chatId, { title });
+              if (viewingIdRef.current === chatId) {
+                onChatMeta({
+                  ...titled,
+                  title,
+                  preview: text.slice(0, 120),
+                });
+              }
+              onChatUpdated();
+            } catch {
+              /* title gen / write is best-effort — never surface as a turn error */
+            }
+          })();
         }
 
         // Bounded recent page (not full table) so each queued turn stays cheap.
@@ -828,33 +847,13 @@ export function ChatView({
           MAX_CACHED_MESSAGES,
         );
         reachedStream = true;
-        try {
-          await streamReply(
-            chatSnap,
-            history,
-            userMsg.id,
-            userContent as never,
-            turnAc,
-          );
-        } finally {
-          if (titlePromise) {
-            const title = await titlePromise;
-            // Honor cancellation / deletion before writing the real title.
-            throwIfTurnAborted(turnAc);
-            await updateChat(chatId, { title });
-            // Re-read before meta so a delete in this window cannot re-activate
-            // a vanished chat via a stale snapshot fallback.
-            const titled = await getChat(chatId);
-            if (viewingIdRef.current === chatId && titled) {
-              onChatMeta({
-                ...titled,
-                title,
-                preview: text.slice(0, 120),
-              });
-            }
-            onChatUpdated();
-          }
-        }
+        await streamReply(
+          chatSnap,
+          history,
+          userMsg.id,
+          userContent as never,
+          turnAc,
+        );
       });
     } catch (e) {
       dropPendingSend(chatId, tempId);
@@ -878,11 +877,10 @@ export function ChatView({
         if (!userPersisted) {
           // Stop may abort several queued unpersisted turns — collect them and
           // restore once the FIFO drains so the first restore doesn't block the rest.
-          abortedDraftsRef.current.push({
-            text,
-            images: imageParts,
-            gen: sendGen,
-          });
+          abortedDraftsRef.current.set(chatId, [
+            ...(abortedDraftsRef.current.get(chatId) ?? []),
+            { text, images: imageParts, gen: sendGen },
+          ]);
         }
         if (!streamsRef.current.has(chatId)) {
           setViewingStream(null);

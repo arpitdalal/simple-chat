@@ -68,6 +68,7 @@ export async function getRelease(): Promise<ResolvedRelease> {
       process.env.RELEASE_MANIFEST_PATH,
       JSON.stringify({
         id: release.id,
+        name: resolved.name,
         tag: resolved.tag,
         assets: [resolved.appleSilicon, resolved.intel].map(
           ({ id, name, browser_download_url, size, state }) => ({
@@ -93,7 +94,7 @@ export function resolveRelease(release: GitHubRelease, requestedTag: string): Re
   if (!release.tag_name || release.tag_name !== requestedTag) {
     throw new Error(`GitHub returned release ${release.tag_name || "(missing tag)"} for ${requestedTag}`);
   }
-  if (release.draft || release.prerelease) {
+  if (release.draft !== false || release.prerelease !== false) {
     throw new Error(`Release ${requestedTag} is not stable`);
   }
   const expectedReleaseUrl = `${repositoryWebUrl}/releases/tag/${requestedTag}`;

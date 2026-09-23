@@ -38,6 +38,8 @@ describe("release resolution", () => {
   it.each([
     ["draft", { draft: true }],
     ["prerelease", { prerelease: true }],
+    ["missing draft status", { draft: null as unknown as boolean }],
+    ["missing prerelease status", { prerelease: null as unknown as boolean }],
     ["a mismatched tag", { tag_name: "v1.2.2" }],
   ])("rejects %s releases", (_label, override) => {
     expect(() => resolveRelease({ ...release, ...override }, "v1.2.3")).toThrow();

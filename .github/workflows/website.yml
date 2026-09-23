@@ -154,6 +154,7 @@ jobs:
       EXPECTED_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
       EXPECTED_TAG: ${{ needs.build.outputs.tag }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REQUIRE_LATEST_RELEASE: ${{ github.event_name == 'release' }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Revalidate release snapshot
@@ -164,8 +165,11 @@ jobs:
           const fs = require("node:fs");
           const expected = JSON.parse(process.env.EXPECTED_RELEASE_MANIFEST);
           const release = JSON.parse(fs.readFileSync(process.env.RELEASE_FILE, "utf8"));
-          if (release.draft || release.prerelease) {
+          if (release.draft !== false || release.prerelease !== false) {
             throw new Error(`Release ${expected.tag} is no longer stable`);
+          }
+          if ((release.name?.trim() || release.tag_name) !== expected.name) {
+            throw new Error(`Release ${expected.tag} name changed after the build`);
           }
           if (release.id !== expected.id || release.tag_name !== expected.tag) {
             throw new Error(`Release ${expected.tag} identity changed after the build`);
@@ -183,6 +187,9 @@ jobs:
             tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq .object.sha)"
           fi
           test "$tag_sha" = "$EXPECTED_SOURCE_COMMIT"
+          if [ "$REQUIRE_LATEST_RELEASE" = "true" ]; then
+            test "$EXPECTED_TAG" = "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          fi
 
       - name: Deploy
         id: deployment
@@ -191,7 +198,7 @@ jobs:
           oidc_token="$(curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://GitHub" | jq -er .value)"
-          build_version="$(node -e 'const { createHash } = require("node:crypto"); process.stdout.write(createHash("sha1").update(process.argv[1]).digest("hex"))' "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${EXPECTED_TAG}")"
+          build_version="$(node -e 'const { createHash } = require("node:crypto"); process.stdout.write(createHash("sha1").update(process.argv[1]).digest("hex"))' "${EXPECTED_SOURCE_COMMIT}:${ARTIFACT_ID}:${GITHUB_RUN_ATTEMPT}")"
           deployment_response="$(
             jq -n \
               --arg artifact_id "$ARTIFACT_ID" \
@@ -207,6 +214,19 @@ jobs:
                 "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pages/deployments"
           )"
           unset oidc_token
+          deployment_id="$(jq -er .id <<< "$deployment_response")"
+          deployment_active=true
+          cancel_deployment() {
+            if [ "$deployment_active" = "true" ] && [ -n "$deployment_id" ]; then
+              curl --fail-with-body --silent --show-error \
+                -X POST \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pages/deployments/${deployment_id}/cancel" >/dev/null || true
+            fi
+          }
+          trap cancel_deployment EXIT
           status_url="$(jq -er .status_url <<< "$deployment_response")"
           page_url="$(jq -er .page_url <<< "$deployment_response")"
           case "$status_url" in
@@ -215,16 +235,22 @@ jobs:
           esac
           status=""
           for attempt in $(seq 1 60); do
-            status="$(curl --fail-with-body --silent --show-error \
+            if ! status_response="$(curl --fail-with-body --silent --show-error \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "$status_endpoint" | jq -er .status)"
+              "$status_endpoint")"; then
+              echo "::warning::Transient Pages status request failed on attempt $attempt"
+              status=""
+            elif ! status="$(jq -er .status <<< "$status_response")"; then
+              echo "::warning::Pages status response was unreadable on attempt $attempt"
+              status=""
+            fi
             if [ "$status" = "succeed" ]; then
               break
             fi
             case "$status" in
-              deployment_cancelled|deployment_failed|deployment_content_failed|deployment_attempt_error|deployment_lost)
+              deployment_cancelled|deployment_failed|deployment_content_failed|deployment_lost)
                 echo "::error::Pages deployment ended with status $status"
                 exit 1
                 ;;
@@ -236,4 +262,6 @@ jobs:
             sleep 10
           done
           test "$status" = "succeed"
+          deployment_active=false
+          trap - EXIT
           echo "page_url=$page_url" >> "$GITHUB_OUTPUT"

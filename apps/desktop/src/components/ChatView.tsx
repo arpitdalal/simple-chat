@@ -6,6 +6,7 @@ import { loadMessageImage, updateChat, type Chat, type Message } from "../lib/db
 import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
 import {
+  IMAGE_ATTACHMENT_PLACEHOLDER,
   imageCountLimitError,
   imageDimensionLimitError,
   imageLimitError,
@@ -281,10 +282,10 @@ export function ChatView({
               }
               pendingImage = normalized.image;
               pendingImageValuesRef.current.add(pendingImage);
-              const next = [...imagesRef.current, normalized.image];
-              const nextError = imageLimitError(next);
-              if (nextError) {
-                onNotify(nextError, "err");
+              const candidate = [...imagesRef.current, normalized.image];
+              const candidateError = imageLimitError(candidate);
+              if (candidateError) {
+                onNotify(candidateError, "err");
                 continue;
               }
               await new Promise<void>((resolve, reject) => {
@@ -295,6 +296,13 @@ export function ChatView({
               });
               if (releaseGeneration !== releaseGenRef.current) continue;
               if (!pendingImage || !pendingImageValuesRef.current.has(pendingImage)) continue;
+              const next = [...imagesRef.current, normalized.image];
+              const nextError = imageLimitError(next);
+              if (nextError) {
+                pendingImageValuesRef.current.delete(pendingImage);
+                onNotify(nextError, "err");
+                continue;
+              }
               pendingImageValuesRef.current.delete(pendingImage);
               imagesRef.current = next;
               setImages(next);
@@ -377,7 +385,9 @@ export function ChatView({
                           <Markdown content={m!.content} />
                         ) : (
                           <>
-                            {m!.content && <div className="msg-user">{m!.content}</div>}
+                            {m!.content && m!.content !== IMAGE_ATTACHMENT_PLACEHOLDER && (
+                              <div className="msg-user">{m!.content}</div>
+                            )}
                             {(m!.images.length > 0 || (m!.image_count ?? 0) > 0) && (
                               <div className="sent-images">
                                 {Array.from({

@@ -47,7 +47,7 @@ const chat = (id: string): Chat => ({
 const callbacks = {
   onChatUpdated: vi.fn(), onChatMeta: vi.fn(), onNotify: vi.fn(),
 };
-const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAA";
+const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
 
 beforeEach(() => {
   resetChatSessions();

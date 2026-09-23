@@ -40,6 +40,7 @@ type Callbacks = {
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
 type UserContent = Extract<ModelMessage, { role: "user" }>["content"];
 
+export const IMAGE_ATTACHMENT_PLACEHOLDER = "[Image attachment]";
 export const MAX_IMAGES_PER_MESSAGE = 4;
 export const MAX_IMAGE_DATA_CHARS = 5 * 1024 * 1024;
 export const MAX_IMAGE_FILE_BYTES = 3 * 1024 * 1024;
@@ -68,6 +69,10 @@ function uint24(bytes: Uint8Array, offset: number, littleEndian = false): number
     : (bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2];
 }
 
+function uint32(bytes: Uint8Array, offset: number): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset);
+}
+
 function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | null {
   let offset = 2;
   while (offset + 8 < bytes.length) {
@@ -75,6 +80,7 @@ function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | 
       offset += 1;
       continue;
     }
+    while (bytes[offset + 1] === 0xff) offset += 1;
     const marker = bytes[offset + 1];
     if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
       offset += 2;
@@ -115,8 +121,8 @@ function webpDimensions(bytes: Uint8Array): { width: number; height: number } | 
     bytes[25] === 0x2a
   ) {
     return {
-      width: (uint16(bytes, 26, true) & 0x3fff) + 1,
-      height: (uint16(bytes, 28, true) & 0x3fff) + 1,
+      width: uint16(bytes, 26, true) & 0x3fff,
+      height: uint16(bytes, 28, true) & 0x3fff,
     };
   }
   return null;
@@ -138,7 +144,7 @@ export function normalizeImageDataUrl(value: string): ImageData | null {
     bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
   ) {
     mime = "image/png";
-    dimensions = { width: uint24(bytes, 16), height: uint24(bytes, 20) };
+    dimensions = { width: uint32(bytes, 16), height: uint32(bytes, 20) };
   } else if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     mime = "image/jpeg";
     dimensions = jpegDimensions(bytes);
@@ -187,12 +193,13 @@ export function imageLimitError(images: string[]): string | null {
 }
 
 function userContent(message: Pick<Message, "content" | "images">): UserContent {
+  const text = message.content === IMAGE_ATTACHMENT_PLACEHOLDER ? "" : message.content;
   return message.images.length
     ? [
-        { type: "text" as const, text: message.content || "Describe these images." },
+        { type: "text" as const, text: text || "Describe these images." },
         ...message.images.map((image) => ({ type: "image" as const, image })),
       ]
-    : message.content || "Earlier image attachment omitted due to context limits.";
+    : text || "Earlier image attachment omitted due to context limits.";
 }
 
 function boundProviderHistory(
@@ -403,7 +410,8 @@ export class ChatSession {
       const live = await getChat(this.id);
       if (!live) throw new Error("Chat was deleted.");
       this.abortIfNeeded(turn.ac);
-      const user = await addMessage(this.id, "user", turn.text!, Date.now(), turn.images);
+      const storedText = turn.text || (turn.images?.length ? IMAGE_ATTACHMENT_PLACEHOLDER : "");
+      const user = await addMessage(this.id, "user", storedText, Date.now(), turn.images);
       persisted = true;
       this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? user : m) });
       this.updatePreview(callbacks);

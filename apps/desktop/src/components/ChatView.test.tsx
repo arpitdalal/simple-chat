@@ -71,8 +71,8 @@ function TestChatView(props: Omit<Parameters<typeof ChatView>[0], "session">) {
   return <ChatView key={props.chat?.id ?? "__empty__"} {...props} session={getChatSession(props.chat?.id ?? "__empty__")} />;
 }
 
-const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAA";
-const pngBytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAQAAAQAA"), (character) => character.charCodeAt(0));
+const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+const pngBytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"), (character) => character.charCodeAt(0));
 
 const chat: Chat = {
   id: "c1",
@@ -631,8 +631,8 @@ describe("ChatView", () => {
         readAsDataURL() {
           const index = readCount++;
           const result = index === 0
-            ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQUFB"
-            : "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQkJC";
+            ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABQUFB"
+            : "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABQkJC";
           window.setTimeout(() => {
             this.result = result;
             this.onload?.();
@@ -681,11 +681,11 @@ describe("ChatView", () => {
     expect(addMessage).toHaveBeenCalledWith(
       "c1",
       "user",
-      "",
+      "[Image attachment]",
       expect.any(Number),
       [
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQUFB",
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAQAAQkJC",
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABQUFB",
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABQkJC",
       ],
     );
     vi.unstubAllGlobals();

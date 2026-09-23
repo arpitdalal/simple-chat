@@ -29,6 +29,8 @@ export type AppSettings = {
   last_chat_id: string | null;
   web_search: boolean;
   hotkey: string;
+  /** True after the first-run login-item prompt (or a Settings toggle). */
+  autostart_prompted: boolean;
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -41,6 +43,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   last_chat_id: null,
   web_search: true,
   hotkey: "CommandOrControl+Shift+Space",
+  autostart_prompted: false,
 };
 
 let dbPromise: Promise<Database> | null = null;

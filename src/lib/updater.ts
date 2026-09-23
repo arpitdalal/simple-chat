@@ -1,5 +1,5 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { relaunchVisible } from "./relaunch";
 
 const CHECK_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -58,7 +58,7 @@ function wrapUpdate(update: Update): AvailableUpdate {
           throw new Error(errMessage(e, "Download failed"));
         }
         try {
-          await relaunch();
+          await relaunchVisible();
         } catch (e) {
           await closeUpdate();
           const detail = errMessage(e, "");

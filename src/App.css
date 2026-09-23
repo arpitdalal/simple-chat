@@ -907,6 +907,10 @@ select {
   gap: 6px;
   flex-shrink: 0;
 }
+/* Below title pill / New Chat FAB so first-run prompt does not eat clicks. */
+.update-banner.autostart-banner {
+  top: calc(var(--chrome-h) + 52px);
+}
 
 .settings-panel {
   padding: 20px 28px;

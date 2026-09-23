@@ -74,6 +74,10 @@ export default defineConfig({
         find: "@tauri-apps/plugin-process",
         replacement: path.resolve(projectRoot, "src/test/mock-process.ts"),
       },
+      {
+        find: "@tauri-apps/plugin-autostart",
+        replacement: path.resolve(projectRoot, "src/test/mock-autostart.ts"),
+      },
     ],
   },
   server: {

@@ -6,7 +6,7 @@ test.describe("Simple Chat UX", () => {
   }) => {
     await page.goto("/");
 
-    await expect(page.getByText("Simple Chat")).toBeVisible();
+    await expect(page.getByText("Simple Chat", { exact: true })).toBeVisible();
     await expect(page.getByText("Ask Anything")).toBeVisible();
     await expect(page.getByPlaceholder("Ask AI anything…")).toBeFocused();
     await expect(page.getByText(/^Web$/)).toHaveCount(0);
@@ -104,6 +104,23 @@ test.describe("Simple Chat UX", () => {
     await expect(page.locator(".settings-status")).toHaveText("Saved", {
       timeout: 5_000,
     });
+
+    const login = page.getByRole("checkbox", { name: /start on login/i });
+    await expect(login).toBeEnabled();
+    await expect(login).not.toBeChecked();
+    await login.check();
+    await expect(login).toBeChecked();
+  });
+
+  test("asks to start on login after first launch", async ({ page }) => {
+    await page.goto("/");
+    await expect(
+      page.getByText("Start Simple Chat when you log in?"),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Not now" }).click();
+    await expect(
+      page.getByText("Start Simple Chat when you log in?"),
+    ).toHaveCount(0);
   });
 
   test("Esc from chat hides is not asserted here; Esc closes settings", async ({

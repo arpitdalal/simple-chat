@@ -73,6 +73,12 @@ vi.mock("./lib/updater", () => ({
   checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
 }));
 
+vi.mock("./lib/autostart", () => ({
+  isAutostartEnabled: vi.fn(async () => false),
+  setAutostartEnabled: vi.fn(async () => {}),
+  shouldPromptAutostart: () => false,
+}));
+
 vi.mock("./lib/keys", () => ({
   hasApiKey: vi.fn(async (p: string) => p === "google"),
   listReadyProviders: vi.fn(async () => ({ ready: ["google"], ok: true })),
@@ -103,6 +109,7 @@ vi.mock("./lib/db", () => ({
     last_chat_id: null,
     web_search: true,
     hotkey: "CommandOrControl+Shift+Space",
+    autostart_prompted: true,
   })),
   setSetting: vi.fn(),
   setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
@@ -115,6 +122,7 @@ vi.mock("./lib/db", () => ({
     last_chat_id: null,
     web_search: true,
     hotkey: "CommandOrControl+Shift+Space",
+    autostart_prompted: true,
   })),
   listChats: vi.fn(async () => chatsStore.get()),
   getChat: vi.fn(async (id: string) =>

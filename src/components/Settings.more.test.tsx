@@ -61,6 +61,12 @@ vi.mock("../lib/updater", () => ({
   checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
 }));
 
+vi.mock("../lib/autostart", () => ({
+  isAutostartEnabled: vi.fn(async () => false),
+  setAutostartEnabled: vi.fn(async () => {}),
+  shouldPromptAutostart: () => false,
+}));
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setAlwaysOnTop,

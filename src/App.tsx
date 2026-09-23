@@ -31,6 +31,11 @@ import {
   isRestartRequiredError,
   type AvailableUpdate,
 } from "./lib/updater";
+import {
+  isAutostartEnabled,
+  setAutostartEnabled,
+  shouldPromptAutostart,
+} from "./lib/autostart";
 import "./App.css";
 
 function App() {
@@ -60,6 +65,9 @@ function App() {
   const [navBusy, setNavBusy] = useState(false);
   /** Derived from keychain queue pending count (OS prompts included). */
   const [keyBusy, setKeyBusy] = useState(false);
+  const [autostartPrompt, setAutostartPrompt] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
+  const autostartPromptGenRef = useRef(0);
 
   useEffect(() => activeSession.retain(), [activeSession]);
 
@@ -453,6 +461,18 @@ function App() {
       setReady(true);
       focusComposer();
       scheduleKeySync();
+      const promptGen = ++autostartPromptGenRef.current;
+      void (async () => {
+        try {
+          const enabled = await isAutostartEnabled();
+          if (cancelled || promptGen !== autostartPromptGenRef.current) return;
+          if (shouldPromptAutostart(s.autostart_prompted, enabled)) {
+            setAutostartPrompt(true);
+          }
+        } catch {
+          /* plugin missing — skip */
+        }
+      })();
       const gen = ++updateCheckGenRef.current;
       void checkForAppUpdate().then((result) => {
         if (gen !== updateCheckGenRef.current) {
@@ -466,6 +486,7 @@ function App() {
       cancelled = true;
       navGenRef.current += 1;
       updateCheckGenRef.current += 1;
+      autostartPromptGenRef.current += 1;
       pendingUpdateRef.current?.dismiss();
       pendingUpdateRef.current = null;
     };
@@ -639,6 +660,19 @@ function App() {
     }
   }
 
+  function settleAutostartPrompt() {
+    autostartPromptGenRef.current += 1;
+    setAutostartPrompt(false);
+    setSettings((prev) =>
+      prev ? { ...prev, autostart_prompted: true } : prev,
+    );
+  }
+
+  async function persistAutostartPrompted() {
+    await setSetting("autostart_prompted", true);
+    settleAutostartPrompt();
+  }
+
   function beginDrag(e: React.MouseEvent) {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
@@ -724,6 +758,7 @@ function App() {
               onNotify={notify}
               onUpdateFound={adoptUpdate}
               updateLocked={updating || restartRequired}
+              onAutostartSettled={settleAutostartPrompt}
             />
           </div>
         ) : (
@@ -749,39 +784,96 @@ function App() {
           />
         )}
       </div>
-      {pendingUpdate && (
-        <div className="update-banner" role="status">
-          <span>
-            {restartRequired
-              ? `Update ${pendingUpdate.version} installed — quit and reopen`
-              : updating
-                ? `Installing ${pendingUpdate.version}…`
-                : `Update ${pendingUpdate.version} available`}
-          </span>
+      {autostartPrompt && !showSettings ? (
+        <div className="update-banner autostart-banner" role="status">
+          <span>Start Simple Chat when you log in?</span>
           <div className="update-banner-actions">
-            {!updating && !restartRequired && (
-              <>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => void installPendingUpdate()}
-                >
-                  Install &amp; restart
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    pendingUpdate.dismiss();
-                    setPendingUpdate(null);
-                  }}
-                >
-                  Later
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              className="ghost"
+              disabled={autostartBusy}
+              onClick={() => {
+                if (autostartBusy) return;
+                void (async () => {
+                  setAutostartBusy(true);
+                  try {
+                    await setAutostartEnabled(true);
+                    await persistAutostartPrompted();
+                  } catch (err) {
+                    notify(
+                      (err as Error).message ||
+                        "Could not enable start on login.",
+                      "err",
+                    );
+                  } finally {
+                    setAutostartBusy(false);
+                  }
+                })();
+              }}
+            >
+              Enable
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={autostartBusy}
+              onClick={() => {
+                if (autostartBusy) return;
+                void (async () => {
+                  setAutostartBusy(true);
+                  try {
+                    await persistAutostartPrompted();
+                  } catch (err) {
+                    notify(
+                      (err as Error).message ||
+                        "Could not save that choice.",
+                      "err",
+                    );
+                  } finally {
+                    setAutostartBusy(false);
+                  }
+                })();
+              }}
+            >
+              Not now
+            </button>
           </div>
         </div>
+      ) : (
+        pendingUpdate && (
+          <div className="update-banner" role="status">
+            <span>
+              {restartRequired
+                ? `Update ${pendingUpdate.version} installed — quit and reopen`
+                : updating
+                  ? `Installing ${pendingUpdate.version}…`
+                  : `Update ${pendingUpdate.version} available`}
+            </span>
+            <div className="update-banner-actions">
+              {!updating && !restartRequired && (
+                <>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void installPendingUpdate()}
+                  >
+                    Install &amp; restart
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      pendingUpdate.dismiss();
+                      setPendingUpdate(null);
+                    }}
+                  >
+                    Later
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )
       )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>

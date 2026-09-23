@@ -56,6 +56,15 @@ vi.mock("../lib/updater", () => ({
   checkForAppUpdate: vi.fn(async () => ({ status: "none" })),
 }));
 
+const isAutostartEnabled = vi.hoisted(() => vi.fn(async () => false));
+const setAutostartEnabled = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("../lib/autostart", () => ({
+  isAutostartEnabled,
+  setAutostartEnabled,
+  shouldPromptAutostart: () => false,
+}));
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setAlwaysOnTop,
@@ -76,7 +85,10 @@ describe("Settings", () => {
       last_chat_id: null,
       web_search: true,
       hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: false,
     });
+    isAutostartEnabled.mockResolvedValue(false);
+    setAutostartEnabled.mockResolvedValue(undefined);
     hasApiKey.mockImplementation(async (p: string) => p === "google");
     applyHotkey.mockResolvedValue(undefined);
     setSetting.mockResolvedValue(undefined);
@@ -251,5 +263,64 @@ describe("Settings", () => {
     render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("Settings")).toBeInTheDocument());
     expect(screen.queryByText(/web search/i)).toBeNull();
+  });
+
+  it("toggles start on login against the OS login item", async () => {
+    const user = userEvent.setup();
+    const onAutostartSettled = vi.fn();
+    render(
+      <Settings
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onAutostartSettled={onAutostartSettled}
+      />,
+    );
+    const box = await screen.findByRole("checkbox", { name: /start on login/i });
+    await waitFor(() => expect(box).not.toBeDisabled());
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    await waitFor(() => expect(setAutostartEnabled).toHaveBeenCalledWith(true));
+    expect(setSetting).toHaveBeenCalledWith("autostart_prompted", true);
+    expect(onAutostartSettled).toHaveBeenCalledOnce();
+    await waitFor(() => expect(box).toBeChecked());
+  });
+
+  it("does not settle the first-run prompt when the flag write fails", async () => {
+    const user = userEvent.setup();
+    const onAutostartSettled = vi.fn();
+    const onNotify = vi.fn();
+    setSetting.mockRejectedValueOnce(new Error("db locked"));
+    render(
+      <Settings
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onAutostartSettled={onAutostartSettled}
+        onNotify={onNotify}
+      />,
+    );
+    const box = await screen.findByRole("checkbox", { name: /start on login/i });
+    await waitFor(() => expect(box).not.toBeDisabled());
+    await user.click(box);
+    await waitFor(() => expect(setAutostartEnabled).toHaveBeenCalledWith(true));
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith("db locked", "err"),
+    );
+    expect(onAutostartSettled).not.toHaveBeenCalled();
+  });
+
+  it("retries login-item read after a failed probe", async () => {
+    const user = userEvent.setup();
+    isAutostartEnabled
+      .mockRejectedValueOnce(new Error("no login item"))
+      .mockResolvedValueOnce(false);
+    render(<Settings onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText(/no login item/)).toBeInTheDocument(),
+    );
+    const box = screen.getByRole("checkbox", { name: /start on login/i });
+    expect(box).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(box).not.toBeDisabled());
+    expect(screen.queryByText(/no login item/)).toBeNull();
   });
 });

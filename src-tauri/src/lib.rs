@@ -42,6 +42,39 @@ fn toggle_main_window(app: &AppHandle) {
     }
 }
 
+fn args_include_autostart<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|a| a.as_ref() == "--autostart")
+}
+
+const VISIBLE_RELAUNCH_ENV: &str = "SIMPLE_CHAT_VISIBLE";
+
+/// Login-item `--autostart` stays tray-only unless a user restart marked itself visible.
+fn should_show(visible_relaunch: bool, args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    visible_relaunch || !args_include_autostart(args)
+}
+
+fn should_show_on_user_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    should_show(std::env::var_os(VISIBLE_RELAUNCH_ENV).is_some(), args)
+}
+
+fn show_on_user_launch<I, S>(app: &AppHandle, args: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    if should_show_on_user_launch(args) {
+        show_main_window(app);
+    }
+}
+
 #[tauri::command]
 fn capture_previous_app() {
     focus::capture_previous_app();
@@ -52,9 +85,26 @@ fn hide_main_window_cmd(app: AppHandle) {
     hide_main_window(&app);
 }
 
+#[tauri::command]
+fn relaunch_visible(app: AppHandle) {
+    // Child inherits this; Tauri restart handles AppImage / .app / lock teardown.
+    std::env::set_var(VISIBLE_RELAUNCH_ENV, "1");
+    app.request_restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    // Single-instance must be first so a second process never reaches setup.
+    #[cfg(desktop)]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, argv, _cwd| {
+            show_on_user_launch(app, &argv);
+        },
+    ));
+    #[cfg(not(desktop))]
+    let builder = tauri::Builder::default();
+
+    let builder = builder
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -70,6 +120,7 @@ pub fn run() {
             keys::has_api_key,
             capture_previous_app,
             hide_main_window_cmd,
+            relaunch_visible,
         ]);
 
     // Before setup so on_webview_ready applies to the main webview (CI IPC e2e).
@@ -82,8 +133,14 @@ pub fn run() {
 
     let builder = builder.setup(|app| {
             #[cfg(desktop)]
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_autostart::init(
+                    tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                    Some(vec!["--autostart"]),
+                ))?;
+            }
 
             // Agent-style: no Dock icon. Menu bar app name comes from Info.plist.
             // WebDriver CI needs a normal activation policy or the webview stays blank.
@@ -116,7 +173,8 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            show_main_window(app.handle());
+            // Login-item launches stay tray-only; user / hotkey / tray show the window.
+            show_on_user_launch(app.handle(), std::env::args());
 
             // Re-assert accessory after showing (dev builds sometimes bounce to regular).
             #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
@@ -147,7 +205,33 @@ pub fn run() {
             } if label == "main" => {
                 focus::capture_previous_app();
             }
+            // Hidden login-item process: Finder / Spotlight reopen (no new process).
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                show_main_window(app_handle);
+            }
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{args_include_autostart, should_show};
+
+    #[test]
+    fn detects_autostart_flag() {
+        assert!(!args_include_autostart(["simple-chat"]));
+        assert!(args_include_autostart(["simple-chat", "--autostart"]));
+    }
+
+    #[test]
+    fn user_launch_shows_except_login_item() {
+        assert!(should_show(false, ["simple-chat"]));
+        assert!(!should_show(false, ["simple-chat", "--autostart"]));
+        assert!(should_show(true, ["simple-chat", "--autostart"]));
+    }
 }

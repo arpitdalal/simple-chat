@@ -22,6 +22,7 @@ const baseSettings = (): AppSettings => ({
   last_chat_id: null,
   web_search: true,
   hotkey: "CommandOrControl+Shift+Space",
+  autostart_prompted: false,
 });
 
 describe("openOrCreateChat", () => {

@@ -81,7 +81,7 @@ export function ChatView({
     const drafts = session.takeDrafts();
     setInput(drafts.map((d) => d.text).join("\n"));
     setImages(drafts.flatMap((d) => d.images));
-  }, [chat?.id, session, state.drafts, state.phase]);
+  }, [chat?.id, session, state.drafts, state.phase, input, images.length]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

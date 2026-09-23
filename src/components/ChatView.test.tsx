@@ -327,6 +327,8 @@ describe("ChatView", () => {
       rejectAdd(new Error("db down"));
     });
     await waitFor(() => expect(ta).toHaveValue("newer draft"));
+    await user.clear(ta);
+    await waitFor(() => expect(ta).toHaveValue("first"));
   });
 
   it("does not restore failed images into a text-only newer draft", async () => {

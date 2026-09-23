@@ -212,7 +212,7 @@ export function ChatView({
     if (!items) return;
     const files: File[] = [];
     for (const item of items) {
-      if (!item.type.startsWith("image/")) continue;
+      if (item.type && !item.type.startsWith("image/")) continue;
       const file = item.getAsFile();
       if (file) files.push(file);
     }
@@ -227,7 +227,7 @@ export function ChatView({
   }
 
   function readImageFiles(files: File[]) {
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    const imageFiles = files;
     const queuedCount = imageFiles.length;
     const countError = imageCountLimitError(
       imagesRef.current.length + pendingImageReadsRef.current + queuedCount,
@@ -583,32 +583,56 @@ function SentImage({
   src?: string;
 }) {
   const [image, setImage] = useState(src ?? null);
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     if (src) {
       setImage(src);
+      setFailed(false);
       return;
     }
     let cancelled = false;
+    setFailed(false);
     void loadMessageImage(chatId, messageId, index)
       .then((loaded) => {
-        if (!cancelled) setImage(loaded);
+        if (!cancelled) {
+          setImage(loaded);
+          setFailed(loaded === null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setImage(null);
+        if (!cancelled) {
+          setImage(null);
+          setFailed(true);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [chatId, index, messageId, src]);
+  }, [chatId, index, messageId, retry, src]);
 
-  return image ? (
-    <img
-      src={image}
-      alt={`Attached image ${index + 1}`}
-      loading="lazy"
-    />
-  ) : null;
+  if (image) {
+    return (
+      <img
+        src={image}
+        alt={`Attached image ${index + 1}`}
+        loading="lazy"
+      />
+    );
+  }
+  if (failed) {
+    return (
+      <button
+        type="button"
+        className="sent-image-error"
+        onClick={() => setRetry((value) => value + 1)}
+      >
+        Image unavailable · Retry
+      </button>
+    );
+  }
+  return null;
 }
 
 function MsgActions({

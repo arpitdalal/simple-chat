@@ -763,7 +763,7 @@ describe("ChatView", () => {
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     await act(async () => {
       Object.defineProperty(input, "files", {
-        value: [new File(["gif"], "spoof.png", { type: "image/png" })],
+        value: [new File(["gif"], "spoof.bin", { type: "" })],
         configurable: true,
       });
       input.dispatchEvent(new Event("change", { bubbles: true }));

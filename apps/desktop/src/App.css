@@ -468,6 +468,14 @@ select {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+.sent-image-error {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
 .thinking-pill {
   display: inline-flex;
   margin-bottom: 8px;

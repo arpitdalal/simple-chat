@@ -13,27 +13,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: npm
+          node-version: "24"
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Build frontend
-        run: npm run build
+        run: pnpm build
 
       - name: Allow Dock / GUI for WebDriver (LSUIElement blanks webview under automation)
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("src-tauri/Info.plist")
+          p = Path("apps/desktop/src-tauri/Info.plist")
           text = p.read_text()
           text = text.replace("<key>LSUIElement</key>\n\t<true/>", "<key>LSUIElement</key>\n\t<false/>")
           if "<true/>" in text.split("LSUIElement")[1][:40]:
@@ -43,7 +47,7 @@ jobs:
           PY
 
       - name: Build release binary
-        working-directory: src-tauri
+        working-directory: apps/desktop/src-tauri
         run: |
           # Opaque visible window for automation (merge at compile time).
           # --features webdriver pulls custom-protocol so frontendDist embeds
@@ -54,4 +58,4 @@ jobs:
           test "$(wc -c < target/release/simple-chat)" -gt 1000000
 
       - name: WebDriver IPC tests
-        run: npm run test:ipc
+        run: pnpm test:ipc

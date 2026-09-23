@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to release (no v prefix; must match package.json / tauri.conf)"
+        description: "Desktop package version to release (no v prefix; must match apps/desktop/package.json and apps/desktop/src-tauri/tauri.conf.json)"
         required: true
         type: string
 
@@ -35,6 +35,10 @@ jobs:
       version: ${{ steps.versions.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - name: Require updater + Apple signing secrets
         env:
@@ -69,8 +73,8 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require("fs");
-          const app = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
-          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const app = JSON.parse(fs.readFileSync("apps/desktop/src-tauri/tauri.conf.json", "utf8")).version;
+          const pkg = JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8")).version;
           if (app !== pkg) {
             console.error(`version drift: tauri.conf=${app} package.json=${pkg}`);
             process.exit(1);
@@ -111,28 +115,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: npm
+          node-version: "24"
+          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: apps/desktop/src-tauri -> target
 
       - name: Install Linux deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
-      - run: npm test
+      - run: pnpm test
 
       - name: Rust unit tests
-        working-directory: src-tauri
+        working-directory: apps/desktop/src-tauri
         run: cargo test
 
   e2e:
@@ -142,17 +150,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: npm
+          node-version: "24"
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        run: pnpm --filter simple-chat exec playwright install --with-deps chromium
 
-      - run: npm run test:e2e
+      - run: pnpm test:e2e
 
   create-release:
     name: create draft release
@@ -253,10 +265,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: npm
+          node-version: "24"
+          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -264,9 +280,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: apps/desktop/src-tauri -> target
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Prepare Apple notarization API key file
         env:
@@ -329,6 +345,7 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
         with:
+          projectPath: apps/desktop
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: v${{ needs.preflight.outputs.version }}
           retryAttempts: 3
@@ -337,7 +354,7 @@ jobs:
       - name: Assert macOS bundles + Developer ID + notarization
         run: |
           set -euo pipefail
-          root="src-tauri/target"
+          root="apps/desktop/src-tauri/target"
           find "$root" -path '*/release/bundle/dmg/*.dmg' | grep -q .
           find "$root" -path '*/release/bundle/macos/*.app.tar.gz' | grep -q .
           find "$root" -path '*/release/bundle/macos/*.app.tar.gz.sig' | grep -q .

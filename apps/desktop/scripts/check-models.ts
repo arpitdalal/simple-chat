@@ -1,6 +1,6 @@
 /**
  * ponytail: assert-based check for model catalog merge rules.
- * Run: npm run check
+ * Run: pnpm check
  */
 import { CATALOG, resolveModel } from "../src/lib/models.ts";
 

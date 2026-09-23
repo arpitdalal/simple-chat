@@ -22,6 +22,7 @@ vi.mock("./chat", () => ({
   generateChatTitle: vi.fn(async () => "Title"),
 }));
 vi.mock("./db", () => ({
+  IMAGE_ATTACHMENT_PLACEHOLDER: "[Image attachment]",
   addMessage: (...args: unknown[]) => addMessage(...args),
   getChat: (...args: unknown[]) => getChat(...args),
   listRecentMessages: (...args: unknown[]) => listRecentMessages(...args),

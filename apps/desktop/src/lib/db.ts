@@ -11,6 +11,8 @@ export type Chat = {
   pinned: number;
 };
 
+export const IMAGE_ATTACHMENT_PLACEHOLDER = "[Image attachment]";
+
 export type Message = {
   id: string;
   chat_id: string;
@@ -296,7 +298,7 @@ export async function refreshChatPreview(id: string): Promise<void> {
   await db.execute(
     `UPDATE chats SET updated_at = $2, preview = COALESCE(
        (SELECT CASE
-          WHEN content = '' AND images <> '[]' THEN 'Image'
+          WHEN content IN ('', '[Image attachment]') AND images <> '[]' THEN 'Image'
           ELSE substr(content, 1, 120)
         END
         FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
@@ -462,7 +464,11 @@ export async function branchChat(
     source.title && source.title !== "New Chat" ? source.title : "Chat";
   const title = `Branch · ${base}`.slice(0, 60);
   const last = keep[keep.length - 1];
-  const preview = last?.content.slice(0, 120) || (last?.image_count ? "Image" : "Ask AI anything…");
+  const preview = last?.content && last.content !== IMAGE_ATTACHMENT_PLACEHOLDER
+    ? last.content.slice(0, 120)
+    : last?.image_count
+      ? "Image"
+      : "Ask AI anything…";
   const branched = await createChat(source.provider, source.model_id);
   try {
     await updateChat(branched.id, { title, preview });

@@ -50,6 +50,7 @@ vi.mock("../lib/keys", () => ({
 }));
 
 vi.mock("../lib/db", () => ({
+  IMAGE_ATTACHMENT_PLACEHOLDER: "[Image attachment]",
   addMessage: (...a: unknown[]) => addMessage(...a),
   listRecentMessages: (...a: unknown[]) => listRecentMessages(...a),
   listOlderMessages: (...a: unknown[]) => listOlderMessages(...a),

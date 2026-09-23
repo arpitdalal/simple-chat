@@ -14,6 +14,7 @@ import {
   refreshChatPreview,
   replaceChatTitle,
   setInitialChatTitle,
+  IMAGE_ATTACHMENT_PLACEHOLDER,
   type Chat,
   type Message,
 } from "./db";
@@ -40,7 +41,6 @@ type Callbacks = {
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
 type UserContent = Extract<ModelMessage, { role: "user" }>["content"];
 
-export const IMAGE_ATTACHMENT_PLACEHOLDER = "[Image attachment]";
 export const MAX_IMAGES_PER_MESSAGE = 4;
 export const MAX_IMAGE_DATA_CHARS = 5 * 1024 * 1024;
 export const MAX_IMAGE_FILE_BYTES = 3 * 1024 * 1024;

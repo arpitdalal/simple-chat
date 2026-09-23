@@ -2,11 +2,16 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadMessageImage, updateChat, type Chat, type Message } from "../lib/db";
+import {
+  IMAGE_ATTACHMENT_PLACEHOLDER,
+  loadMessageImage,
+  updateChat,
+  type Chat,
+  type Message,
+} from "../lib/db";
 import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
 import {
-  IMAGE_ATTACHMENT_PLACEHOLDER,
   imageCountLimitError,
   imageDimensionLimitError,
   imageLimitError,

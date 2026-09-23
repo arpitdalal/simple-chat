@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/plugin-sql", () => import("../test/memory-sql"));
 import {
   createChat,
   deleteChat,
+  IMAGE_ATTACHMENT_PLACEHOLDER,
   getChat,
   listChats,
   listRecentMessages,
@@ -195,6 +196,9 @@ describe("db (memory sql integration)", () => {
     });
     expect(await loadMessageImage(chat.id, message.id, 0)).toBe(image);
     expect(await getChat(chat.id)).toMatchObject({ preview: "Image", updated_at: 500 });
+    await addMessage(chat.id, "user", IMAGE_ATTACHMENT_PLACEHOLDER, 210, [image]);
+    await refreshChatPreview(chat.id);
+    expect(await getChat(chat.id)).toMatchObject({ preview: "Image" });
   });
 
   it("loads only the newest images within provider budgets", async () => {

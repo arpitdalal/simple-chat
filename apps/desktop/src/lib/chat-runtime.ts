@@ -614,18 +614,19 @@ export class ChatSession {
     for (const turn of this.turns) turn.ac.abort(reason);
     for (const ac of this.titleControllers) ac.abort(reason);
   }
-  async clear() {
-    if (this.getSnapshot().phase !== "idle") return;
+  async clear(): Promise<Chat | null> {
+    if (this.getSnapshot().phase !== "idle") return null;
     sessions.set(this.id, this);
     this.version += 1;
     this.publish({ phase: "clearing" });
     this.stop();
     try {
-      await this.queue.run(async () => {
+      return await this.queue.run(async () => {
         await Promise.allSettled(this.titleWrites);
-        await clearChatMessages(this.id);
+        const updated = await clearChatMessages(this.id);
         this.loaded = true;
         this.publish({ messages: [], stream: null, drafts: [], hasMore: false });
+        return updated;
       });
     } catch (e) {
       this.loaded = false;

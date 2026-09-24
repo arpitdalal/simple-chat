@@ -6,11 +6,13 @@ import { Settings } from "./components/Settings";
 import { Toast, type ToastState } from "./components/Toast";
 import {
   branchChat,
+  chatMatchesQuery,
   createChat,
   getChat,
   getSettings,
-  listChats,
+  listChatPage,
   listMessages,
+  listReusableChats,
   messageCount,
   openOrCreateChat,
   setDefaultModel,
@@ -18,6 +20,7 @@ import {
   updateChat,
   type AppSettings,
   type Chat,
+  type ChatCursor,
 } from "./lib/db";
 import type { ProviderId } from "./lib/models";
 import { pickDefaultModel } from "./lib/models";
@@ -44,13 +47,165 @@ import {
 } from "./lib/autostart";
 import "./App.css";
 
+function compareChats(a: Chat, b: Chat): number {
+  return b.pinned - a.pinned ||
+    b.updated_at - a.updated_at ||
+    (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+}
+
+function useChatList(ready: boolean, retainedChat: Chat | null) {
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [query, setQuery] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const [pendingGeneration, setPendingGeneration] = useState<number | null>(1);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const queryRef = useRef("");
+  const generationRef = useRef(0);
+  const cursorRef = useRef<ChatCursor | null>(null);
+  const hasMoreRef = useRef(false);
+  const loadingRef = useRef(false);
+  const lastLoadedQueryRef = useRef<string | null>(null);
+  const retainedChatRef = useRef<Chat | null>(retainedChat);
+  const removedIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    retainedChatRef.current = retainedChat;
+  }, [retainedChat]);
+
+  const refresh = useCallback(async (search = queryRef.current) => {
+    const generation = ++generationRef.current;
+    loadingRef.current = true;
+    setPendingGeneration(generation);
+    setLoadError(null);
+    try {
+      const page = await listChatPage({ limit: 100, query: search });
+      if (generation !== generationRef.current) return;
+      cursorRef.current = page.cursor;
+      hasMoreRef.current = page.hasMore;
+      lastLoadedQueryRef.current = search;
+      const retained = retainedChatRef.current;
+      const next = new Map(
+        page.chats
+          .filter((chat) => !removedIdsRef.current.has(chat.id))
+          .map((chat) => [chat.id, chat]),
+      );
+      if (retained && !removedIdsRef.current.has(retained.id)) {
+        if (chatMatchesQuery(retained, search)) {
+          next.set(retained.id, retained);
+        } else {
+          next.delete(retained.id);
+        }
+      }
+      setChats([...next.values()].sort(compareChats));
+      setHasMore(page.hasMore);
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === generationRef.current) {
+        loadingRef.current = false;
+        setPendingGeneration(null);
+      }
+    }
+  }, []);
+
+  const loadMore = useCallback(async () => {
+    if (loadingRef.current) return;
+    if (!hasMoreRef.current) {
+      await refresh();
+      return;
+    }
+    const generation = generationRef.current;
+    loadingRef.current = true;
+    setPendingGeneration(generation);
+    setLoadError(null);
+    try {
+      const page = await listChatPage({
+        limit: 100,
+        cursor: cursorRef.current,
+        query: queryRef.current,
+      });
+      if (generation !== generationRef.current) return;
+      cursorRef.current = page.cursor;
+      hasMoreRef.current = page.hasMore;
+      setChats((current) => {
+        const merged = new Map(current.map((chat) => [chat.id, chat]));
+        for (const chat of page.chats) {
+          if (!merged.has(chat.id) && !removedIdsRef.current.has(chat.id)) {
+            merged.set(chat.id, chat);
+          }
+        }
+        return [...merged.values()].sort(compareChats);
+      });
+      setHasMore(page.hasMore);
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === generationRef.current) {
+        loadingRef.current = false;
+        setPendingGeneration(null);
+      }
+    }
+  }, [refresh]);
+
+  const upsert = useCallback((chat: Chat) => {
+    if (removedIdsRef.current.has(chat.id)) return;
+    setChats((current) => {
+      const remaining = current.filter((item) => item.id !== chat.id);
+      return chatMatchesQuery(chat, queryRef.current)
+        ? [chat, ...remaining].sort(compareChats)
+        : remaining;
+    });
+  }, []);
+
+  const remove = useCallback((id: string) => {
+    removedIdsRef.current.add(id);
+    setChats((current) => current.filter((chat) => chat.id !== id));
+  }, []);
+
+  const changeQuery = useCallback((value: string) => {
+    queryRef.current = value;
+    setQuery(value);
+    const generation = ++generationRef.current;
+    setPendingGeneration(generation);
+    loadingRef.current = true;
+    cursorRef.current = null;
+    hasMoreRef.current = false;
+    lastLoadedQueryRef.current = null;
+    setChats([]);
+    setHasMore(false);
+    setLoadError(null);
+  }, []);
+
+  useEffect(() => {
+    if (!ready || lastLoadedQueryRef.current === query) return;
+    const timeout = window.setTimeout(() => {
+      void refresh(query);
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [query, ready, refresh]);
+
+  return {
+    chats,
+    query,
+    queryRef,
+    hasMore,
+    loading: pendingGeneration !== null,
+    loadError,
+    refresh,
+    loadMore,
+    upsert,
+    remove,
+    changeQuery,
+  };
+}
+
 function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [chats, setChats] = useState<Chat[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [active, setActive] = useState<Chat | null>(null);
   const [activeSession, setActiveSession] = useState(() => new ChatSession("__empty__"));
-  const [query, setQuery] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -74,6 +229,19 @@ function App() {
   const [autostartPrompt, setAutostartPrompt] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const autostartPromptGenRef = useRef(0);
+  const {
+    chats,
+    query,
+    queryRef: currentQueryRef,
+    hasMore: hasMoreChats,
+    loading: chatsLoading,
+    loadError: chatLoadError,
+    refresh: refreshChats,
+    loadMore: loadMoreChats,
+    upsert: upsertChat,
+    remove: removeChat,
+    changeQuery,
+  } = useChatList(ready, active);
 
   useEffect(() => activeSession.retain(), [activeSession]);
 
@@ -90,10 +258,10 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
   /** Sync ref before setState so queued key-sync sees the id without waiting a render. */
-  function setActiveIdNow(id: string | null) {
+  const setActiveIdNow = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveId(id);
-  }
+  }, []);
   /** Cancel generation for nav tasks (newChat / key sync). */
   const navGenRef = useRef(0);
   /** Claims the latest readiness probe so a stale one cannot clobber UI. */
@@ -104,6 +272,7 @@ function App() {
   const keySyncWantedRef = useRef(false);
   /** Latest Settings debounce flush — drain target while Settings is open. */
   const settingsFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const scheduleKeySyncRef = useRef<() => void>(() => {});
 
   // One FIFO for all nav work. busy ⇔ pending > 0 (queued or running).
   const navQueueRef = useRef<Queue | null>(null);
@@ -140,10 +309,10 @@ function App() {
    * Invalidate in-flight newChat/key-sync. If a key sync was wanted,
    * re-enqueue it under the fresh gen so defaults/align still finish.
    */
-  function cancelNav() {
+  const cancelNav = useCallback(() => {
     navGenRef.current += 1;
-    if (keySyncWantedRef.current) scheduleKeySync();
-  }
+    if (keySyncWantedRef.current) scheduleKeySyncRef.current();
+  }, []);
 
   /** Apply a probe result only when it is still the latest claim. */
   function claimReady(list: ProviderId[] | null) {
@@ -195,7 +364,7 @@ function App() {
         if (isCancelled()) return;
         if (activeIdRef.current === aligned.id) {
           setActiveChat(aligned);
-          if (aligned !== chat) await refreshChats();
+          if (aligned !== chat) upsertChat(aligned);
         }
       } catch (err) {
         console.error("key sync failed", err);
@@ -208,9 +377,9 @@ function App() {
     });
   }
 
-  const refreshChats = useCallback(async () => {
-    setChats(await listChats());
-  }, []);
+  useEffect(() => {
+    scheduleKeySyncRef.current = scheduleKeySync;
+  });
 
   const focusComposer = useCallback(() => {
     setComposerFocus((n) => n + 1);
@@ -263,15 +432,10 @@ function App() {
       ) {
         return chat;
       }
-      await updateChat(chat.id, {
+      return updateChat(chat.id, {
         provider: picked.provider,
         model_id: picked.modelId,
       });
-      return {
-        ...chat,
-        provider: picked.provider,
-        model_id: picked.modelId,
-      };
     },
     [],
   );
@@ -296,19 +460,27 @@ function App() {
         return;
       }
       setActiveIdNow(id);
-      const toDelete: typeof chats = [];
-      for (const c of chats) {
-        if (c.id === id || !isEmptyNewChat(c)) continue;
-        if (await chatCanBeDiscarded(c.id)) toDelete.push(c);
-      }
-      if (toDelete.length) {
-        for (const c of toDelete) await getChatSession(c.id).delete();
-        await refreshChats();
-      }
+      const candidates = active && !chats.some((chat) => chat.id === active.id)
+        ? [...chats, active]
+        : chats;
+      const toDelete = (
+        await Promise.all(
+          candidates
+            .filter((chat) => chat.id !== id && isEmptyNewChat(chat))
+            .map(async (chat) =>
+              await chatCanBeDiscarded(chat.id) ? chat : null,
+            ),
+        )
+      ).filter((chat): chat is Chat => chat !== null);
+      await Promise.all(
+        toDelete.map(async (chat) => {
+          await getChatSession(chat.id).delete();
+          removeChat(chat.id);
+        }),
+      );
       focusComposer();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [activeId, chats, focusComposer, refreshChats],
+    [active, activeId, cancelNav, chats, focusComposer, removeChat, setActiveIdNow],
   );
 
   const newChat = useCallback(async () => {
@@ -348,10 +520,10 @@ function App() {
           modelId: nextSettings.default_model,
         });
 
-        const liveChats = await listChats();
+        const reusableChats = await listReusableChats();
         if (isCancelled()) return;
-        let existing: (typeof liveChats)[number] | undefined;
-        for (const c of liveChats) {
+        let existing: (typeof reusableChats)[number] | undefined;
+        for (const c of reusableChats) {
           if (isEmptyNewChat(c) && await chatCanBeDiscarded(c.id)) {
             existing = c;
             break;
@@ -363,8 +535,7 @@ function App() {
           setActiveIdNow(aligned.id);
           setActiveChat(aligned);
           setShowSettings(false);
-          if (aligned !== existing) await refreshChats();
-          else setChats(liveChats);
+          upsertChat(aligned);
           focusComposer();
           return;
         }
@@ -380,8 +551,7 @@ function App() {
             if (isCancelled()) return;
             setActiveChat(aligned);
             setShowSettings(false);
-            if (aligned !== freshActive) await refreshChats();
-            else setChats(liveChats);
+            upsertChat(aligned);
             focusComposer();
             return;
           }
@@ -397,7 +567,7 @@ function App() {
         setActiveIdNow(chat.id);
         setActiveChat(chat);
         setShowSettings(false);
-        await refreshChats();
+        upsertChat(chat);
         focusComposer();
       });
     } catch (err) {
@@ -409,7 +579,7 @@ function App() {
     settings,
     active,
     focusComposer,
-    refreshChats,
+    upsertChat,
     persistDefaults,
     alignEmptyChat,
     notify,
@@ -463,6 +633,7 @@ function App() {
       setActiveIdNow(chat.id);
       setActiveChat(chat);
       await refreshChats();
+      upsertChat(chat);
       if (cancelled) return;
       setReady(true);
       focusComposer();
@@ -497,7 +668,7 @@ function App() {
       pendingUpdateRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshChats, focusComposer, notify]);
+  }, [refreshChats, upsertChat, focusComposer, notify]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -588,6 +759,19 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [chats, showSettings, newChat, selectChat, openSettings]);
 
+  async function updateChatInList(
+    id: string,
+    patch: Partial<Pick<Chat, "title" | "pinned" | "provider" | "model_id">>,
+  ) {
+    try {
+      const updated = await updateChat(id, patch);
+      upsertChat(updated);
+      if (activeIdRef.current === id) setActiveChat(updated);
+    } catch (error) {
+      notify((error as Error).message || String(error), "err");
+    }
+  }
+
   async function handleDelete(id: string) {
     cancelNav();
     try {
@@ -596,29 +780,74 @@ function App() {
       notify((err as Error).message || String(err), "err");
       return;
     }
-    if (activeId === id) {
-      const next = (await listChats())[0];
-      if (next) {
-        setActiveIdNow(next.id);
-        setActiveChat(next);
-      } else if (settings) {
-        await newChat();
+    removeChat(id);
+    const deletedWasActive = activeIdRef.current === id;
+    const hadQuery = Boolean(currentQueryRef.current.trim());
+    if (!deletedWasActive && !hadQuery) return;
+    const readFirst = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const search = currentQueryRef.current;
+        const next = (await listChatPage({ limit: 1, query: search })).chats[0];
+        if (currentQueryRef.current === search) return { next, search };
+      }
+      return null;
+    };
+    try {
+      const current = await readFirst();
+      if (!current) {
+        if (deletedWasActive && activeIdRef.current === id) {
+          setActiveIdNow(null);
+          setActiveChat(null);
+        }
         return;
       }
+      let { next } = current;
+      const keptQuery = Boolean(next);
+      if (!next && current.search.trim()) {
+        changeQuery("");
+        const fallback = await readFirst();
+        if (!fallback) {
+          if (deletedWasActive && activeIdRef.current === id) {
+            setActiveIdNow(null);
+            setActiveChat(null);
+          }
+          return;
+        }
+        next = fallback.next;
+      }
+      if (deletedWasActive && activeIdRef.current === id) {
+        if (next) {
+          setActiveIdNow(next.id);
+          setActiveChat(next);
+          upsertChat(next);
+        } else {
+          setActiveIdNow(null);
+          setActiveChat(null);
+          if (settings) await newChat();
+        }
+      } else if (!deletedWasActive && !keptQuery && next) {
+        upsertChat(next);
+      }
+    } catch (error) {
+      if (deletedWasActive && activeIdRef.current === id) {
+        setActiveIdNow(null);
+        setActiveChat(null);
+      }
+      notify((error as Error).message || String(error), "err");
     }
-    await refreshChats();
   }
 
   async function handleClear(id: string) {
     cancelNav();
     try {
-      await getChatSession(id).clear();
-    } catch (err) {
-      notify((err as Error).message || String(err), "err");
+      const updated = await getChatSession(id).clear();
+      if (!updated) throw new Error("Chat is busy");
+      upsertChat(updated);
+      if (activeId === id) setActiveChat(updated);
+    } catch (error) {
+      notify((error as Error).message || String(error), "err");
       return;
     }
-    if (activeId === id) setActiveChat(await getChat(id));
-    await refreshChats();
     focusComposer();
   }
 
@@ -636,7 +865,7 @@ function App() {
       setShowSettings(false);
       setActiveIdNow(branched.id);
       setActiveChat(branched);
-      await refreshChats();
+      upsertChat(branched);
       focusComposer();
       notify("Branched chat", "ok");
     } catch (e) {
@@ -726,25 +955,26 @@ function App() {
             chats={chats}
             activeId={activeId}
             query={query}
-            onQuery={setQuery}
+            onQuery={changeQuery}
             onSelect={(id) => void selectChat(id)}
             onNew={() => void newChat()}
             onToggleSidebar={() => setSidebarOpen(false)}
             onOpenSettings={openSettings}
             settingsActive={showSettings}
             onRename={(id, title) => {
-              void updateChat(id, { title }).then(refreshChats);
-              if (activeId === id) {
-                setActive((c) => (c ? { ...c, title } : c));
-              }
+              void updateChatInList(id, { title });
             }}
             onPin={(id, pinned) => {
-              void updateChat(id, { pinned: pinned ? 1 : 0 }).then(refreshChats);
+              void updateChatInList(id, { pinned: pinned ? 1 : 0 });
             }}
             onClear={(id) => void handleClear(id)}
             onDelete={(id) => void handleDelete(id)}
             onCopyChat={(id) => void handleCopy(id)}
             showShortcuts={showShortcuts}
+            hasMore={hasMoreChats}
+            loadingMore={chatsLoading}
+            loadError={chatLoadError}
+            onLoadMore={() => void loadMoreChats()}
           />
         )}
         {showSettings ? (
@@ -757,7 +987,6 @@ function App() {
               onSaved={(s) => {
                 settingsGenRef.current += 1;
                 setSettings(s);
-                void refreshChats();
               }}
               onKeysChanged={scheduleKeySync}
               flushRef={settingsFlushRef}
@@ -772,9 +1001,22 @@ function App() {
             key={active?.id ?? "__empty__"}
             chat={active}
             session={activeSession}
-            onChatUpdated={() => void refreshChats()}
+            onChatUpdated={() => {
+              const chatId = active?.id;
+              if (!chatId) return;
+              void getChat(chatId)
+                .then((chat) => {
+                  if (!chat) return;
+                  upsertChat(chat);
+                  if (activeIdRef.current === chatId) setActiveChat(chat);
+                })
+                .catch((error) => {
+                  notify((error as Error).message || String(error), "err");
+                });
+            }}
             onChatMeta={(updated) => {
               if (activeIdRef.current === updated.id) setActive(updated);
+              upsertChat(updated);
             }}
             onNew={() => void newChat()}
             onBranch={handleBranch}

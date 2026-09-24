@@ -3,6 +3,7 @@
  * Not a full SQL engine — enough for Simple Chat's query shapes.
  */
 import type { Chat, Message, AppSettings } from "../lib/db";
+import { EMPTY_CHAT_PREVIEW, NEW_CHAT_TITLE } from "../lib/chats";
 
 type Row = Record<string, unknown>;
 type MessageImageRow = { id: string; images: unknown };
@@ -131,14 +132,14 @@ class MemoryDatabase {
       return { rowsAffected: 1 };
     }
 
-    if (q.includes("UPDATE chats SET title = $1, updated_at = $2")) {
+    if (q.includes("AND title = 'New Chat'")) {
       const id = String(args[2]);
-      const i = chats.findIndex((c) => c.id === id && c.title === "New Chat");
-      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[1]) };
+      const i = chats.findIndex((c) => c.id === id && c.title === NEW_CHAT_TITLE);
+      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
-    if (q.includes("UPDATE chats SET updated_at = $2, preview = COALESCE")) {
+    if (q.includes("UPDATE chats SET updated_at = $2, search_normalized = 0, preview = COALESCE")) {
       const id = String(args[0]);
       const i = chats.findIndex((c) => c.id === id);
       const latest = messages.filter((m) => m.chat_id === id)
@@ -150,31 +151,33 @@ class MemoryDatabase {
             : (latest.image_count ?? latest.images.length)
               ? "Image"
               : ""
-          : "Ask AI anything…";
+          : EMPTY_CHAT_PREVIEW;
         chats[i] = { ...chats[i], updated_at: Number(args[1]), preview };
       }
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
-    if (q.includes("UPDATE chats SET title = $1 WHERE id = $2 AND title = $3")) {
-      const i = chats.findIndex((c) => c.id === String(args[1]) && c.title === String(args[2]));
+    if (q.includes("title_search = $2 WHERE id = $3 AND title = $4")) {
+      const i = chats.findIndex((c) => c.id === String(args[2]) && c.title === String(args[3]));
       if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
     if (q.includes("UPDATE chats SET")) {
-      const id = String(args[6]);
+      const where = q.match(/WHERE id=\$(\d+)/);
+      const id = where ? String(args[Number(where[1]) - 1]) : "";
       const i = chats.findIndex((c) => c.id === id);
       if (i >= 0) {
-        chats[i] = {
-          ...chats[i],
-          title: String(args[0]),
-          preview: String(args[1]),
-          model_id: String(args[2]),
-          provider: String(args[3]),
-          updated_at: Number(args[4]),
-          pinned: Number(args[5] ?? 0),
-        };
+        const next = { ...chats[i] };
+        for (const assignment of q.matchAll(/(\w+)=\$(\d+)/g)) {
+          const value = args[Number(assignment[2]) - 1];
+          if (assignment[1] === "updated_at" || assignment[1] === "pinned") {
+            next[assignment[1] as "updated_at" | "pinned"] = Number(value);
+          } else if (assignment[1] in next) {
+            next[assignment[1] as keyof Chat] = value as never;
+          }
+        }
+        chats[i] = next;
       }
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
@@ -258,10 +261,56 @@ class MemoryDatabase {
       return chats.filter((c) => c.id === id) as unknown as T;
     }
 
-    if (q.includes("FROM chats") && q.includes("ORDER BY pinned")) {
+    if (q.includes("SELECT chats.* FROM chats") && q.includes("NOT EXISTS")) {
+      const chatIds = new Set(
+        messages.map((message) => message.chat_id),
+      );
       return [...chats]
-        .sort((a, b) => b.pinned - a.pinned || b.updated_at - a.updated_at)
-        .slice(0, 200) as unknown as T;
+        .filter((chat) =>
+          chat.title === NEW_CHAT_TITLE &&
+          (!chat.preview.trim() || chat.preview === EMPTY_CHAT_PREVIEW) &&
+          !chatIds.has(chat.id),
+        )
+        .sort((a, b) =>
+          b.pinned - a.pinned ||
+          b.updated_at - a.updated_at ||
+          (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+        )
+        .slice(0, Number(args[0] ?? 20)) as unknown as T;
+    }
+
+    if (q.includes("FROM chats") && q.includes("ORDER BY pinned")) {
+      const fetchLimit = Number(args[0] ?? 101);
+      const hasCursor = q.includes("(pinned, updated_at, id) <");
+      const cursorPinned = hasCursor ? Number(args[1]) : 1;
+      const cursorUpdatedAt = hasCursor ? Number(args[2]) : Infinity;
+      const cursorId = hasCursor ? String(args[3]) : "";
+      const query = q.includes("instr(title_search") ? String(args[args.length - 1]) : "";
+      return [...chats]
+        .filter((chat) => {
+          if (
+            query &&
+            ![chat.title, chat.preview].some((value) =>
+              value.toLowerCase().includes(query.toLowerCase()),
+            )
+          ) {
+            return false;
+          }
+          if (!hasCursor) return true;
+          return chat.pinned < cursorPinned ||
+            (chat.pinned === cursorPinned && chat.updated_at < cursorUpdatedAt) ||
+            (
+              chat.pinned === cursorPinned &&
+              chat.updated_at === cursorUpdatedAt &&
+              chat.id < cursorId
+            );
+        })
+        .sort((a, b) =>
+          b.pinned - a.pinned ||
+          b.updated_at - a.updated_at ||
+          (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+        )
+        .slice(0, fetchLimit) as unknown as T;
     }
 
     if (q.includes("COUNT(*)") && q.includes("FROM messages")) {

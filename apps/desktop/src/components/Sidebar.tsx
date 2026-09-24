@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Chat } from "../lib/db";
+import { chatMatchesQuery, type Chat } from "../lib/db";
 
 function dayBucket(ts: number): string {
   const now = new Date();
@@ -8,12 +9,14 @@ function dayBucket(ts: number): string {
     now.getFullYear(),
     now.getMonth(),
     now.getDate(),
-  ).getTime();
-  const startYesterday = startToday - 86400000;
-  const startWeek = startToday - 6 * 86400000;
-  if (ts >= startToday) return "Today";
-  if (ts >= startYesterday) return "Yesterday";
-  if (ts >= startWeek) return "This Week";
+  );
+  const startYesterday = new Date(startToday);
+  startYesterday.setDate(startYesterday.getDate() - 1);
+  const startWeek = new Date(startToday);
+  startWeek.setDate(startWeek.getDate() - 6);
+  if (ts >= startToday.getTime()) return "Today";
+  if (ts >= startYesterday.getTime()) return "Yesterday";
+  if (ts >= startWeek.getTime()) return "This Week";
   return "Older";
 }
 
@@ -24,6 +27,9 @@ function shortcutLabel(index: number): string | null {
 }
 
 type MenuState = { chatId: string; x: number; y: number } | null;
+type ListRow =
+  | { kind: "header"; key: string; label: string }
+  | { kind: "chat"; key: string; chat: Chat; shortcutIndex: number };
 
 type Props = {
   chats: Chat[];
@@ -41,6 +47,10 @@ type Props = {
   onDelete: (id: string) => void;
   onCopyChat: (id: string) => void;
   showShortcuts: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
+  loadError: string | null;
+  onLoadMore: () => void;
 };
 
 const MENU_W = 200;
@@ -62,44 +72,90 @@ export function Sidebar({
   onDelete,
   onCopyChat,
   showShortcuts,
+  hasMore,
+  loadingMore,
+  loadError,
+  onLoadMore,
 }: Props) {
   const [menu, setMenu] = useState<MenuState>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return chats;
-    return chats.filter(
-      (c) =>
-        c.title.toLowerCase().includes(q) ||
-        c.preview.toLowerCase().includes(q),
-    );
+    return chats.filter((chat) => chatMatchesQuery(chat, q));
   }, [chats, query]);
 
-  const flatIndex = useMemo(() => {
-    const map = new Map<string, number>();
-    filtered.forEach((c, i) => map.set(c.id, i));
-    return map;
+  const rows = useMemo<ListRow[]>(() => {
+    const result: ListRow[] = [];
+    let group = "";
+    filtered.forEach((chat, shortcutIndex) => {
+      const nextGroup = chat.pinned ? "Pinned" : dayBucket(chat.updated_at);
+      if (nextGroup !== group) {
+        group = nextGroup;
+        result.push({ kind: "header", key: `header:${group}`, label: group });
+      }
+      result.push({ kind: "chat", key: chat.id, chat, shortcutIndex });
+    });
+    return result;
   }, [filtered]);
 
-  const groups = useMemo(() => {
-    const map = new Map<string, Chat[]>();
-    for (const chat of filtered) {
-      const key = chat.pinned ? "Pinned" : dayBucket(chat.updated_at);
-      const list = map.get(key) ?? [];
-      list.push(chat);
-      map.set(key, list);
+  const rowCount = rows.length + (hasMore || loadingMore || loadError ? 1 : 0);
+  const getScrollElement = useCallback(() => scrollRef.current, []);
+  const estimateSize = useCallback(
+    (index: number) => rows[index]?.kind === "header" ? 30 : 56,
+    [rows],
+  );
+  const getItemKey = useCallback(
+    (index: number) => rows[index]?.key ?? "chat-list-footer",
+    [rows],
+  );
+  const virtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement,
+    estimateSize,
+    overscan: 8,
+    getItemKey,
+    useFlushSync: false,
+    onChange: (instance) => {
+      const scrollOffset = scrollRef.current?.scrollTop ?? 0;
+      const items = instance.getVirtualItems();
+      const anchor = items.find((item) => item.end > scrollOffset) ?? items[0];
+      anchorRef.current = anchor
+        ? { key: String(anchor.key), offset: anchor.start - scrollOffset }
+        : null;
+    },
+  });
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const anchorIndex = rows.findIndex((row) => row.key === anchor.key);
+    const measurement = virtualizer.measurementsCache[anchorIndex];
+    if (measurement) {
+      virtualizer.scrollToOffset(measurement.start - anchor.offset, {
+        align: "start",
+      });
     }
-    const entries = [...map.entries()];
-    entries.sort(([a], [b]) => {
-      if (a === "Pinned") return -1;
-      if (b === "Pinned") return 1;
-      return 0;
-    });
-    return entries;
-  }, [filtered]);
+  }, [rows, virtualizer]);
+
+  const virtualRows = virtualizer.getVirtualItems();
+  const lastVirtualIndex = virtualRows[virtualRows.length - 1]?.index ?? 0;
+
+  useEffect(() => {
+    if (
+      hasMore &&
+      !loadingMore &&
+      !loadError &&
+      lastVirtualIndex >= rows.length - 20
+    ) {
+      onLoadMore();
+    }
+  }, [hasMore, lastVirtualIndex, loadError, loadingMore, onLoadMore, rows.length]);
 
   useEffect(() => {
     function close(e: MouseEvent) {
@@ -130,7 +186,7 @@ export function Sidebar({
     setMenu(null);
   }
 
-  const menuChat = menu ? chats.find((c) => c.id === menu.chatId) : null;
+  const menuChat = menu ? chats.find((chat) => chat.id === menu.chatId) : null;
 
   return (
     <aside className="sidebar">
@@ -139,7 +195,7 @@ export function Sidebar({
           className="search"
           placeholder="Search Chats…"
           value={query}
-          onChange={(e) => onQuery(e.target.value)}
+          onChange={(event) => onQuery(event.target.value)}
         />
         <button
           type="button"
@@ -150,81 +206,71 @@ export function Sidebar({
           <SidebarToggleIcon />
         </button>
       </div>
-      {/* keep onNew wired for keyboard; titlebar owns the visible + */}
       <button type="button" hidden onClick={onNew} aria-hidden />
-      <div className="chat-list">
-        {groups.map(([label, items]) => (
-          <div key={label} className="chat-group">
-            <div className="chat-group-label">{label}</div>
-            {items.map((chat) => {
-              const idx = flatIndex.get(chat.id) ?? 99;
-              const num = shortcutLabel(idx);
+      <div className="chat-list" ref={scrollRef}>
+        {rows.length > 0 || hasMore || loadingMore || loadError ? (
+          <div
+            className="chat-virtual-inner"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
+            {virtualRows.map((virtualRow) => {
+              const row = rows[virtualRow.index];
+              if (!row) {
+                return (
+                  <div
+                    key="chat-list-footer"
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    className="chat-virtual-row"
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    <div className="empty-side">
+                      {loadingMore
+                        ? "Loading chats…"
+                        : loadError
+                          ? <button type="button" onClick={onLoadMore}>Retry loading chats</button>
+                          : null}
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div
-                  key={chat.id}
-                  className={`chat-item ${chat.id === activeId && !settingsActive ? "active" : ""} ${showShortcuts && num ? "show-nums" : ""}`}
-                  onClick={() => onSelect(chat.id)}
-                  onContextMenu={(e) => openMenu(e, chat.id)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") onSelect(chat.id);
-                  }}
+                  key={row.key}
+                  data-index={virtualRow.index}
+                  ref={virtualizer.measureElement}
+                  className="chat-virtual-row"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
-                  <div className="chat-item-body">
-                    {renamingId === chat.id ? (
-                      <input
-                        className="rename-input"
-                        value={renameValue}
-                        autoFocus
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onBlur={() => {
-                          const t = renameValue.trim();
-                          if (t) onRename(chat.id, t);
-                          setRenamingId(null);
-                        }}
-                        onKeyDown={(e) => {
-                          e.stopPropagation();
-                          if (e.key === "Enter") {
-                            const t = renameValue.trim();
-                            if (t) onRename(chat.id, t);
-                            setRenamingId(null);
-                          }
-                          if (e.key === "Escape") setRenamingId(null);
-                        }}
-                      />
-                    ) : (
-                      <>
-                        <div className="chat-item-title">
-                          {chat.pinned ? "📌 " : ""}
-                          {chat.title}
-                        </div>
-                        <div className="chat-item-preview">{chat.preview}</div>
-                      </>
-                    )}
-                  </div>
-                  <div className="chat-item-trail">
-                    {showShortcuts && num ? (
-                      <span className="cmd-num">{num}</span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="chat-more"
-                        title="Actions"
-                        onClick={(e) => openMenu(e, chat.id)}
-                      >
-                        ⋯
-                      </button>
-                    )}
-                  </div>
+                  {row.kind === "header" ? (
+                    <div className="chat-group-label">{row.label}</div>
+                  ) : (
+                    <ChatItem
+                      chat={row.chat}
+                      active={row.chat.id === activeId && !settingsActive}
+                      shortcutIndex={row.shortcutIndex}
+                      showShortcuts={showShortcuts}
+                      renaming={renamingId === row.chat.id}
+                      renameValue={renameValue}
+                      onRenameValue={setRenameValue}
+                      onRenameEnd={() => setRenamingId(null)}
+                      onRename={(title) => {
+                        const trimmed = title.trim();
+                        if (trimmed) onRename(row.chat.id, trimmed);
+                        setRenamingId(null);
+                      }}
+                      onSelect={() => onSelect(row.chat.id)}
+                      onMenu={(event) => openMenu(event, row.chat.id)}
+                    />
+                  )}
                 </div>
               );
             })}
           </div>
-        ))}
-        {filtered.length === 0 && (
-          <div className="empty-side">No chats yet</div>
+        ) : (
+          <div className="empty-side">
+            {query.trim() ? "No matching chats" : "No chats yet"}
+          </div>
         )}
       </div>
 
@@ -289,6 +335,88 @@ export function Sidebar({
           document.body,
         )}
     </aside>
+  );
+}
+
+type ChatItemProps = {
+  chat: Chat;
+  active: boolean;
+  shortcutIndex: number;
+  showShortcuts: boolean;
+  renaming: boolean;
+  renameValue: string;
+  onRenameValue: (value: string) => void;
+  onRenameEnd: () => void;
+  onRename: (title: string) => void;
+  onSelect: () => void;
+  onMenu: (event: React.MouseEvent) => void;
+};
+
+function ChatItem({
+  chat,
+  active,
+  shortcutIndex,
+  showShortcuts,
+  renaming,
+  renameValue,
+  onRenameValue,
+  onRenameEnd,
+  onRename,
+  onSelect,
+  onMenu,
+}: ChatItemProps) {
+  const num = shortcutLabel(shortcutIndex);
+  return (
+    <div
+      className={`chat-item ${active ? "active" : ""} ${showShortcuts && num ? "show-nums" : ""}`}
+      onClick={onSelect}
+      onContextMenu={onMenu}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") onSelect();
+      }}
+    >
+      <div className="chat-item-body">
+        {renaming ? (
+          <input
+            className="rename-input"
+            value={renameValue}
+            autoFocus
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => onRenameValue(event.target.value)}
+            onBlur={() => onRename(renameValue)}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") onRename(renameValue);
+              if (event.key === "Escape") onRenameEnd();
+            }}
+          />
+        ) : (
+          <>
+            <div className="chat-item-title">
+              {chat.pinned ? "📌 " : ""}
+              {chat.title}
+            </div>
+            <div className="chat-item-preview">{chat.preview}</div>
+          </>
+        )}
+      </div>
+      <div className="chat-item-trail">
+        {showShortcuts && num ? (
+          <span className="cmd-num">{num}</span>
+        ) : (
+          <button
+            type="button"
+            className="chat-more"
+            title="Actions"
+            onClick={onMenu}
+          >
+            ⋯
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

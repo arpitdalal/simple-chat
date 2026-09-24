@@ -1,4 +1,10 @@
 import Database from "@tauri-apps/plugin-sql";
+import {
+  EMPTY_CHAT_PREVIEW,
+  isEmptyNewChat,
+  NEW_CHAT_TITLE,
+  resolveStartupMode,
+} from "./chats";
 
 export type Chat = {
   id: string;
@@ -10,6 +16,13 @@ export type Chat = {
   preview: string;
   pinned: number;
 };
+
+export function chatMatchesQuery(chat: Pick<Chat, "title" | "preview">, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  return !normalized ||
+    chat.title.toLowerCase().includes(normalized) ||
+    chat.preview.toLowerCase().includes(normalized);
+}
 
 export type Message = {
   id: string;
@@ -109,6 +122,34 @@ export async function prepareDb(db: Database) {
       `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
     );
   }
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_chats_sidebar_order
+     ON chats(pinned DESC, updated_at DESC, id DESC)`,
+  );
+
+  const searchRows = await db.select<{ id: string; title: string; preview: string }[]>(
+    "SELECT id, title, preview FROM chats WHERE search_normalized = 0",
+  );
+  for (let offset = 0; offset < searchRows.length; offset += 50) {
+    const values: string[] = [];
+    const params: unknown[] = [];
+    for (const row of searchRows.slice(offset, offset + 50)) {
+      const base = params.length;
+      params.push(row.id, row.title.toLowerCase(), row.preview.toLowerCase());
+      values.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+    }
+    await db.execute(
+      `WITH search_input(id, title_search, preview_search) AS (
+         VALUES ${values.join(", ")}
+       )
+       UPDATE chats SET
+         title_search = (SELECT title_search FROM search_input WHERE search_input.id = chats.id),
+         preview_search = (SELECT preview_search FROM search_input WHERE search_input.id = chats.id),
+         search_normalized = 1
+       WHERE id IN (SELECT id FROM search_input)`,
+      params,
+    );
+  }
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -205,12 +246,78 @@ export async function setDefaultModel(
   });
 }
 
-export async function listChats(): Promise<Chat[]> {
+export type ChatCursor = Pick<Chat, "id" | "updated_at" | "pinned">;
+export type ChatPage = {
+  chats: Chat[];
+  cursor: ChatCursor | null;
+  hasMore: boolean;
+};
+
+export async function listChatPage(
+  options: { limit?: number; cursor?: ChatCursor | null; query?: string } = {},
+): Promise<ChatPage> {
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 250));
+  const query = options.query?.trim() ?? "";
+  const args: unknown[] = [limit + 1];
+  const conditions: string[] = [];
+
+  if (options.cursor) {
+    args.push(
+      options.cursor.pinned ? 1 : 0,
+      options.cursor.updated_at,
+      options.cursor.id,
+    );
+    conditions.push("(pinned, updated_at, id) < ($2, $3, $4)");
+  }
+  if (query) {
+    args.push(query.toLowerCase());
+    const queryParameter = `$${args.length}`;
+    conditions.push(
+      `(instr(title_search, ${queryParameter}) > 0 OR instr(preview_search, ${queryParameter}) > 0)`,
+    );
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const db = await getDb();
   const rows = await db.select<Chat[]>(
-    "SELECT * FROM chats ORDER BY pinned DESC, updated_at DESC LIMIT 200",
+    `SELECT * FROM chats ${where}
+     ORDER BY pinned DESC, updated_at DESC, id DESC
+     LIMIT $1`,
+    args,
   );
-  return rows.map((c) => ({ ...c, pinned: c.pinned ? 1 : 0 }));
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit).map((chat) => ({
+    ...chat,
+    pinned: chat.pinned ? 1 : 0,
+  }));
+  const last = page[page.length - 1];
+  return {
+    chats: page,
+    cursor: hasMore && last
+      ? { id: last.id, updated_at: last.updated_at, pinned: last.pinned }
+      : null,
+    hasMore,
+  };
+}
+
+export async function listChats(): Promise<Chat[]> {
+  return (await listChatPage({ limit: 200 })).chats;
+}
+
+export async function listReusableChats(limit = 20): Promise<Chat[]> {
+  const db = await getDb();
+  const rows = await db.select<Chat[]>(
+    `SELECT chats.* FROM chats
+     WHERE chats.title = '${NEW_CHAT_TITLE}'
+       AND (trim(chats.preview) = '' OR chats.preview = '${EMPTY_CHAT_PREVIEW}')
+       AND NOT EXISTS (
+         SELECT 1 FROM messages WHERE messages.chat_id = chats.id
+       )
+     ORDER BY chats.pinned DESC, chats.updated_at DESC, chats.id DESC
+     LIMIT $1`,
+    [Math.max(1, Math.min(limit, 100))],
+  );
+  return rows.map((chat) => ({ ...chat, pinned: chat.pinned ? 1 : 0 }));
 }
 
 export async function getChat(id: string): Promise<Chat | null> {
@@ -229,17 +336,19 @@ export async function createChat(
   const now = Date.now();
   const chat: Chat = {
     id: crypto.randomUUID(),
-    title: "New Chat",
+    title: NEW_CHAT_TITLE,
     model_id: modelId,
     provider,
     created_at: now,
     updated_at: now,
-    preview: "Ask AI anything…",
+    preview: EMPTY_CHAT_PREVIEW,
     pinned: 0,
   };
   await db.execute(
-    `INSERT INTO chats (id, title, model_id, provider, created_at, updated_at, preview, pinned)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO chats (
+       id, title, model_id, provider, created_at, updated_at, preview, pinned,
+       title_search, preview_search, search_normalized
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)`,
     [
       chat.id,
       chat.title,
@@ -249,6 +358,8 @@ export async function createChat(
       chat.updated_at,
       chat.preview,
       chat.pinned,
+      chat.title.toLowerCase(),
+      chat.preview.toLowerCase(),
     ],
   );
   return chat;
@@ -261,31 +372,51 @@ export async function updateChat(
   >,
 ) {
   const db = await getDb();
-  const current = await getChat(id);
-  if (!current) return;
-  // Only message activity (preview) reorders the sidebar — pin/rename/model keep place.
-  const updated_at = "preview" in patch ? Date.now() : current.updated_at;
-  const next = { ...current, ...patch, updated_at };
-  await db.execute(
-    `UPDATE chats SET title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5, pinned=$6 WHERE id=$7`,
-    [
-      next.title,
-      next.preview,
-      next.model_id,
-      next.provider,
-      next.updated_at,
-      next.pinned ?? 0,
-      id,
-    ],
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  const add = (column: string, value: unknown) => {
+    values.push(value);
+    sets.push(`${column}=$${values.length}`);
+  };
+
+  if ("title" in patch) {
+    add("title", patch.title ?? "");
+    add("title_search", (patch.title ?? "").toLowerCase());
+  }
+  if ("preview" in patch) {
+    add("preview", patch.preview ?? "");
+    add("updated_at", Date.now());
+    add("preview_search", (patch.preview ?? "").toLowerCase());
+    sets.push("search_normalized=1");
+  }
+  if ("model_id" in patch) add("model_id", patch.model_id);
+  if ("provider" in patch) add("provider", patch.provider);
+  if ("pinned" in patch) add("pinned", patch.pinned);
+  if (!sets.length) {
+    const current = await getChat(id);
+    if (!current) throw new Error("Chat not found");
+    return current;
+  }
+
+  values.push(id);
+  const result = await db.execute(
+    `UPDATE chats SET ${sets.join(", ")} WHERE id=$${values.length}`,
+    values,
   );
+  if (result.rowsAffected === 0) throw new Error("Chat no longer exists");
+  const updated = await getChat(id);
+  if (!updated) throw new Error("Chat no longer exists");
+  return updated;
 }
 
 /** Set the first prompt title only while this is still an unnamed chat. */
 export async function setInitialChatTitle(id: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    "UPDATE chats SET title = $1, updated_at = $2 WHERE id = $3 AND title = 'New Chat'",
-    [title, Date.now(), id],
+    `UPDATE chats SET
+       title = $1, title_search = $2
+     WHERE id = $3 AND title = '${NEW_CHAT_TITLE}'`,
+    [title, title.toLowerCase(), id],
   );
   return result.rowsAffected > 0;
 }
@@ -293,25 +424,39 @@ export async function setInitialChatTitle(id: string, title: string): Promise<bo
 /** Recompute preview from stored messages so delayed writes cannot restore an old preview. */
 export async function refreshChatPreview(id: string): Promise<void> {
   const db = await getDb();
-  await db.execute(
-    `UPDATE chats SET updated_at = $2, preview = COALESCE(
+  const updatedAt = Date.now();
+  const result = await db.execute(
+    `UPDATE chats SET updated_at = $2, search_normalized = 0, preview = COALESCE(
        (SELECT CASE
           WHEN content = '' AND image_count > 0 THEN 'Image'
           ELSE substr(content, 1, 120)
         END
         FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
-       'Ask AI anything…'
+       '${EMPTY_CHAT_PREVIEW}'
      ) WHERE id = $1`,
-    [id, Date.now()],
+    [id, updatedAt],
   );
+  if (result.rowsAffected === 0) return;
+  const rows = await db.select<{ preview: string }[]>(
+    "SELECT preview FROM chats WHERE id = $1",
+    [id],
+  );
+  const preview = rows[0]?.preview;
+  if (preview !== undefined) {
+    await db.execute(
+      `UPDATE chats SET preview_search = $2, search_normalized = 1
+       WHERE id = $1 AND preview = $3 AND updated_at = $4`,
+      [id, preview.toLowerCase(), preview, updatedAt],
+    );
+  }
 }
 
 /** A generated title must not overwrite a later manual rename or Clear. */
 export async function replaceChatTitle(id: string, previous: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    "UPDATE chats SET title = $1 WHERE id = $2 AND title = $3",
-    [title, id, previous],
+    "UPDATE chats SET title = $1, title_search = $2 WHERE id = $3 AND title = $4",
+    [title, title.toLowerCase(), id, previous],
   );
   return result.rowsAffected > 0;
 }
@@ -463,14 +608,14 @@ export async function branchChat(
   if (idx < 0) throw new Error("Message not found");
   const keep = all.slice(0, idx + 1);
   const base =
-    source.title && source.title !== "New Chat" ? source.title : "Chat";
+    source.title && source.title !== NEW_CHAT_TITLE ? source.title : "Chat";
   const title = `Branch · ${base}`.slice(0, 60);
   const last = keep[keep.length - 1];
   const preview = last?.content
     ? last.content.slice(0, 120)
     : last?.image_count
       ? "Image"
-      : "Ask AI anything…";
+      : EMPTY_CHAT_PREVIEW;
   const branched = await createChat(source.provider, source.model_id);
   try {
     await updateChat(branched.id, { title, preview });
@@ -485,7 +630,7 @@ export async function branchChat(
       [branched.id, sourceChatId, throughMessageId],
     );
     if (copied.rowsAffected === 0) throw new Error("Message not found");
-    return { ...branched, title, preview };
+    return (await getChat(branched.id)) ?? { ...branched, title, preview };
   } catch (error) {
     try {
       const db = await getDb();
@@ -516,7 +661,10 @@ export async function deleteMessagesAfter(
 export async function clearChatMessages(chatId: string) {
   const db = await getDb();
   await db.execute("DELETE FROM messages WHERE chat_id = $1", [chatId]);
-  await updateChat(chatId, { preview: "Ask AI anything…", title: "New Chat" });
+  return updateChat(chatId, {
+    preview: EMPTY_CHAT_PREVIEW,
+    title: NEW_CHAT_TITLE,
+  });
 }
 
 export async function messageCount(chatId: string): Promise<number> {
@@ -527,8 +675,6 @@ export async function messageCount(chatId: string): Promise<number> {
   );
   return rows[0]?.n ?? 0;
 }
-
-import { isEmptyNewChat, resolveStartupMode } from "./chats";
 
 /** Resume last chat if opened within resume_minutes; else new chat. */
 export async function resolveStartupChat(

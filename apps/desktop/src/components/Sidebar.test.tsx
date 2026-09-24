@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "./Sidebar";
 import type { Chat } from "../lib/db";
@@ -31,6 +31,10 @@ const baseProps = {
   onDelete: vi.fn(),
   onCopyChat: vi.fn(),
   showShortcuts: false,
+  hasMore: false,
+  loadingMore: false,
+  loadError: null,
+  onLoadMore: vi.fn(),
 };
 
 describe("Sidebar", () => {
@@ -83,6 +87,50 @@ describe("Sidebar", () => {
     );
     await user.click(screen.getByText("Domains"));
     expect(onSelect).toHaveBeenCalledWith("c9");
+  });
+
+  it("virtualizes large lists", () => {
+    const chats = Array.from({ length: 1_000 }, (_, index) => chat({
+      id: String(index),
+      title: `Chat ${index}`,
+    }));
+    render(<Sidebar {...baseProps} chats={chats} />);
+
+    const rendered = document.querySelectorAll(".chat-item").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThan(100);
+  });
+
+  it("requests the next page when the loaded rows approach the viewport end", async () => {
+    const onLoadMore = vi.fn();
+    render(
+      <Sidebar
+        {...baseProps}
+        chats={[chat({ id: "1", title: "One" })]}
+        hasMore
+        onLoadMore={onLoadMore}
+      />,
+    );
+
+    await waitFor(() => expect(onLoadMore).toHaveBeenCalled());
+  });
+
+  it("waits for explicit retry after a load error", async () => {
+    const onLoadMore = vi.fn();
+    render(
+      <Sidebar
+        {...baseProps}
+        chats={[chat({ id: "1", title: "One" })]}
+        hasMore
+        loadError="offline"
+        onLoadMore={onLoadMore}
+      />,
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(onLoadMore).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Retry loading chats" }));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
   });
 
   it("toggles sidebar from search row", async () => {

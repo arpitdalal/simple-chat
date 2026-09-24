@@ -7,6 +7,8 @@ import {
   deleteChat,
   getChat,
   listChats,
+  listChatPage,
+  listReusableChats,
   listRecentMessages,
   addMessage,
   listOlderMessages,
@@ -37,6 +39,103 @@ describe("db (memory sql integration)", () => {
     const list = await listChats();
     expect(list.map((c) => c.id)).toContain(a.id);
     expect(await getChat(a.id)).toMatchObject({ id: a.id, provider: "google" });
+  });
+
+  it("lazily pages through every chat with stable cursors", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      for (let i = 0; i < 205; i++) {
+        await createChat("google", "gemini-3.8-flash");
+      }
+      const first = await listChatPage({ limit: 100 });
+      expect(first.chats).toHaveLength(100);
+      expect(first.hasMore).toBe(true);
+      expect(first.cursor).toEqual({
+        id: first.chats[99].id,
+        pinned: 0,
+        updated_at: first.chats[99].updated_at,
+      });
+
+      const second = await listChatPage({ limit: 100, cursor: first.cursor });
+      const third = await listChatPage({ limit: 100, cursor: second.cursor });
+      const ids = [...first.chats, ...second.chats, ...third.chats].map(
+        (chat) => chat.id,
+      );
+      expect(ids).toHaveLength(205);
+      expect(new Set(ids).size).toBe(205);
+      expect(third.hasMore).toBe(false);
+    } finally {
+      vi.spyOn(Date, "now").mockRestore();
+    }
+  });
+
+  it("groups search matching inside the cursor predicate", async () => {
+    const anchor = await createChat("google", "gemini-3.8-flash");
+    const { default: Database } = await import("../test/memory-sql");
+    const db = await Database.load();
+    const realSelect = db.select.bind(db);
+    let captured = "";
+    db.select = async (query: string, values: unknown[] = []) => {
+      captured = query;
+      expect(values).toEqual([
+        101,
+        0,
+        anchor.updated_at,
+        anchor.id,
+        "needle",
+      ]);
+      return realSelect(query, values);
+    };
+    await listChatPage({
+      query: "needle",
+      cursor: {
+        id: anchor.id,
+        updated_at: anchor.updated_at,
+        pinned: 0,
+      },
+    });
+    db.select = realSelect;
+    expect(captured).toContain(
+      "(pinned, updated_at, id) < ($2, $3, $4) AND (instr(title_search",
+    );
+    expect(captured).toContain("OR instr(preview_search, $5) > 0)");
+  });
+
+  it("searches non-ASCII text with the same normalization as retained rows", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    await updateChat(chat.id, { title: "École" });
+    const page = await listChatPage({ query: "école" });
+    expect(page.chats.map((item) => item.id)).toEqual([chat.id]);
+  });
+
+  it("finds an empty chat beyond the first 200 rows", async () => {
+    const created: Awaited<ReturnType<typeof createChat>>[] = [];
+    for (let i = 0; i < 205; i++) {
+      created.push(await createChat("google", "gemini-3.8-flash"));
+    }
+    for (const chat of created.slice(2)) {
+      await addMessage(chat.id, "user", "started", 1);
+    }
+    await updateChat(created[1].id, { preview: "not a placeholder" });
+    const reusable = await listReusableChats();
+    expect(reusable.map((chat) => chat.id)).toEqual([created[0].id]);
+  });
+
+  it("searches chat metadata beyond the first page", async () => {
+    let now = 1;
+    vi.spyOn(Date, "now").mockImplementation(() => now++);
+    try {
+      const created: Awaited<ReturnType<typeof createChat>>[] = [];
+      for (let i = 0; i < 205; i++) {
+        created.push(await createChat("google", "gemini-3.8-flash"));
+      }
+      const target = created[0];
+      await updateChat(target.id, { title: "Archived needle" });
+      const page = await listChatPage({ query: "needle" });
+      expect(page.chats.map((chat) => chat.id)).toEqual([target.id]);
+    } finally {
+      vi.spyOn(Date, "now").mockRestore();
+    }
   });
 
   it("pages recent and older messages", async () => {
@@ -113,8 +212,11 @@ describe("db (memory sql integration)", () => {
     await addMessage(source.id, "user", "three", 30);
     vi.spyOn(Date, "now").mockRestore();
 
+    vi.spyOn(Date, "now").mockReturnValue(999);
     const branched = await branchChat(source.id, b.id);
+    vi.spyOn(Date, "now").mockRestore();
     expect(branched.id).not.toBe(source.id);
+    expect(branched.updated_at).toBe(999);
     expect(branched.title).toMatch(/^Branch · Parent/);
     const msgs = await listMessages(branched.id);
     expect(msgs.map((m) => m.content)).toEqual(["one", "two"]);

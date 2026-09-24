@@ -107,7 +107,10 @@ beforeEach(() => {
     store.set(id, [...(store.get(id) ?? []), message]);
     return message;
   });
-  clearChatMessages.mockImplementation(async (id: string) => { store.set(id, []); });
+  clearChatMessages.mockImplementation(async (id: string) => {
+    store.set(id, []);
+    return { ...chat(id), title: "New Chat", preview: "Ask AI anything…" };
+  });
   deleteChat.mockImplementation(async (id: string) => { store.delete(id); });
   updateChat.mockResolvedValue(undefined);
   setInitialChatTitle.mockResolvedValue(true);

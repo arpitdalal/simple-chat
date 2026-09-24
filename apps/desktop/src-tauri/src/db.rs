@@ -56,6 +56,22 @@ UPDATE messages SET image_count = json_array_length(images) WHERE images <> '[]'
 "#,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "reserve_chat_sidebar_index",
+            sql: "SELECT 1;",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "normalize_chat_search",
+            sql: r#"
+ALTER TABLE chats ADD COLUMN title_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN preview_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN search_normalized INTEGER NOT NULL DEFAULT 0;
+"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -90,5 +106,24 @@ mod tests {
             .sql
             .contains("ALTER TABLE messages ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0"));
         assert!(m.sql.contains("json_array_length(images)"));
+    }
+
+    #[test]
+    fn sidebar_index_is_deferred_until_legacy_bridge_completes() {
+        let m = &migrations()[3];
+        assert_eq!(m.version, 4);
+        assert_eq!(m.description, "reserve_chat_sidebar_index");
+        assert!(!m.sql.contains("pinned"));
+    }
+
+    #[test]
+    fn search_migration_adds_normalized_fields() {
+        let m = &migrations()[4];
+        assert_eq!(m.version, 5);
+        assert!(m.sql.contains("title_search TEXT NOT NULL DEFAULT ''"));
+        assert!(m.sql.contains("preview_search TEXT NOT NULL DEFAULT ''"));
+        assert!(m
+            .sql
+            .contains("search_normalized INTEGER NOT NULL DEFAULT 0"));
     }
 }

@@ -81,7 +81,7 @@ test.describe("Simple Chat UX", () => {
     await page.goto("/");
     await expect(page.getByPlaceholder("Search Chats…")).toBeVisible();
     await page.getByPlaceholder("Search Chats…").fill("zzzz-no-match");
-    await expect(page.getByText("No chats yet")).toBeVisible();
+    await expect(page.getByText("No matching chats")).toBeVisible();
     await page.getByPlaceholder("Search Chats…").fill("");
     await expect(page.getByText("New Chat").first()).toBeVisible();
   });

@@ -114,7 +114,24 @@ vi.mock("./lib/db", () => ({
     hotkey: "CommandOrControl+Shift+Space",
     autostart_prompted: true,
   })),
-  listChats: vi.fn(async () => chatsStore.get()),
+  chatMatchesQuery: (chat: Chat, query: string) => {
+    const normalized = query.trim().toLowerCase();
+    return !normalized ||
+      chat.title.toLowerCase().includes(normalized) ||
+      chat.preview.toLowerCase().includes(normalized);
+  },
+  listReusableChats: vi.fn(async () =>
+    chatsStore.get().filter((chat) => chat.title === "New Chat"),
+  ),
+  listChatPage: vi.fn(async ({ query = "" } = {}) => {
+    const normalized = query.trim().toLowerCase();
+    const chats = chatsStore.get().filter((chat) =>
+      !normalized ||
+      chat.title.toLowerCase().includes(normalized) ||
+      chat.preview.toLowerCase().includes(normalized),
+    );
+    return { chats, cursor: null, hasMore: false };
+  }),
   getChat: vi.fn(async (id: string) =>
     chatsStore.get().find((c) => c.id === id) ?? null,
   ),
@@ -136,7 +153,15 @@ vi.mock("./lib/db", () => ({
   deleteChat: vi.fn(async (id: string) => {
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
-  updateChat: vi.fn(),
+  updateChat: vi.fn(async (id: string, patch: Partial<Chat>) => {
+    const current = chatsStore.get().find((chat) => chat.id === id);
+    if (!current) throw new Error("Chat not found");
+    const updated = { ...current, ...patch };
+    chatsStore.set(
+      chatsStore.get().map((chat) => chat.id === id ? updated : chat),
+    );
+    return updated;
+  }),
   setInitialChatTitle: vi.fn(async () => true),
   refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: vi.fn(async () => true),
@@ -144,7 +169,11 @@ vi.mock("./lib/db", () => ({
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),
   listOlderMessages: vi.fn(async () => []),
-  clearChatMessages: vi.fn(),
+  clearChatMessages: vi.fn(async (id: string) => {
+    const current = chatsStore.get().find((chat) => chat.id === id);
+    if (!current) throw new Error("Chat not found");
+    return { ...current, title: "New Chat", preview: "Ask AI anything…" };
+  }),
   addMessage: vi.fn(),
   branchChat: vi.fn(),
 }));
@@ -164,7 +193,20 @@ describe("App UX", () => {
       ready: ["google"],
       ok: true,
     });
-    const { messageCount, setSetting } = await import("./lib/db");
+    const { listChatPage, messageCount, setSetting } = await import("./lib/db");
+    vi.mocked(listChatPage).mockReset();
+    vi.mocked(listChatPage).mockImplementation(async ({ query = "" } = {}) => {
+      const normalized = query.trim().toLowerCase();
+      return {
+        chats: chatsStore.get().filter((chat) =>
+          !normalized ||
+          chat.title.toLowerCase().includes(normalized) ||
+          chat.preview.toLowerCase().includes(normalized),
+        ),
+        cursor: null,
+        hasMore: false,
+      };
+    });
     vi.mocked(messageCount).mockReset();
     vi.mocked(messageCount).mockResolvedValue(0);
     vi.mocked(setSetting).mockReset();
@@ -212,6 +254,183 @@ describe("App UX", () => {
     expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument();
     expect(screen.getByText("Simple Chat")).toBeInTheDocument();
     expect(screen.queryByText(/^Web$/)).toBeNull();
+  });
+
+  it("loads the next chat page with the previous cursor", async () => {
+    const { listChatPage } = await import("./lib/db");
+    const first: Chat = {
+      id: "first",
+      title: "First",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "first",
+      pinned: 0,
+    };
+    const second: Chat = {
+      ...first,
+      id: "second",
+      title: "Second",
+      created_at: 1,
+      updated_at: 1,
+      preview: "second",
+    };
+    chatsStore.set([first, second]);
+    openOrCreateChat.mockResolvedValueOnce(first);
+    vi.mocked(listChatPage)
+      .mockResolvedValueOnce({
+        chats: [first],
+        cursor: {
+          id: first.id,
+          updated_at: first.updated_at,
+          pinned: first.pinned,
+        },
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({ chats: [second], cursor: null, hasMore: false });
+
+    render(<App />);
+
+    await waitFor(() => expect(listChatPage).toHaveBeenCalledTimes(2));
+    expect(listChatPage.mock.calls[1][0]).toEqual({
+      limit: 100,
+      cursor: {
+        id: first.id,
+        updated_at: first.updated_at,
+        pinned: first.pinned,
+      },
+      query: "",
+    });
+    expect(screen.getByText("Second")).toBeInTheDocument();
+  });
+
+  it("does not restore a deleted chat from an in-flight page", async () => {
+    const user = userEvent.setup();
+    const { listChatPage } = await import("./lib/db");
+    const first: Chat = {
+      id: "first",
+      title: "First",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "first",
+      pinned: 0,
+    };
+    const second: Chat = {
+      ...first,
+      id: "second",
+      title: "Second",
+      created_at: 1,
+      updated_at: 1,
+      preview: "second",
+    };
+    let resolveSecondPage:
+      | ((page: { chats: Chat[]; cursor: null; hasMore: boolean }) => void)
+      | undefined;
+    const secondPage = new Promise<{
+      chats: Chat[];
+      cursor: null;
+      hasMore: boolean;
+    }>((resolve) => {
+      resolveSecondPage = resolve;
+    });
+    chatsStore.set([first, second]);
+    openOrCreateChat.mockResolvedValueOnce(first);
+    vi.mocked(listChatPage)
+      .mockResolvedValueOnce({
+        chats: [first],
+        cursor: {
+          id: first.id,
+          updated_at: first.updated_at,
+          pinned: first.pinned,
+        },
+        hasMore: true,
+      })
+      .mockImplementationOnce(() => secondPage)
+      .mockResolvedValueOnce({ chats: [second], cursor: null, hasMore: false });
+
+    render(<App />);
+    await waitFor(() => expect(listChatPage).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+    await waitFor(() => expect(listChatPage).toHaveBeenCalledTimes(3));
+    resolveSecondPage?.({
+      chats: [first, second],
+      cursor: null,
+      hasMore: false,
+    });
+
+    await waitFor(() => expect(screen.queryByText("First")).toBeNull());
+    expect(document.querySelector(".chat-item")?.textContent).toContain("Second");
+  });
+
+  it("clears a filter when deleting its final matching chat", async () => {
+    const user = userEvent.setup();
+    const matching: Chat = {
+      id: "matching",
+      title: "Needle",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "matching",
+      pinned: 0,
+    };
+    const remaining: Chat = {
+      ...matching,
+      id: "remaining",
+      title: "Other",
+      created_at: 1,
+      updated_at: 1,
+      preview: "remaining",
+    };
+    chatsStore.set([matching, remaining]);
+    openOrCreateChat.mockResolvedValueOnce(matching);
+
+    render(<App />);
+    const search = await screen.findByPlaceholderText("Search Chats…");
+    await user.type(search, "needle");
+    await waitFor(() => expect(screen.queryByText("Other")).toBeNull());
+    await user.click(await screen.findByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(document.querySelector(".chat-item")?.textContent).toContain("Other");
+  });
+
+  it("clears a filter after deleting the final inactive match", async () => {
+    const user = userEvent.setup();
+    const matching: Chat = {
+      id: "matching",
+      title: "Needle",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "matching",
+      pinned: 0,
+    };
+    const remaining: Chat = {
+      ...matching,
+      id: "remaining",
+      title: "Other",
+      created_at: 1,
+      updated_at: 1,
+      preview: "remaining",
+    };
+    chatsStore.set([matching, remaining]);
+    openOrCreateChat.mockResolvedValueOnce(remaining);
+
+    render(<App />);
+    const search = await screen.findByPlaceholderText("Search Chats…");
+    await user.type(search, "needle");
+    await user.click(await screen.findByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(document.querySelector(".chat-item")?.textContent).toContain("Other");
   });
 
   it("disables composer when no API keys are present", async () => {

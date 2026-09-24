@@ -6,10 +6,42 @@ test.describe("Simple Chat UX", () => {
   }) => {
     await page.goto("/");
 
+    await page.evaluate(() => {
+      document.documentElement.style.background = "white";
+      document.body.style.background = "white";
+    });
     await expect(page.locator(".app")).toHaveCSS(
       "background-color",
       "rgba(28, 28, 30, 0.9)",
     );
+    const textContrast = await page.locator(".app").evaluate((element) => {
+      const app = getComputedStyle(element);
+      const text = getComputedStyle(
+        element.querySelector<HTMLElement>(".empty-state h1")!,
+      );
+      const parse = (value: string) =>
+        value.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+      const alpha = Number(app.backgroundColor.match(/[\d.]+/g)![3] ?? 1);
+      const background = parse(app.backgroundColor).map(
+        (channel) => channel * alpha + 255 * (1 - alpha),
+      );
+      const luminance = (rgb: number[]) => {
+        const linear = rgb.map((channel) => {
+          const value = channel / 255;
+          return value <= 0.03928
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+      };
+      const foreground = luminance(parse(text.color));
+      const backdrop = luminance(background);
+      return (
+        (Math.max(foreground, backdrop) + 0.05) /
+        (Math.min(foreground, backdrop) + 0.05)
+      );
+    });
+    expect(textContrast).toBeGreaterThan(4.5);
     await expect(page.getByText("Simple Chat", { exact: true })).toBeVisible();
     await expect(page.getByText("Ask Anything")).toBeVisible();
     await expect(page.getByPlaceholder("Ask AI anything…")).toBeFocused();

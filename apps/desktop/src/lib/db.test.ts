@@ -42,8 +42,7 @@ describe("db (memory sql integration)", () => {
   });
 
   it("lazily pages through every chat with stable cursors", async () => {
-    let now = 1;
-    vi.spyOn(Date, "now").mockImplementation(() => now++);
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
     try {
       for (let i = 0; i < 205; i++) {
         await createChat("google", "gemini-3.8-flash");
@@ -107,11 +106,12 @@ describe("db (memory sql integration)", () => {
     for (let i = 0; i < 205; i++) {
       created.push(await createChat("google", "gemini-3.8-flash"));
     }
-    for (const chat of created.slice(1)) {
+    for (const chat of created.slice(2)) {
       await addMessage(chat.id, "user", "started", 1);
     }
+    await updateChat(created[1].id, { preview: "not a placeholder" });
     const reusable = await listReusableChats();
-    expect(reusable.map((chat) => chat.id)).toContain(created[0].id);
+    expect(reusable.map((chat) => chat.id)).toEqual([created[0].id]);
   });
 
   it("searches chat metadata beyond the first page", async () => {
@@ -205,8 +205,11 @@ describe("db (memory sql integration)", () => {
     await addMessage(source.id, "user", "three", 30);
     vi.spyOn(Date, "now").mockRestore();
 
+    vi.spyOn(Date, "now").mockReturnValue(999);
     const branched = await branchChat(source.id, b.id);
+    vi.spyOn(Date, "now").mockRestore();
     expect(branched.id).not.toBe(source.id);
+    expect(branched.updated_at).toBe(999);
     expect(branched.title).toMatch(/^Branch · Parent/);
     const msgs = await listMessages(branched.id);
     expect(msgs.map((m) => m.content)).toEqual(["one", "two"]);

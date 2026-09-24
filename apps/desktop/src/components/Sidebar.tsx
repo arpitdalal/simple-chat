@@ -82,7 +82,7 @@ export function Sidebar({
   const [renameValue, setRenameValue] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const anchorKeyRef = useRef<string | null>(null);
+  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -122,17 +122,24 @@ export function Sidebar({
     getItemKey,
     useFlushSync: false,
     onChange: (instance) => {
-      const anchor = instance.getVirtualItems()[0];
-      anchorKeyRef.current = anchor ? String(anchor.key) : null;
+      const scrollOffset = scrollRef.current?.scrollTop ?? 0;
+      const items = instance.getVirtualItems();
+      const anchor = items.find((item) => item.end > scrollOffset) ?? items[0];
+      anchorRef.current = anchor
+        ? { key: String(anchor.key), offset: anchor.start - scrollOffset }
+        : null;
     },
   });
 
   useLayoutEffect(() => {
-    const anchorKey = anchorKeyRef.current;
-    if (!anchorKey) return;
-    const anchorIndex = rows.findIndex((row) => row.key === anchorKey);
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const anchorIndex = rows.findIndex((row) => row.key === anchor.key);
     if (anchorIndex >= 0) {
       virtualizer.scrollToIndex(anchorIndex, { align: "start" });
+      if (anchor.offset !== 0) {
+        virtualizer.scrollBy(anchor.offset, { align: "start" });
+      }
     }
   }, [rows, virtualizer]);
 

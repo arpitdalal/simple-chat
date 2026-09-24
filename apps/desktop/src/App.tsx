@@ -53,7 +53,7 @@ function compareChats(a: Chat, b: Chat): number {
     (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 }
 
-function useChatList(ready: boolean) {
+function useChatList(ready: boolean, retainedChat: Chat | null) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [query, setQuery] = useState("");
   const [hasMore, setHasMore] = useState(false);
@@ -65,6 +65,12 @@ function useChatList(ready: boolean) {
   const hasMoreRef = useRef(false);
   const loadingRef = useRef(false);
   const lastLoadedQueryRef = useRef<string | null>(null);
+  const retainedChatRef = useRef<Chat | null>(retainedChat);
+  const removedIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    retainedChatRef.current = retainedChat;
+  }, [retainedChat]);
 
   const refresh = useCallback(async (search = queryRef.current) => {
     const generation = ++generationRef.current;
@@ -77,7 +83,20 @@ function useChatList(ready: boolean) {
       cursorRef.current = page.cursor;
       hasMoreRef.current = page.hasMore;
       lastLoadedQueryRef.current = search;
-      setChats(page.chats);
+      const retained = retainedChatRef.current;
+      const next = new Map(
+        page.chats
+          .filter((chat) => !removedIdsRef.current.has(chat.id))
+          .map((chat) => [chat.id, chat]),
+      );
+      if (
+        retained &&
+        chatMatchesQuery(retained, search) &&
+        !removedIdsRef.current.has(retained.id)
+      ) {
+        next.set(retained.id, retained);
+      }
+      setChats([...next.values()].sort(compareChats));
       setHasMore(page.hasMore);
     } catch (error) {
       if (generation !== generationRef.current) return;
@@ -111,7 +130,11 @@ function useChatList(ready: boolean) {
       hasMoreRef.current = page.hasMore;
       setChats((current) => {
         const merged = new Map(current.map((chat) => [chat.id, chat]));
-        for (const chat of page.chats) merged.set(chat.id, chat);
+        for (const chat of page.chats) {
+          if (!merged.has(chat.id) && !removedIdsRef.current.has(chat.id)) {
+            merged.set(chat.id, chat);
+          }
+        }
         return [...merged.values()].sort(compareChats);
       });
       setHasMore(page.hasMore);
@@ -127,6 +150,7 @@ function useChatList(ready: boolean) {
   }, [refresh]);
 
   const upsert = useCallback((chat: Chat) => {
+    removedIdsRef.current.delete(chat.id);
     setChats((current) => {
       const remaining = current.filter((item) => item.id !== chat.id);
       return chatMatchesQuery(chat, queryRef.current)
@@ -136,6 +160,7 @@ function useChatList(ready: boolean) {
   }, []);
 
   const remove = useCallback((id: string) => {
+    removedIdsRef.current.add(id);
     setChats((current) => current.filter((chat) => chat.id !== id));
   }, []);
 
@@ -214,7 +239,7 @@ function App() {
     upsert: upsertChat,
     remove: removeChat,
     changeQuery,
-  } = useChatList(ready);
+  } = useChatList(ready, active);
 
   useEffect(() => activeSession.retain(), [activeSession]);
 
@@ -734,6 +759,21 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [chats, showSettings, newChat, selectChat, openSettings]);
 
+  async function updateChatInList(
+    id: string,
+    patch: Partial<Pick<Chat, "title" | "pinned" | "provider" | "model_id">>,
+  ) {
+    try {
+      await updateChat(id, patch);
+      const updated = await getChat(id);
+      if (!updated) throw new Error("Chat not found after update");
+      upsertChat(updated);
+      if (activeIdRef.current === id) setActiveChat(updated);
+    } catch (error) {
+      notify((error as Error).message || String(error), "err");
+    }
+  }
+
   async function handleDelete(id: string) {
     cancelNav();
     try {
@@ -744,13 +784,21 @@ function App() {
     }
     removeChat(id);
     if (activeId === id) {
-      const next = (await listChatPage({ limit: 1, query })).chats[0];
-      if (next) {
-        setActiveIdNow(next.id);
-        setActiveChat(next);
-        upsertChat(next);
-      } else if (settings) {
-        await newChat();
+      try {
+        const next = (await listChatPage({ limit: 1, query })).chats[0];
+        if (next) {
+          setActiveIdNow(next.id);
+          setActiveChat(next);
+          upsertChat(next);
+        } else {
+          setActiveIdNow(null);
+          setActiveChat(null);
+          if (settings) await newChat();
+        }
+      } catch (error) {
+        setActiveIdNow(null);
+        setActiveChat(null);
+        notify((error as Error).message || String(error), "err");
       }
     }
   }
@@ -763,9 +811,22 @@ function App() {
       notify((err as Error).message || String(err), "err");
       return;
     }
-    const updated = await getChat(id);
-    if (updated) upsertChat(updated);
-    if (activeId === id) setActiveChat(updated);
+    try {
+      const updated = await getChat(id);
+      if (!updated) throw new Error("Chat not found after clear");
+      upsertChat(updated);
+      if (activeId === id) setActiveChat(updated);
+    } catch (error) {
+      notify((error as Error).message || String(error), "err");
+      try {
+        await refreshChats();
+      } catch (refreshError) {
+        notify(
+          (refreshError as Error).message || String(refreshError),
+          "err",
+        );
+      }
+    }
     focusComposer();
   }
 
@@ -880,19 +941,10 @@ function App() {
             onOpenSettings={openSettings}
             settingsActive={showSettings}
             onRename={(id, title) => {
-              void updateChat(id, { title }).then(async () => {
-                const updated = await getChat(id);
-                if (updated) upsertChat(updated);
-              });
-              if (activeId === id) {
-                setActive((chat) => (chat ? { ...chat, title } : chat));
-              }
+              void updateChatInList(id, { title });
             }}
             onPin={(id, pinned) => {
-              void updateChat(id, { pinned: pinned ? 1 : 0 }).then(async () => {
-                const updated = await getChat(id);
-                if (updated) upsertChat(updated);
-              });
+              void updateChatInList(id, { pinned: pinned ? 1 : 0 });
             }}
             onClear={(id) => void handleClear(id)}
             onDelete={(id) => void handleDelete(id)}
@@ -929,11 +981,15 @@ function App() {
             chat={active}
             session={activeSession}
             onChatUpdated={() => {
-              const id = activeIdRef.current;
-              if (!id) return;
-              void getChat(id).then((chat) => {
-                if (chat) upsertChat(chat);
-              });
+              const chatId = active?.id;
+              if (!chatId) return;
+              void getChat(chatId)
+                .then((chat) => {
+                  if (chat) upsertChat(chat);
+                })
+                .catch((error) => {
+                  notify((error as Error).message || String(error), "err");
+                });
             }}
             onChatMeta={(updated) => {
               if (activeIdRef.current === updated.id) setActive(updated);

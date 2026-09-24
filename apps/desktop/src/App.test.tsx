@@ -293,6 +293,67 @@ describe("App UX", () => {
     expect(screen.getByText("Second")).toBeInTheDocument();
   });
 
+  it("does not restore a deleted chat from an in-flight page", async () => {
+    const user = userEvent.setup();
+    const { listChatPage } = await import("./lib/db");
+    const first: Chat = {
+      id: "first",
+      title: "First",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "first",
+      pinned: 0,
+    };
+    const second: Chat = {
+      ...first,
+      id: "second",
+      title: "Second",
+      created_at: 1,
+      updated_at: 1,
+      preview: "second",
+    };
+    let resolveSecondPage:
+      | ((page: { chats: Chat[]; cursor: null; hasMore: boolean }) => void)
+      | undefined;
+    const secondPage = new Promise<{
+      chats: Chat[];
+      cursor: null;
+      hasMore: boolean;
+    }>((resolve) => {
+      resolveSecondPage = resolve;
+    });
+    chatsStore.set([first, second]);
+    openOrCreateChat.mockResolvedValueOnce(first);
+    vi.mocked(listChatPage)
+      .mockResolvedValueOnce({
+        chats: [first],
+        cursor: {
+          id: first.id,
+          updated_at: first.updated_at,
+          pinned: first.pinned,
+        },
+        hasMore: true,
+      })
+      .mockImplementationOnce(() => secondPage)
+      .mockResolvedValueOnce({ chats: [second], cursor: null, hasMore: false });
+
+    render(<App />);
+    await waitFor(() => expect(listChatPage).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+    await waitFor(() => expect(listChatPage).toHaveBeenCalledTimes(3));
+    resolveSecondPage?.({
+      chats: [first, second],
+      cursor: null,
+      hasMore: false,
+    });
+
+    await waitFor(() => expect(screen.queryByText("First")).toBeNull());
+    expect(document.querySelector(".chat-item")?.textContent).toContain("Second");
+  });
+
   it("disables composer when no API keys are present", async () => {
     const { listReadyProviders } = await import("./lib/keys");
     vi.mocked(listReadyProviders).mockResolvedValue({ ready: [], ok: true });

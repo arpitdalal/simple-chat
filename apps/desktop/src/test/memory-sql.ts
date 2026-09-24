@@ -263,7 +263,11 @@ class MemoryDatabase {
         messages.map((message) => message.chat_id),
       );
       return [...chats]
-        .filter((chat) => chat.title === "New Chat" && !chatIds.has(chat.id))
+        .filter((chat) =>
+          chat.title === "New Chat" &&
+          (!chat.preview.trim() || chat.preview === "Ask AI anything…") &&
+          !chatIds.has(chat.id),
+        )
         .sort((a, b) =>
           b.pinned - a.pinned ||
           b.updated_at - a.updated_at ||

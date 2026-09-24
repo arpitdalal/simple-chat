@@ -11,11 +11,17 @@ export type Chat = {
   pinned: number;
 };
 
+function asciiLower(value: string): string {
+  return value.replace(/[A-Z]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 32),
+  );
+}
+
 export function chatMatchesQuery(chat: Pick<Chat, "title" | "preview">, query: string): boolean {
-  const normalized = query.trim().toLowerCase();
+  const normalized = asciiLower(query.trim());
   return !normalized ||
-    chat.title.toLowerCase().includes(normalized) ||
-    chat.preview.toLowerCase().includes(normalized);
+    asciiLower(chat.title).includes(normalized) ||
+    asciiLower(chat.preview).includes(normalized);
 }
 
 export type Message = {
@@ -275,6 +281,7 @@ export async function listReusableChats(limit = 20): Promise<Chat[]> {
   const rows = await db.select<Chat[]>(
     `SELECT chats.* FROM chats
      WHERE chats.title = 'New Chat'
+       AND (trim(chats.preview) = '' OR chats.preview = 'Ask AI anything…')
        AND NOT EXISTS (
          SELECT 1 FROM messages WHERE messages.chat_id = chats.id
        )
@@ -557,7 +564,7 @@ export async function branchChat(
       [branched.id, sourceChatId, throughMessageId],
     );
     if (copied.rowsAffected === 0) throw new Error("Message not found");
-    return { ...branched, title, preview };
+    return (await getChat(branched.id)) ?? { ...branched, title, preview };
   } catch (error) {
     try {
       const db = await getDb();

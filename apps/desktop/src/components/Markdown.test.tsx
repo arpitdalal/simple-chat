@@ -67,6 +67,18 @@ describe("Markdown", () => {
     expect(openUrl).toHaveBeenCalledWith("mailto:hi@example.com");
   });
 
+  it("leaves right-click to the context menu", () => {
+    render(<Markdown content={"see [docs](https://example.com/a)"} />);
+    const event = new MouseEvent("auxclick", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+    });
+    screen.getByRole("link", { name: "docs" }).dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
   it("opens middle-clicked https links without navigating the webview", () => {
     render(<Markdown content={"see [docs](https://example.com/a)"} />);
     const event = new MouseEvent("auxclick", {

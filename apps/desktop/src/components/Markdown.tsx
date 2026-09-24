@@ -39,8 +39,13 @@ function MarkdownLink({
     });
   }
 
+  function onAuxClick(event: MouseEvent<HTMLAnchorElement>) {
+    if (event.button !== 1) return;
+    activate(event);
+  }
+
   return (
-    <a {...props} href={href} onClick={activate} onAuxClick={activate}>
+    <a {...props} href={href} onClick={activate} onAuxClick={onAuxClick}>
       {children}
     </a>
   );

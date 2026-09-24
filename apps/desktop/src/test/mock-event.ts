@@ -1,14 +1,23 @@
-const listeners = new Set<() => void>();
+const listeners = new Map<string, Set<() => void>>();
 
 export async function listen(
-  _event: string,
+  event: string,
   handler: () => void,
 ): Promise<() => void> {
-  listeners.add(handler);
-  return () => listeners.delete(handler);
+  const handlers = listeners.get(event) ?? new Set<() => void>();
+  handlers.add(handler);
+  listeners.set(event, handlers);
+  return () => handlers.delete(handler);
 }
 
-/** E2E / tests: fire the hide release hook. */
 export function emitMainWindowHiddenForTests() {
-  for (const fn of listeners) fn();
+  for (const fn of listeners.get("main-window-hidden") ?? []) fn();
+}
+
+export function emitMainWindowShownForTests() {
+  for (const fn of listeners.get("main-window-shown") ?? []) fn();
+}
+
+export function mainWindowShownListenerCountForTests() {
+  return listeners.get("main-window-shown")?.size ?? 0;
 }

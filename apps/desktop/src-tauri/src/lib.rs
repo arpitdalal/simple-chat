@@ -30,6 +30,7 @@ fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
+        let _ = window.emit("main-window-shown", ());
     }
 }
 
@@ -86,6 +87,11 @@ fn hide_main_window_cmd(app: AppHandle) {
 }
 
 #[tauri::command]
+fn show_main_window_cmd(app: AppHandle) {
+    show_main_window(&app);
+}
+
+#[tauri::command]
 fn relaunch_visible(app: AppHandle) {
     // Child inherits this; Tauri restart handles AppImage / .app / lock teardown.
     std::env::set_var(VISIBLE_RELAUNCH_ENV, "1");
@@ -122,6 +128,7 @@ pub fn run() {
             keys::has_api_key,
             capture_previous_app,
             hide_main_window_cmd,
+            show_main_window_cmd,
             relaunch_visible,
         ]);
 

@@ -27,6 +27,7 @@ import { pickDefaultModel } from "./lib/models";
 import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
+import { onMainWindowHidden, onMainWindowShown } from "./lib/memory";
 import { createQueue, type Queue } from "./lib/queue";
 import {
   ChatSession,
@@ -210,6 +211,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
+  const readyRef = useRef(false);
+  const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<AvailableUpdate | null>(
@@ -635,6 +638,7 @@ function App() {
       await refreshChats();
       upsertChat(chat);
       if (cancelled) return;
+      readyRef.current = true;
       setReady(true);
       focusComposer();
       scheduleKeySync();
@@ -661,6 +665,7 @@ function App() {
     })();
     return () => {
       cancelled = true;
+      readyRef.current = false;
       navGenRef.current += 1;
       updateCheckGenRef.current += 1;
       autostartPromptGenRef.current += 1;
@@ -680,6 +685,63 @@ function App() {
     void setSetting("last_opened_at", Date.now());
     return () => { cancelled = true; };
   }, [activeId]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onMainWindowHidden(() => {
+      void setSetting("last_opened_at", Date.now()).catch((err) => {
+        console.error("resume timestamp failed", err);
+      });
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    const onShown = () => {
+      if (!readyRef.current) return;
+      showResumeChain.current = showResumeChain.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (cancelled) return;
+          try {
+            const s = await getSettings();
+            if (cancelled) return;
+            setSettings(s);
+            const chat = await openOrCreateChat(s);
+            if (cancelled) return;
+            await setSetting("last_opened_at", Date.now());
+            await setSetting("last_chat_id", chat.id);
+            if (cancelled) return;
+            setActiveIdNow(chat.id);
+            setActiveChat(chat);
+            await refreshChats();
+            upsertChat(chat);
+            if (cancelled) return;
+            focusComposer();
+          } catch (err) {
+            console.error("resume on show failed", err);
+            notify((err as Error).message || String(err), "err");
+          }
+        });
+    };
+    void onMainWindowShown(onShown).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [focusComposer, notify, refreshChats, setActiveIdNow, showResumeChain, upsertChat]);
 
   useEffect(() => {
     if (!showSettings) focusComposer();

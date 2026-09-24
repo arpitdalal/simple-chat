@@ -36,6 +36,8 @@ const openOrCreateChat = vi.hoisted(() =>
   }),
 );
 
+vi.mock("@tauri-apps/api/event", () => import("./test/mock-event"));
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setAlwaysOnTop: vi.fn(),
@@ -180,6 +182,11 @@ vi.mock("./lib/db", () => ({
 
 import App from "./App";
 import { applyHotkey } from "./lib/hotkey";
+import {
+  emitMainWindowHiddenForTests,
+  emitMainWindowShownForTests,
+  mainWindowShownListenerCountForTests,
+} from "./test/mock-event";
 
 describe("App UX", () => {
   beforeEach(async () => {
@@ -244,6 +251,59 @@ describe("App UX", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("starts a new chat when a hidden prior chat's resume window expires", async () => {
+    const { getSettings, openOrCreateChat, setSetting } = await import("./lib/db");
+    const prior: Chat = {
+      id: "prior",
+      title: "Previous chat",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 1,
+      updated_at: 1,
+      preview: "Previous message",
+      pinned: 0,
+    };
+    const fresh: Chat = {
+      ...prior,
+      id: "fresh",
+      title: "New Chat",
+      preview: "Ask AI anything…",
+      created_at: 2,
+      updated_at: 2,
+    };
+    chatsStore.set([prior]);
+    openOrCreateChat.mockResolvedValueOnce(prior).mockResolvedValueOnce(fresh);
+
+    render(<App />);
+    await waitFor(() => expect(openOrCreateChat).toHaveBeenCalledTimes(1));
+    expect(document.querySelector(".title-pill")).toHaveTextContent("Previous chat");
+    await waitFor(() => expect(mainWindowShownListenerCountForTests()).toBeGreaterThan(0));
+    vi.mocked(setSetting).mockClear();
+    emitMainWindowHiddenForTests();
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith("last_opened_at", expect.any(Number)),
+    );
+
+    vi.mocked(getSettings).mockImplementation(async () => ({
+      resume_minutes: 1,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now() - 61_000,
+      last_chat_id: prior.id,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: true,
+    }));
+    emitMainWindowShownForTests();
+
+    await waitFor(() => expect(openOrCreateChat).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(document.querySelector(".title-pill")).toHaveTextContent("New Chat"),
+    );
   });
 
   it("boots into empty Ask Anything state with composer", async () => {

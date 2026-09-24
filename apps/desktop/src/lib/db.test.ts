@@ -7,6 +7,7 @@ import {
   deleteChat,
   getChat,
   listChats,
+  listChatPage,
   listRecentMessages,
   addMessage,
   listOlderMessages,
@@ -37,6 +38,52 @@ describe("db (memory sql integration)", () => {
     const list = await listChats();
     expect(list.map((c) => c.id)).toContain(a.id);
     expect(await getChat(a.id)).toMatchObject({ id: a.id, provider: "google" });
+  });
+
+  it("lazily pages through every chat with stable cursors", async () => {
+    let now = 1;
+    vi.spyOn(Date, "now").mockImplementation(() => now++);
+    try {
+      for (let i = 0; i < 205; i++) {
+        await createChat("google", "gemini-3.8-flash");
+      }
+      const first = await listChatPage({ limit: 100 });
+      expect(first.chats).toHaveLength(100);
+      expect(first.hasMore).toBe(true);
+      expect(first.cursor).toEqual({
+        id: first.chats[99].id,
+        pinned: 0,
+        updated_at: first.chats[99].updated_at,
+      });
+
+      const second = await listChatPage({ limit: 100, cursor: first.cursor });
+      const third = await listChatPage({ limit: 100, cursor: second.cursor });
+      const ids = [...first.chats, ...second.chats, ...third.chats].map(
+        (chat) => chat.id,
+      );
+      expect(ids).toHaveLength(205);
+      expect(new Set(ids).size).toBe(205);
+      expect(third.hasMore).toBe(false);
+    } finally {
+      vi.spyOn(Date, "now").mockRestore();
+    }
+  });
+
+  it("searches chat metadata beyond the first page", async () => {
+    let now = 1;
+    vi.spyOn(Date, "now").mockImplementation(() => now++);
+    try {
+      const created: Awaited<ReturnType<typeof createChat>>[] = [];
+      for (let i = 0; i < 205; i++) {
+        created.push(await createChat("google", "gemini-3.8-flash"));
+      }
+      const target = created[0];
+      await updateChat(target.id, { title: "Archived needle" });
+      const page = await listChatPage({ query: "needle" });
+      expect(page.chats.map((chat) => chat.id)).toEqual([target.id]);
+    } finally {
+      vi.spyOn(Date, "now").mockRestore();
+    }
   });
 
   it("pages recent and older messages", async () => {

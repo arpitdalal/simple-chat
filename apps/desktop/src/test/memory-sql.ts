@@ -259,9 +259,37 @@ class MemoryDatabase {
     }
 
     if (q.includes("FROM chats") && q.includes("ORDER BY pinned")) {
+      const limit = Number(args[0] ?? 100);
+      const hasCursor = q.includes("(pinned, updated_at, id) <");
+      const cursorPinned = hasCursor ? Number(args[1]) : 1;
+      const cursorUpdatedAt = hasCursor ? Number(args[2]) : Infinity;
+      const cursorId = hasCursor ? String(args[3]) : "";
+      const query = q.includes("instr(lower(title)") ? String(args[args.length - 1]) : "";
       return [...chats]
-        .sort((a, b) => b.pinned - a.pinned || b.updated_at - a.updated_at)
-        .slice(0, 200) as unknown as T;
+        .filter((chat) => {
+          if (
+            query &&
+            ![chat.title, chat.preview].some((value) =>
+              value.toLowerCase().includes(query.toLowerCase()),
+            )
+          ) {
+            return false;
+          }
+          if (!hasCursor) return true;
+          return chat.pinned < cursorPinned ||
+            (chat.pinned === cursorPinned && chat.updated_at < cursorUpdatedAt) ||
+            (
+              chat.pinned === cursorPinned &&
+              chat.updated_at === cursorUpdatedAt &&
+              chat.id < cursorId
+            );
+        })
+        .sort((a, b) =>
+          b.pinned - a.pinned ||
+          b.updated_at - a.updated_at ||
+          b.id.localeCompare(a.id),
+        )
+        .slice(0, limit + 1) as unknown as T;
     }
 
     if (q.includes("COUNT(*)") && q.includes("FROM messages")) {

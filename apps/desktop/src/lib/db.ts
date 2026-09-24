@@ -205,12 +205,61 @@ export async function setDefaultModel(
   });
 }
 
-export async function listChats(): Promise<Chat[]> {
+export type ChatCursor = Pick<Chat, "id" | "updated_at" | "pinned">;
+export type ChatPage = {
+  chats: Chat[];
+  cursor: ChatCursor | null;
+  hasMore: boolean;
+};
+
+export async function listChatPage(
+  options: { limit?: number; cursor?: ChatCursor | null; query?: string } = {},
+): Promise<ChatPage> {
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 250));
+  const query = options.query?.trim() ?? "";
+  const args: unknown[] = [limit];
+  const conditions: string[] = [];
+
+  if (options.cursor) {
+    args.push(
+      options.cursor.pinned ? 1 : 0,
+      options.cursor.updated_at,
+      options.cursor.id,
+    );
+    conditions.push("(pinned, updated_at, id) < ($2, $3, $4)");
+  }
+  if (query) {
+    args.push(query);
+    conditions.push(
+      "instr(lower(title), lower($5)) > 0 OR instr(lower(preview), lower($5)) > 0",
+    );
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const db = await getDb();
   const rows = await db.select<Chat[]>(
-    "SELECT * FROM chats ORDER BY pinned DESC, updated_at DESC LIMIT 200",
+    `SELECT * FROM chats ${where}
+     ORDER BY pinned DESC, updated_at DESC, id DESC
+     LIMIT $1`,
+    args,
   );
-  return rows.map((c) => ({ ...c, pinned: c.pinned ? 1 : 0 }));
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit).map((chat) => ({
+    ...chat,
+    pinned: chat.pinned ? 1 : 0,
+  }));
+  const last = page[page.length - 1];
+  return {
+    chats: page,
+    cursor: hasMore && last
+      ? { id: last.id, updated_at: last.updated_at, pinned: last.pinned }
+      : null,
+    hasMore,
+  };
+}
+
+export async function listChats(): Promise<Chat[]> {
+  return (await listChatPage({ limit: 200 })).chats;
 }
 
 export async function getChat(id: string): Promise<Chat | null> {

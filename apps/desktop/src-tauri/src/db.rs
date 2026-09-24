@@ -56,6 +56,15 @@ UPDATE messages SET image_count = json_array_length(images) WHERE images <> '[]'
 "#,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "index_chat_sidebar_order",
+            sql: r#"
+CREATE INDEX IF NOT EXISTS idx_chats_sidebar_order
+ON chats(pinned DESC, updated_at DESC, id DESC);
+"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -90,5 +99,15 @@ mod tests {
             .sql
             .contains("ALTER TABLE messages ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0"));
         assert!(m.sql.contains("json_array_length(images)"));
+    }
+
+    #[test]
+    fn sidebar_migration_indexes_pagination_order() {
+        let m = &migrations()[3];
+        assert_eq!(m.version, 4);
+        assert!(m.sql.contains("idx_chats_sidebar_order"));
+        assert!(m
+            .sql
+            .contains("ON chats(pinned DESC, updated_at DESC, id DESC)"));
     }
 }

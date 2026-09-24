@@ -32,6 +32,10 @@ function props(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     onDelete: vi.fn(),
     onCopyChat: vi.fn(),
     showShortcuts: false,
+    hasMore: false,
+    loadingMore: false,
+    loadError: null,
+    onLoadMore: vi.fn(),
     chats: [chat({ id: "1", title: "Alpha", preview: "a" })],
     ...overrides,
   };

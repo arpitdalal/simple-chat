@@ -125,6 +125,15 @@ vi.mock("./lib/db", () => ({
     autostart_prompted: true,
   })),
   listChats: vi.fn(async () => chatsStore.get()),
+  listChatPage: vi.fn(async ({ query = "" } = {}) => {
+    const normalized = query.trim().toLowerCase();
+    const chats = chatsStore.get().filter((chat) =>
+      !normalized ||
+      chat.title.toLowerCase().includes(normalized) ||
+      chat.preview.toLowerCase().includes(normalized),
+    );
+    return { chats, cursor: null, hasMore: false };
+  }),
   getChat: vi.fn(async (id: string) =>
     chatsStore.get().find((c) => c.id === id) ?? null,
   ),

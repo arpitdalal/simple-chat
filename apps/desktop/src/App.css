@@ -173,6 +173,18 @@ select {
   min-height: 0;
 }
 
+.chat-virtual-inner {
+  position: relative;
+  width: 100%;
+}
+
+.chat-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
 .sidebar-settings-tab {
   flex-shrink: 0;
   width: 100%;

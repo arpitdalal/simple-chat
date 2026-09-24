@@ -778,6 +778,7 @@ function App() {
             if (isStale()) return;
             let chat: Chat | null = null;
             let priorChatId: string | null = null;
+            let settingsFlushFailed = false;
             try {
               if (typeof hiddenAt === "number" && hiddenAt > 0) {
                 const write = setSetting("last_opened_at", hiddenAt);
@@ -805,6 +806,7 @@ function App() {
               try {
                 await settingsFlushRef.current?.();
               } catch (err) {
+                settingsFlushFailed = true;
                 console.error("settings flush failed", err);
               }
               if (isStale()) return;
@@ -812,7 +814,7 @@ function App() {
               if (isStale()) return;
               setSettings(settingsSnapshot);
               priorChatId = settingsSnapshot.last_chat_id;
-              const resumeSettings = hiddenWriteFailed || resumePersistenceFailedRef.current
+              const resumeSettings = settingsFlushFailed || hiddenWriteFailed || resumePersistenceFailedRef.current
                 ? { ...settingsSnapshot, last_opened_at: 0 }
                 : settingsSnapshot;
               const resumedChat = await openOrCreateChat(resumeSettings);
@@ -850,7 +852,7 @@ function App() {
               upsertChat(resumedChat);
               focusComposer();
             } catch (err) {
-              if (chat && chat.id !== priorChatId) {
+              if (chat && chat.id !== priorChatId && activeIdRef.current !== chat.id) {
                 try {
                   await getChatSession(chat.id).delete();
                 } catch (cleanupError) {

@@ -129,7 +129,7 @@ function webpDimensions(bytes: Uint8Array): { width: number; height: number } | 
 }
 
 export function normalizeImageDataUrl(value: string): ImageData | null {
-  const match = /^data:image\/[a-z0-9.+-]+;base64,([a-z0-9+/]*={0,2})$/i.exec(value);
+  const match = /^data:(?:image\/[a-z0-9.+-]+|application\/octet-stream)?;base64,([a-z0-9+/]*={0,2})$/i.exec(value);
   if (!match) return null;
   let bytes: Uint8Array;
   try {
@@ -192,14 +192,25 @@ export function imageLimitError(images: string[]): string | null {
       : null);
 }
 
-function userContent(message: Pick<Message, "content" | "images">): UserContent {
-  const text = message.content === IMAGE_ATTACHMENT_PLACEHOLDER ? "" : message.content;
-  return message.images.length
-    ? [
-        { type: "text" as const, text: text || "Describe these images." },
-        ...message.images.map((image) => ({ type: "image" as const, image })),
-      ]
-    : text || "Earlier image attachment omitted due to context limits.";
+function userContent(
+  message: Pick<Message, "content" | "images" | "image_count">,
+): UserContent {
+  const hasImages = message.images.length > 0 || (message.image_count ?? 0) > 0;
+  const text = hasImages && message.content === IMAGE_ATTACHMENT_PLACEHOLDER
+    ? ""
+    : message.content;
+  if (message.images.length) {
+    return [
+      { type: "text" as const, text: text || "Describe these images." },
+      ...message.images.map((image) => ({ type: "image" as const, image })),
+    ];
+  }
+  if (hasImages) {
+    return [text, "Earlier image attachment omitted due to context limits."]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return text;
 }
 
 function boundProviderHistory(
@@ -213,6 +224,11 @@ function boundProviderHistory(
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
     const images = message.images.length ? message.images : (storedImages.get(message.id) ?? []);
+    const omittedImages = (message.image_count ?? 0) > 0 && images.length === 0;
+    if (omittedImages) {
+      kept.unshift({ ...message, images });
+      break;
+    }
     const messageTextChars = message.content.length;
     const messageImageChars = imageDataUrlChars(images);
     const fits =
@@ -220,12 +236,20 @@ function boundProviderHistory(
       (textChars + messageTextChars <= MAX_HISTORY_TEXT_CHARS &&
         imageChars + messageImageChars <= MAX_HISTORY_IMAGE_CHARS &&
         textChars + messageTextChars + imageChars + messageImageChars <= MAX_HISTORY_TOTAL_CHARS);
-    if (!fits) continue;
+    if (!fits) break;
     kept.unshift({ ...message, images });
     textChars += messageTextChars;
     imageChars += messageImageChars;
   }
   return kept;
+}
+
+function persistedMessageMetadata(message: Message): Message {
+  return {
+    ...message,
+    images: [],
+    image_count: message.image_count ?? message.images.length,
+  };
 }
 
 const sessions = new Map<string, ChatSession>();
@@ -413,7 +437,8 @@ export class ChatSession {
       const storedText = turn.text || (turn.images?.length ? IMAGE_ATTACHMENT_PLACEHOLDER : "");
       const user = await addMessage(this.id, "user", storedText, Date.now(), turn.images);
       persisted = true;
-      this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? user : m) });
+      const userMetadata = persistedMessageMetadata(user);
+      this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? userMetadata : m) });
       this.updatePreview(callbacks);
       if (live.title === "New Chat" && turn.text) {
         const provisional = turn.text.slice(0, 48) + (turn.text.length > 48 ? "…" : "");

@@ -825,6 +825,7 @@ describe("ChatView", () => {
       Object.defineProperty(input, "files", { value: [file], configurable: true });
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    loadMessageImage.mockResolvedValueOnce(image);
     await user.keyboard("{Enter}");
 
     const sentImage = await screen.findByAltText("Attached image 1");

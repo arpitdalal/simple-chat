@@ -39,7 +39,13 @@ vi.mock("./db", () => ({
   messageCount: (...args: unknown[]) => messageCount(...args),
 }));
 
-import { chatCanBeDiscarded, getChatSession, resetChatSessions, sessionHasWork } from "./chat-runtime";
+import {
+  chatCanBeDiscarded,
+  getChatSession,
+  normalizeImageDataUrl,
+  resetChatSessions,
+  sessionHasWork,
+} from "./chat-runtime";
 
 const chat = (id: string): Chat => ({
   id, title: "Thread", provider: "google", model_id: "gemini-3.8-flash",
@@ -57,11 +63,19 @@ beforeEach(() => {
   clock = 0;
   getChat.mockImplementation(async (id: string) => chat(id));
   listRecentMessages.mockImplementation(async (id: string, limit: number) =>
-    (store.get(id) ?? []).slice(-limit).map((message) => ({ ...message, images: [] })),
+    (store.get(id) ?? []).slice(-limit).map((message) => ({
+      ...message,
+      images: [],
+      image_count: message.image_count ?? message.images.length,
+    })),
   );
   listOlderMessages.mockResolvedValue([]);
   listMessages.mockImplementation(async (id: string) =>
-    (store.get(id) ?? []).map((message) => ({ ...message, images: [] })),
+    (store.get(id) ?? []).map((message) => ({
+      ...message,
+      images: [],
+      image_count: message.image_count ?? message.images.length,
+    })),
   );
   loadMessageImages.mockImplementation(async (
     id: string,
@@ -99,6 +113,22 @@ beforeEach(() => {
 });
 
 describe("ChatSession", () => {
+  it("normalizes generic base64 image data URLs from file pickers", () => {
+    expect(normalizeImageDataUrl(
+      `data:application/octet-stream;base64,${pngImage.split(",")[1]}`,
+    )).toMatchObject({ image: pngImage, width: 1, height: 1 });
+  });
+
+  it("preserves literal attachment sentinel text without images", async () => {
+    const session = getChatSession("a");
+    session.send(chat("a"), "[Image attachment]", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: "[Image attachment]",
+    }]);
+  });
+
   it("does not reload older history after the window hides", async () => {
     const session = getChatSession("a");
     const unsubscribe = session.subscribe(() => {});
@@ -175,7 +205,10 @@ describe("ChatSession", () => {
       [image],
     );
     expect(store.get("a")?.[0].images).toEqual([image]);
-    expect(session.getSnapshot().messages[0].images).toEqual([image]);
+    expect(session.getSnapshot().messages[0]).toMatchObject({
+      images: [],
+      image_count: 1,
+    });
     expect(streamChat.mock.calls[0][0].messages.at(-1)).toEqual({
       role: "user",
       content: [
@@ -203,7 +236,7 @@ describe("ChatSession", () => {
       id: `u${index}`,
       chat_id: "a",
       role: "user" as const,
-      content: "",
+      content: index === 0 ? "compare this" : "",
       images: [pngImage],
       created_at: index,
     })));
@@ -220,8 +253,23 @@ describe("ChatSession", () => {
     expect(imageCount).toBe(20);
     expect(messages[0]).toEqual({
       role: "user",
-      content: "Earlier image attachment omitted due to context limits.",
+      content: "compare this\n\nEarlier image attachment omitted due to context limits.",
     });
+  });
+
+  it("keeps provider history as a contiguous suffix when a turn exceeds budget", async () => {
+    store.set("a", [
+      { id: "old", chat_id: "a", role: "user", content: "oldest", images: [], image_count: 0, created_at: 1 },
+      { id: "large", chat_id: "a", role: "assistant", content: "x".repeat(1_048_577), images: [], image_count: 0, created_at: 2 },
+      { id: "new", chat_id: "a", role: "user", content: "newest", images: [], image_count: 0, created_at: 3 },
+    ]);
+    const session = getChatSession("a");
+    session.send(chat("a"), "follow up", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(streamChat.mock.calls[0][0].messages).toEqual([
+      { role: "user", content: "newest" },
+      { role: "user", content: "follow up" },
+    ]);
   });
 
   it("includes persisted images when regenerating a response", async () => {

@@ -58,6 +58,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     setAlwaysOnTop: vi.fn(),
     startDragging: vi.fn(),
     onFocusChanged: vi.fn(async () => () => {}),
+    isVisible: vi.fn(async () => true),
   }),
 }));
 
@@ -112,6 +113,7 @@ vi.mock("./lib/db", () => ({
     autostart_prompted: true,
   })),
   setSetting: vi.fn(),
+  setResumeState: vi.fn(async () => {}),
   setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
     resume_minutes: 5,
     always_on_top: false,

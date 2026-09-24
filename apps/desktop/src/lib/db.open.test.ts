@@ -6,6 +6,7 @@ import {
   createChat,
   getSettings,
   openOrCreateChat,
+  setResumeState,
   setSetting,
   addMessage,
   type AppSettings,
@@ -81,6 +82,20 @@ describe("openOrCreateChat", () => {
       resume_minutes: 5,
     });
     expect(chat.id).not.toBe(prior.id);
+  });
+});
+
+describe("resume state", () => {
+  beforeEach(() => resetMemoryDb());
+
+  it("persists the timestamp and chat together", async () => {
+    await setResumeState(1234, "chat-1");
+    await expect(getSettings()).resolves.toEqual(
+      expect.objectContaining({
+        last_opened_at: 1234,
+        last_chat_id: "chat-1",
+      }),
+    );
   });
 });
 

@@ -440,8 +440,6 @@ export async function toggleMainWindow() {
       await hideMainWindow();
     } else {
       await positionMainWindowForShow(win);
-      // Recapture immediately before steal — frontmost may have changed while centering.
-      await invoke("capture_previous_app");
       await invoke("show_main_window_cmd");
     }
   };

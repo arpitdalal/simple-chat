@@ -16,6 +16,7 @@ import {
   messageCount,
   openOrCreateChat,
   setDefaultModel,
+  setResumeState,
   setSetting,
   updateChat,
   type AppSettings,
@@ -213,6 +214,8 @@ function App() {
   const [ready, setReady] = useState(false);
   const readyRef = useRef(false);
   const showResumeGenRef = useRef(0);
+  const pendingShowRef = useRef(false);
+  const resumeShowRef = useRef<(() => void) | null>(null);
   const lastHiddenWriteRef = useRef<Promise<unknown> | null>(null);
   const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const [composerFocus, setComposerFocus] = useState(0);
@@ -636,8 +639,12 @@ function App() {
 
       const chat = await openOrCreateChat(s);
       if (cancelled) return;
-      await setSetting("last_opened_at", Date.now());
-      await setSetting("last_chat_id", chat.id);
+      const visibleAtBoot = await getCurrentWindow().isVisible().catch(() => true);
+      if (visibleAtBoot) {
+        await setResumeState(Date.now(), chat.id);
+      } else {
+        await setSetting("last_chat_id", chat.id);
+      }
       setActiveIdNow(chat.id);
       setActiveChat(chat);
       await refreshChats();
@@ -645,6 +652,10 @@ function App() {
       if (cancelled) return;
       readyRef.current = true;
       setReady(true);
+      if (pendingShowRef.current) {
+        pendingShowRef.current = false;
+        resumeShowRef.current?.();
+      }
       focusComposer();
       scheduleKeySync();
       const promptGen = ++autostartPromptGenRef.current;
@@ -696,7 +707,10 @@ function App() {
     let cancelled = false;
     void onMainWindowHidden(() => {
       showResumeGenRef.current += 1;
-      lastHiddenWriteRef.current = setSetting("last_opened_at", Date.now()).catch((err) => {
+      pendingShowRef.current = false;
+      const write = setSetting("last_opened_at", Date.now());
+      lastHiddenWriteRef.current = write;
+      void write.catch((err) => {
         console.error("resume timestamp failed", err);
       });
     }).then((fn) => {
@@ -713,59 +727,80 @@ function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     const onShown = () => {
-      if (!readyRef.current) return;
+      if (!readyRef.current) {
+        pendingShowRef.current = true;
+        return;
+      }
       const gen = navGenRef.current;
+      const resumeGen = showResumeGenRef.current;
+      const isStale = () =>
+        cancelled || gen !== navGenRef.current || resumeGen !== showResumeGenRef.current;
       showResumeChain.current = showResumeChain.current
         .catch(() => undefined)
         .then(async () => {
-          if (cancelled || gen !== navGenRef.current) return;
+          if (isStale()) return;
           await navQueue.run(async () => {
-            if (cancelled || gen !== navGenRef.current) return;
+            if (isStale()) return;
+            let chat: Chat | null = null;
+            let priorChatId: string | null = null;
             try {
               await lastHiddenWriteRef.current;
-              if (cancelled || gen !== navGenRef.current) return;
-              const s = await getSettings();
-              if (cancelled || gen !== navGenRef.current) return;
-              setSettings(s);
-              const chat = await openOrCreateChat(s);
+              await settingsFlushRef.current?.();
+              if (isStale()) return;
+              const settingsSnapshot = await getSettings();
+              if (isStale()) return;
+              setSettings(settingsSnapshot);
+              priorChatId = settingsSnapshot.last_chat_id;
+              const resumedChat = await openOrCreateChat(settingsSnapshot);
+              chat = resumedChat;
               const discardStaleChat = async () => {
-                if (chat.id === s.last_chat_id) return;
+                if (resumedChat.id === priorChatId) return;
                 try {
-                  await getChatSession(chat.id).delete();
+                  await getChatSession(resumedChat.id).delete();
                 } catch (err) {
                   console.error("stale resume cleanup failed", err);
                 }
                 await setSetting("last_chat_id", activeIdRef.current);
               };
-              if (cancelled || gen !== navGenRef.current) {
+              if (isStale()) {
                 await discardStaleChat();
                 return;
               }
-              await setSetting("last_opened_at", Date.now());
-              await setSetting("last_chat_id", chat.id);
-              if (cancelled || gen !== navGenRef.current) {
+              await setResumeState(Date.now(), resumedChat.id);
+              if (isStale()) {
                 await discardStaleChat();
                 return;
               }
-              setActiveIdNow(chat.id);
-              setActiveChat(chat);
+              setActiveIdNow(resumedChat.id);
+              setActiveChat(resumedChat);
               await refreshChats();
-              if (cancelled || gen !== navGenRef.current) return;
-              upsertChat(chat);
+              if (isStale()) return;
+              upsertChat(resumedChat);
               focusComposer();
             } catch (err) {
+              if (chat && chat.id !== priorChatId) {
+                try {
+                  await getChatSession(chat.id).delete();
+                } catch (cleanupError) {
+                  console.error("stale resume cleanup failed", cleanupError);
+                }
+                await setSetting("last_chat_id", activeIdRef.current).catch(() => undefined);
+              }
               console.error("resume on show failed", err);
               notify((err as Error).message || String(err), "err");
-            }
-          });
+             }
+           });
+
         });
     };
+    resumeShowRef.current = onShown;
     void onMainWindowShown(onShown).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
     return () => {
       cancelled = true;
+      resumeShowRef.current = null;
       unlisten?.();
     };
   }, [focusComposer, navQueue, notify, refreshChats, setActiveIdNow, showResumeChain, upsertChat]);

@@ -160,7 +160,6 @@ describe("hotkey window actions", () => {
     setPreferLogicalMonitorFramesForTests(false);
     isVisible.mockResolvedValue(false);
     await toggleMainWindow();
-    expect(invoke).toHaveBeenCalledWith("capture_previous_app");
     expect(setPosition).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "Physical",
@@ -172,7 +171,7 @@ describe("hotkey window actions", () => {
     expect(show).not.toHaveBeenCalled();
     expect(setFocus).not.toHaveBeenCalled();
     expect(setPosition.mock.invocationCallOrder[0]).toBeLessThan(
-      invoke.mock.invocationCallOrder[1],
+      invoke.mock.invocationCallOrder[0],
     );
   });
 

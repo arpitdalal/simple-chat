@@ -2,10 +2,23 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { updateChat, type Chat, type Message } from "../lib/db";
+import {
+  loadMessageImage,
+  updateChat,
+  type Chat,
+  type Message,
+} from "../lib/db";
 import { onMainWindowHidden } from "../lib/memory";
 import { resolveModel, type ProviderId } from "../lib/models";
-import type { ChatSession } from "../lib/chat-runtime";
+import {
+  imageCountLimitError,
+  imageDimensionLimitError,
+  imageLimitError,
+  MAX_IMAGE_FILE_BYTES,
+  messageCopyText,
+  normalizeImageDataUrl,
+  type ChatSession,
+} from "../lib/chat-runtime";
 import { ModelPicker } from "./ModelPicker";
 import { Markdown } from "./Markdown";
 import { AiIcon, BranchIcon, CheckIcon, CopyIcon, RegenerateIcon, UserIcon } from "./Icons";
@@ -14,6 +27,10 @@ import type { ToastKind } from "./Toast";
 const LINE_H = 22;
 const MAX_LINES = 15;
 const MIN_LINES = 1;
+
+function messageHasImages(message: Message): boolean {
+  return message.images.length > 0 || (message.image_count ?? 0) > 0;
+}
 
 type Props = {
   chat: Chat | null;
@@ -45,6 +62,7 @@ export function ChatView({
   const rowCount = messages.length + (showStream ? 1 : 0);
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]);
+  const [imageReadVersion, setImageReadVersion] = useState(0);
   const [showJump, setShowJump] = useState(false);
   const parentRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -52,6 +70,7 @@ export function ChatView({
   const stickBottom = useRef(true);
   const imagesRef = useRef<string[]>([]);
   const pendingImageReadsRef = useRef(0);
+  const imageReadTailRef = useRef<Promise<void>>(Promise.resolve());
   const releaseGenRef = useRef(0);
   const focusAfterStopRef = useRef(false);
   imagesRef.current = images;
@@ -82,7 +101,7 @@ export function ChatView({
     const drafts = session.takeDrafts();
     setInput(drafts.map((d) => d.text).join("\n"));
     setImages(drafts.flatMap((d) => d.images));
-  }, [chat?.id, session, state.drafts, state.phase, input, images.length]);
+  }, [chat?.id, session, state.drafts, state.phase, input, images.length, imageReadVersion]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -173,6 +192,10 @@ export function ChatView({
     onChatUpdated();
   }
   function send() {
+    if (pendingImageReadsRef.current) {
+      onNotify("Wait for attached images to finish loading.", "err");
+      return;
+    }
     if (!chat || blocked) {
       if (setupNeeded) onNeedKey?.();
       return;
@@ -198,59 +221,111 @@ export function ChatView({
   function onPaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
     if (!items) return;
+    const files: File[] = [];
     for (const item of items) {
-      if (!item.type.startsWith("image/")) continue;
-      e.preventDefault();
+      if (
+        item.type &&
+        item.type !== "application/octet-stream" &&
+        !item.type.startsWith("image/")
+      ) continue;
       const file = item.getAsFile();
-      if (!file) continue;
-      const gen = releaseGenRef.current;
-      pendingImageReadsRef.current += 1;
-      const reader = new FileReader();
-      reader.onload = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-        if (gen !== releaseGenRef.current) return;
-        if (typeof reader.result === "string") {
-          setImages((imgs) => [...imgs, reader.result as string]);
-        }
-      };
-      reader.onerror = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-      };
-      reader.readAsDataURL(file);
+      if (file) files.push(file);
     }
+    if (!files.length) return;
+    e.preventDefault();
+    readImageFiles(files);
   }
 
   function onFiles(files: FileList | null) {
     if (!files) return;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
-      const gen = releaseGenRef.current;
-      pendingImageReadsRef.current += 1;
-      const reader = new FileReader();
-      reader.onload = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-        if (gen !== releaseGenRef.current) return;
-        if (typeof reader.result === "string") {
-          setImages((imgs) => [...imgs, reader.result as string]);
-        }
-      };
-      reader.onerror = () => {
-        pendingImageReadsRef.current = Math.max(
-          0,
-          pendingImageReadsRef.current - 1,
-        );
-      };
-      reader.readAsDataURL(file);
+    readImageFiles(Array.from(files));
+  }
+
+  function readImageFiles(files: File[]) {
+    const imageFiles = files;
+    const queuedCount = imageFiles.length;
+    const countError = imageCountLimitError(
+      imagesRef.current.length + pendingImageReadsRef.current + queuedCount,
+    );
+    if (countError) {
+      onNotify(countError, "err");
+      return;
     }
+    if (!queuedCount) return;
+    const releaseGeneration = releaseGenRef.current;
+    pendingImageReadsRef.current += queuedCount;
+    imageReadTailRef.current = imageReadTailRef.current
+      .catch(() => {})
+      .then(async () => {
+        try {
+          if (releaseGeneration !== releaseGenRef.current) return;
+          for (const file of imageFiles) {
+            if (file.size > MAX_IMAGE_FILE_BYTES) {
+              onNotify(
+                `Each attached image must be ${MAX_IMAGE_FILE_BYTES / 1024 / 1024} MB or smaller.`,
+                "err",
+              );
+              continue;
+            }
+            try {
+              const dataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  if (typeof reader.result === "string") resolve(reader.result);
+                  else reject(new Error("The attached image could not be read."));
+                };
+                reader.onerror = () => reject(new Error("The attached image could not be read."));
+                reader.readAsDataURL(file);
+              });
+              if (releaseGeneration !== releaseGenRef.current) break;
+              const normalized = normalizeImageDataUrl(dataUrl);
+              if (!normalized) {
+                onNotify("Attach a PNG, JPEG, or WebP image.", "err");
+                continue;
+              }
+              const dimensionError = imageDimensionLimitError(
+                normalized.width,
+                normalized.height,
+              );
+              if (dimensionError) {
+                onNotify(dimensionError, "err");
+                continue;
+              }
+              const candidate = [...imagesRef.current, normalized.image];
+              const candidateError = imageLimitError(candidate);
+              if (candidateError) {
+                onNotify(candidateError, "err");
+                continue;
+              }
+              await new Promise<void>((resolve, reject) => {
+                const preview = new Image();
+                preview.onload = () => resolve();
+                preview.onerror = () => reject(new Error("The attached image could not be decoded."));
+                preview.src = normalized.image;
+              });
+              if (releaseGeneration !== releaseGenRef.current) break;
+              const next = [...imagesRef.current, normalized.image];
+              const nextError = imageLimitError(next);
+              if (nextError) {
+                onNotify(nextError, "err");
+                continue;
+              }
+              imagesRef.current = next;
+              setImages(next);
+            } catch (error) {
+              if (releaseGeneration === releaseGenRef.current) {
+                onNotify((error as Error).message || String(error), "err");
+              }
+            }
+          }
+        } finally {
+          pendingImageReadsRef.current = Math.max(
+            0,
+            pendingImageReadsRef.current - queuedCount,
+          );
+          setImageReadVersion((value) => value + 1);
+        }
+      });
   }
 
   const model = chat ? resolveModel(chat.provider, chat.model_id) : null;
@@ -315,10 +390,27 @@ export function ChatView({
                         {m!.role === "assistant" ? (
                           <Markdown content={m!.content} />
                         ) : (
-                          <div className="msg-user">{m!.content}</div>
+                          <>
+                            {m!.content && <div className="msg-user">{m!.content}</div>}
+                            {messageHasImages(m!) && (
+                              <div className="sent-images">
+                                {Array.from({
+                                  length: m!.images.length || (m!.image_count ?? 0),
+                                }, (_, index) => (
+                                  <SentImage
+                                    key={`${m!.id}-${index}`}
+                                    chatId={m!.chat_id}
+                                    messageId={m!.id}
+                                    index={index}
+                                    src={m!.images[index]}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </>
                         )}
                         <MsgActions
-                          content={m!.content}
+                          copyText={messageCopyText(m!)}
                           messageId={m!.id}
                           role={m!.role}
                           canRegenerate={!busy && !blocked}
@@ -386,7 +478,11 @@ export function ChatView({
                 key={i}
                 type="button"
                 className="thumb"
-                onClick={() => setImages(images.filter((_, j) => j !== i))}
+                onClick={() => {
+                  const next = images.filter((_, j) => j !== i);
+                  imagesRef.current = next;
+                  setImages(next);
+                }}
                 title="Remove"
               >
                 <img src={src} alt="" />
@@ -416,10 +512,13 @@ export function ChatView({
             <input
               ref={fileRef}
               type="file"
-              accept="image/*"
+              accept="image/png,image/jpeg,image/webp"
               multiple
               hidden
-              onChange={(e) => onFiles(e.target.files)}
+              onChange={(e) => {
+                onFiles(e.target.files);
+                e.target.value = "";
+              }}
             />
             <textarea
               ref={inputRef}
@@ -501,8 +600,72 @@ export function ChatView({
   );
 }
 
+function SentImage({
+  chatId,
+  messageId,
+  index,
+  src,
+}: {
+  chatId: string;
+  messageId: string;
+  index: number;
+  src?: string;
+}) {
+  const [image, setImage] = useState(src ?? null);
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    if (src) {
+      setImage(src);
+      setFailed(false);
+      return;
+    }
+    let cancelled = false;
+    setFailed(false);
+    void loadMessageImage(chatId, messageId, index)
+      .then((loaded) => {
+        if (!cancelled) {
+          setImage(loaded);
+          setFailed(loaded === null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setImage(null);
+          setFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, index, messageId, retry, src]);
+
+  if (image) {
+    return (
+      <img
+        src={image}
+        alt={`Attached image ${index + 1}`}
+        loading="lazy"
+      />
+    );
+  }
+  if (failed) {
+    return (
+      <button
+        type="button"
+        className="sent-image-error"
+        onClick={() => setRetry((value) => value + 1)}
+      >
+        Image unavailable · Retry
+      </button>
+    );
+  }
+  return null;
+}
+
 function MsgActions({
-  content,
+  copyText,
   messageId,
   role,
   canRegenerate,
@@ -510,7 +673,7 @@ function MsgActions({
   onRegenerate,
   onNotify,
 }: {
-  content: string;
+  copyText: string;
   messageId: string;
   role: Message["role"];
   canRegenerate: boolean;
@@ -533,10 +696,13 @@ function MsgActions({
         className={`icon-action${flash === "copy" ? " done" : ""}`}
         title={flash === "copy" ? "Copied" : "Copy"}
         aria-label={flash === "copy" ? "Copied" : "Copy"}
-        onClick={() => {
-          void navigator.clipboard.writeText(content).then(() => {
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(copyText);
             setFlash("copy");
-          });
+          } catch (e) {
+            onNotify((e as Error).message || String(e), "err");
+          }
         }}
       >
         {flash === "copy" ? <CheckIcon /> : <CopyIcon />}

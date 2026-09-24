@@ -434,16 +434,29 @@ describe("App UX", () => {
         chat_id: "c",
         role: "user",
         content: "hi",
+        images: [],
+        image_count: 0,
         created_at: 1,
       },
       {
         id: "m2",
         chat_id: "c",
-        role: "assistant",
-        content: "yo",
+        role: "user",
+        content: "",
+        images: [],
+        image_count: 1,
         created_at: 2,
       },
-    ] as never);
+      {
+        id: "m3",
+        chat_id: "c",
+        role: "assistant",
+        content: "yo",
+        images: [],
+        image_count: 0,
+        created_at: 3,
+      },
+    ]);
     const writeText = vi.fn();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -473,7 +486,7 @@ describe("App UX", () => {
     await user.click(screen.getByText("Copy Chat"));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(
-        expect.stringContaining("user:\nhi"),
+        "user:\nhi\n\nuser:\n[Image attachment]\n\nassistant:\nyo",
       ),
     );
   });

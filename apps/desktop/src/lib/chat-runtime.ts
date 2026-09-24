@@ -8,6 +8,7 @@ import {
   getChat,
   listMessages,
   listOlderMessages,
+  loadMessageImages,
   listRecentMessages,
   messageCount,
   refreshChatPreview,
@@ -37,6 +38,224 @@ type Callbacks = {
   onNotify: (message: string, kind: "err") => void;
 };
 type Turn = { ac: AbortController; tempId?: string; text?: string; images?: string[]; hideVersion?: number };
+type UserContent = Extract<ModelMessage, { role: "user" }>["content"];
+
+export const MAX_IMAGES_PER_MESSAGE = 4;
+export const MAX_IMAGE_DATA_CHARS = 5 * 1024 * 1024;
+export const MAX_IMAGE_FILE_BYTES = 3 * 1024 * 1024;
+export const MAX_IMAGE_DIMENSION = 4096;
+const MAX_HISTORY_IMAGES = 20;
+const MAX_HISTORY_IMAGE_CHARS = 16 * 1024 * 1024;
+const MAX_HISTORY_TEXT_CHARS = 1 * 1024 * 1024;
+const MAX_HISTORY_TOTAL_CHARS = 17 * 1024 * 1024;
+const MAX_USER_TEXT_CHARS = 1 * 1024 * 1024;
+const JPEG_START_OF_FRAME = new Set([
+  0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+  0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+]);
+
+type ImageData = { image: string; width: number; height: number };
+
+function uint16(bytes: Uint8Array, offset: number, littleEndian = false): number {
+  return littleEndian
+    ? bytes[offset] | (bytes[offset + 1] << 8)
+    : (bytes[offset] << 8) | bytes[offset + 1];
+}
+
+function uint24(bytes: Uint8Array, offset: number, littleEndian = false): number {
+  return littleEndian
+    ? bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16)
+    : (bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2];
+}
+
+function uint32(bytes: Uint8Array, offset: number): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset);
+}
+
+function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  let offset = 2;
+  while (offset + 8 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    while (bytes[offset + 1] === 0xff) offset += 1;
+    const marker = bytes[offset + 1];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2;
+      continue;
+    }
+    const length = uint16(bytes, offset + 2);
+    if (length < 2 || offset + 2 + length > bytes.length) return null;
+    if (JPEG_START_OF_FRAME.has(marker)) {
+      return {
+        height: uint16(bytes, offset + 5),
+        width: uint16(bytes, offset + 7),
+      };
+    }
+    offset += 2 + length;
+  }
+  return null;
+}
+
+function webpDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  const chunk = String.fromCharCode(...bytes.slice(12, 16));
+  if (chunk === "VP8X" && bytes.length >= 30) {
+    return {
+      width: uint24(bytes, 24, true) + 1,
+      height: uint24(bytes, 27, true) + 1,
+    };
+  }
+  if (chunk === "VP8L" && bytes.length >= 25 && bytes[20] === 0x2f) {
+    return {
+      width: 1 + bytes[21] + ((bytes[22] & 0x3f) << 8),
+      height: 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 0x0f) << 10),
+    };
+  }
+  if (
+    chunk === "VP8 " &&
+    bytes.length >= 30 &&
+    bytes[23] === 0x9d &&
+    bytes[24] === 0x01 &&
+    bytes[25] === 0x2a
+  ) {
+    return {
+      width: uint16(bytes, 26, true) & 0x3fff,
+      height: uint16(bytes, 28, true) & 0x3fff,
+    };
+  }
+  return null;
+}
+
+export function normalizeImageDataUrl(value: string): ImageData | null {
+  const match = /^data:(?:image\/[a-z0-9.+-]+|application\/octet-stream)?;base64,([a-z0-9+/]*={0,2})$/i.exec(value);
+  if (!match) return null;
+  let bytes: Uint8Array;
+  try {
+    bytes = Uint8Array.from(atob(match[1]), (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+  let mime: string;
+  let dimensions: { width: number; height: number } | null;
+  if (
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+  ) {
+    mime = "image/png";
+    dimensions = { width: uint32(bytes, 16), height: uint32(bytes, 20) };
+  } else if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    mime = "image/jpeg";
+    dimensions = jpegDimensions(bytes);
+  } else if (
+    bytes.length >= 16 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  ) {
+    mime = "image/webp";
+    dimensions = webpDimensions(bytes);
+  } else {
+    return null;
+  }
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) return null;
+  return {
+    image: `data:${mime};base64,${match[1]}`,
+    width: dimensions.width,
+    height: dimensions.height,
+  };
+}
+
+export function imageDataUrlChars(images: string[]): number {
+  return images.reduce((total, image) => total + image.length, 0);
+}
+
+export function imageCountLimitError(count: number): string | null {
+  return count > MAX_IMAGES_PER_MESSAGE
+    ? `Attach no more than ${MAX_IMAGES_PER_MESSAGE} images per message.`
+    : null;
+}
+
+export function imageDimensionLimitError(width: number, height: number): string | null {
+  return width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION
+    ? `Each image must be ${MAX_IMAGE_DIMENSION}×${MAX_IMAGE_DIMENSION} pixels or smaller.`
+    : null;
+}
+
+export function messageCopyText(
+  message: Pick<Message, "content" | "images" | "image_count">,
+): string {
+  const imageCount = Math.max(message.images.length, message.image_count ?? 0);
+  if (!imageCount) return message.content;
+  const attachments = imageCount === 1
+    ? "[Image attachment]"
+    : `[${imageCount} image attachments]`;
+  return message.content ? `${message.content}\n${attachments}` : attachments;
+}
+
+export function imageLimitError(images: string[]): string | null {
+  return imageCountLimitError(images.length) ??
+    (images.some((image) => !normalizeImageDataUrl(image))
+      ? "The attached image could not be read."
+      : null) ??
+    (imageDataUrlChars(images) > MAX_IMAGE_DATA_CHARS
+      ? "The attached images are too large to send together."
+      : null);
+}
+
+function userContent(
+  message: Pick<Message, "content" | "images" | "image_count">,
+): UserContent {
+  const hasImages = message.images.length > 0 || (message.image_count ?? 0) > 0;
+  const text = message.content;
+  if (message.images.length) {
+    return [
+      { type: "text" as const, text: text || "Describe these images." },
+      ...message.images.map((image) => ({ type: "image" as const, image })),
+    ];
+  }
+  if (hasImages) {
+    return [text, "Earlier image attachment omitted due to context limits."]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return text;
+}
+
+function boundProviderHistory(
+  history: Message[],
+  storedImages: Map<string, string[]>,
+  anchor: string,
+): Message[] {
+  const kept: Message[] = [];
+  let textChars = 0;
+  let imageChars = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    const images = message.images.length ? message.images : (storedImages.get(message.id) ?? []);
+    const omittedImages = (message.image_count ?? 0) > 0 && images.length === 0;
+    const messageTextChars = message.content.length;
+    const messageImageChars = imageDataUrlChars(images);
+    const fits =
+      message.id === anchor ||
+      (textChars + messageTextChars <= MAX_HISTORY_TEXT_CHARS &&
+        imageChars + messageImageChars <= MAX_HISTORY_IMAGE_CHARS &&
+        textChars + messageTextChars + imageChars + messageImageChars <= MAX_HISTORY_TOTAL_CHARS);
+    if (!fits) break;
+    kept.unshift({ ...message, images });
+    textChars += messageTextChars;
+    imageChars += messageImageChars;
+    if (omittedImages) break;
+  }
+  return kept;
+}
+
+function persistedMessageMetadata(message: Message): Message {
+  return {
+    ...message,
+    images: [],
+    image_count: message.image_count ?? message.images.length,
+  };
+}
 
 const sessions = new Map<string, ChatSession>();
 export function sessionHasWork(id: string): boolean {
@@ -184,29 +403,46 @@ export class ChatSession {
 
   send(chat: Chat, text: string, images: string[], callbacks: Callbacks): boolean {
     if (this.snapshot.phase !== "idle" || (!text && !images.length)) return false;
+    if (text.length > MAX_USER_TEXT_CHARS) {
+      callbacks.onNotify("This message is too long to send.", "err");
+      return false;
+    }
+    const normalized = images.map(normalizeImageDataUrl);
+    const imageError = normalized.some((image) => !image)
+      ? "The attached image could not be read."
+      : imageLimitError(images);
+    const dimensionError = normalized
+      .filter((image): image is ImageData => image !== null)
+      .map((image) => imageDimensionLimitError(image.width, image.height))
+      .find(Boolean);
+    if (imageError || dimensionError) {
+      callbacks.onNotify(imageError ?? dimensionError!, "err");
+      return false;
+    }
+    const validatedImages = normalized.map((image) => image!.image);
     sessions.set(this.id, this);
-    const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images, hideVersion: this.hideVersion };
-    const display = text || `[${images.length} image(s)]`;
-    const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: display, created_at: Date.now() };
+    const turn: Turn = { ac: new AbortController(), tempId: `tmp-${crypto.randomUUID()}`, text, images: validatedImages, hideVersion: this.hideVersion };
+    const temp: Message = { id: turn.tempId!, chat_id: this.id, role: "user", content: text, images: validatedImages, created_at: Date.now() };
     this.turns.add(turn);
     this.publish({
       messages: [...this.snapshot.messages, temp], busy: true, drafts: [],
       stream: this.snapshot.stream ?? { anchor: temp.id, text: "" },
     });
-    void this.queue.run(() => this.runSend(turn, chat, display, callbacks));
+    void this.queue.run(() => this.runSend(turn, chat, callbacks));
     return true;
   }
 
-  private async runSend(turn: Turn, chat: Chat, display: string, callbacks: Callbacks) {
+  private async runSend(turn: Turn, chat: Chat, callbacks: Callbacks) {
     let persisted = false;
     try {
       this.abortIfNeeded(turn.ac);
       const live = await getChat(this.id);
       if (!live) throw new Error("Chat was deleted.");
       this.abortIfNeeded(turn.ac);
-      const user = await addMessage(this.id, "user", display);
+      const user = await addMessage(this.id, "user", turn.text ?? "", Date.now(), turn.images ?? []);
       persisted = true;
-      this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? user : m) });
+      const userMetadata = persistedMessageMetadata(user);
+      this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? userMetadata : m) });
       this.updatePreview(callbacks);
       if (live.title === "New Chat" && turn.text) {
         const provisional = turn.text.slice(0, 48) + (turn.text.length > 48 ? "…" : "");
@@ -215,11 +451,14 @@ export class ChatSession {
       this.abortIfNeeded(turn.ac);
       const history = await listRecentMessages(this.id, MAX_CACHED_MESSAGES);
       this.abortIfNeeded(turn.ac);
-      const content: ModelMessage["content"] = turn.images!.length ? [
-        { type: "text", text: turn.text || "Describe these images." },
-        ...turn.images!.map((image) => ({ type: "image" as const, image })),
-      ] : turn.text!;
-      await this.reply(turn, chat, history, user.id, content, callbacks);
+      await this.reply(
+        turn,
+        chat,
+        history,
+        user.id,
+        userContent({ content: turn.text!, images: turn.images! }),
+        callbacks,
+      );
     } catch (e) {
       this.notifyError(e, callbacks);
       if (!persisted) {
@@ -266,13 +505,30 @@ export class ChatSession {
     })();
   }
 
-  private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: ModelMessage["content"] | undefined, callbacks: Callbacks) {
+  private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: UserContent | undefined, callbacks: Callbacks) {
     this.streamOwner = turn;
     this.publish({ stream: { anchor, text: "" } });
-    const messages: ModelMessage[] = trimRecentMessages(history, MAX_CACHED_MESSAGES).map((m) => ({ role: m.role, content: m.content }));
+    const retainedHistory = trimRecentMessages(history, MAX_CACHED_MESSAGES);
+    const storedImages = await loadMessageImages(
+      chat.id,
+      retainedHistory[0]?.id ?? anchor,
+      anchor,
+      MAX_HISTORY_IMAGE_CHARS,
+      MAX_HISTORY_IMAGES,
+    );
+    const messages = boundProviderHistory(
+      retainedHistory,
+      storedImages,
+      anchor,
+    ).map((m): ModelMessage => {
+      const images = m.images.length ? m.images : (storedImages.get(m.id) ?? []);
+      if (m.role === "user") return { role: "user", content: userContent({ ...m, images }) };
+      if (m.role === "assistant") return { role: "assistant", content: m.content };
+      return { role: "system", content: m.content };
+    });
     if (content !== undefined) {
-      if (history[history.length - 1]?.id === anchor && messages.length) messages[messages.length - 1] = { role: "user", content: content as never };
-      else messages.push({ role: "user", content: content as never });
+      if (history[history.length - 1]?.id === anchor && messages.length) messages[messages.length - 1] = { role: "user", content };
+      else messages.push({ role: "user", content });
     }
     let full = "";
     try {

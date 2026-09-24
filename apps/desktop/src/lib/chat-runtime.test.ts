@@ -7,6 +7,8 @@ const addMessage = vi.fn();
 const getChat = vi.fn();
 const listRecentMessages = vi.fn();
 const listOlderMessages = vi.fn();
+const listMessages = vi.fn();
+const loadMessageImages = vi.fn();
 const clearChatMessages = vi.fn();
 const deleteChat = vi.fn();
 const updateChat = vi.fn();
@@ -24,7 +26,8 @@ vi.mock("./db", () => ({
   getChat: (...args: unknown[]) => getChat(...args),
   listRecentMessages: (...args: unknown[]) => listRecentMessages(...args),
   listOlderMessages: (...args: unknown[]) => listOlderMessages(...args),
-  listMessages: vi.fn(async () => []),
+  listMessages: (...args: unknown[]) => listMessages(...args),
+  loadMessageImages: (...args: unknown[]) => loadMessageImages(...args),
   deleteMessagesAfter: vi.fn(async () => {}),
   clearChatMessages: (...args: unknown[]) => clearChatMessages(...args),
   deleteChat: (...args: unknown[]) => deleteChat(...args),
@@ -35,7 +38,14 @@ vi.mock("./db", () => ({
   messageCount: (...args: unknown[]) => messageCount(...args),
 }));
 
-import { chatCanBeDiscarded, getChatSession, resetChatSessions, sessionHasWork } from "./chat-runtime";
+import {
+  chatCanBeDiscarded,
+  getChatSession,
+  messageCopyText,
+  normalizeImageDataUrl,
+  resetChatSessions,
+  sessionHasWork,
+} from "./chat-runtime";
 
 const chat = (id: string): Chat => ({
   id, title: "Thread", provider: "google", model_id: "gemini-3.8-flash",
@@ -44,6 +54,7 @@ const chat = (id: string): Chat => ({
 const callbacks = {
   onChatUpdated: vi.fn(), onChatMeta: vi.fn(), onNotify: vi.fn(),
 };
+const pngImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
 
 beforeEach(() => {
   resetChatSessions();
@@ -52,11 +63,47 @@ beforeEach(() => {
   clock = 0;
   getChat.mockImplementation(async (id: string) => chat(id));
   listRecentMessages.mockImplementation(async (id: string, limit: number) =>
-    (store.get(id) ?? []).slice(-limit),
+    (store.get(id) ?? []).slice(-limit).map((message) => ({
+      ...message,
+      images: [],
+      image_count: message.image_count ?? message.images.length,
+    })),
   );
   listOlderMessages.mockResolvedValue([]);
-  addMessage.mockImplementation(async (id: string, role: Message["role"], content: string) => {
-    const message: Message = { id: crypto.randomUUID(), chat_id: id, role, content, created_at: ++clock };
+  listMessages.mockImplementation(async (id: string) =>
+    (store.get(id) ?? []).map((message) => ({
+      ...message,
+      images: [],
+      image_count: message.image_count ?? message.images.length,
+    })),
+  );
+  loadMessageImages.mockImplementation(async (
+    id: string,
+    fromMessageId: string,
+    throughMessageId: string,
+    maxChars: number,
+    maxImages: number,
+  ) => {
+    const messages = store.get(id) ?? [];
+    const fromIndex = messages.findIndex((message) => message.id === fromMessageId);
+    const throughIndex = messages.findIndex((message) => message.id === throughMessageId);
+    if (fromIndex < 0 || throughIndex < fromIndex) return new Map<string, string[]>();
+    const selected = new Map<string, string[]>();
+    let chars = 0;
+    let images = 0;
+    for (const message of messages.slice(fromIndex, throughIndex + 1).reverse()) {
+      if (!message.images.length) continue;
+      const nextChars = chars + JSON.stringify(message.images).length;
+      const nextImages = images + message.images.length;
+      if (nextChars > maxChars || nextImages > maxImages) break;
+      selected.set(message.id, message.images);
+      chars = nextChars;
+      images = nextImages;
+    }
+    return selected;
+  });
+  addMessage.mockImplementation(async (id: string, role: Message["role"], content: string, createdAt = Date.now(), images: string[] = []) => {
+    const message: Message = { id: crypto.randomUUID(), chat_id: id, role, content, images, created_at: createdAt };
     store.set(id, [...(store.get(id) ?? []), message]);
     return message;
   });
@@ -71,18 +118,105 @@ beforeEach(() => {
 });
 
 describe("ChatSession", () => {
+  it("normalizes generic base64 image data URLs from file pickers", () => {
+    expect(normalizeImageDataUrl(
+      `data:application/octet-stream;base64,${pngImage.split(",")[1]}`,
+    )).toMatchObject({ image: pngImage, width: 1, height: 1 });
+  });
+
+  it("masks VP8L metadata bits when reading height", () => {
+    const bytes = new Uint8Array(30);
+    bytes.set([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x4c]);
+    bytes[20] = 0x2f;
+    bytes[21] = 0xff;
+    bytes[22] = 0x0f;
+    bytes[23] = 0xff;
+    bytes[24] = 0x13;
+    const data = `data:image/webp;base64,${btoa(String.fromCharCode(...bytes))}`;
+    expect(normalizeImageDataUrl(data)).toMatchObject({ width: 4096, height: 4093 });
+  });
+
+  it("formats image attachments for copied text", () => {
+    expect(messageCopyText({ content: "plain", images: [], image_count: 0 }))
+      .toBe("plain");
+    expect(messageCopyText({ content: "", images: [], image_count: 1 }))
+      .toBe("[Image attachment]");
+    expect(messageCopyText({ content: "look", images: [pngImage] }))
+      .toBe("look\n[Image attachment]");
+    expect(messageCopyText({ content: "", images: [], image_count: 2 }))
+      .toBe("[2 image attachments]");
+  });
+
+  it("preserves literal attachment text without images", async () => {
+    const session = getChatSession("a");
+    session.send(chat("a"), "[Image attachment]", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: "[Image attachment]",
+    }]);
+  });
+
+  it("preserves literal attachment text alongside images", async () => {
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    session.send(chat("a"), "[Image attachment]", [pngImage], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    expect(addMessage).toHaveBeenCalledWith(
+      "a",
+      "user",
+      "[Image attachment]",
+      expect.any(Number),
+      [pngImage],
+    );
+    expect(session.getSnapshot().messages[0]).toMatchObject({
+      content: "[Image attachment]",
+      image_count: 1,
+    });
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "[Image attachment]" },
+        { type: "image", image: pngImage },
+      ],
+    }]);
+    unsubscribe();
+  });
+
+  it("stores image-only sends with empty content", async () => {
+    const session = getChatSession("a");
+    session.send(chat("a"), "", [pngImage], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    expect(addMessage).toHaveBeenCalledWith(
+      "a",
+      "user",
+      "",
+      expect.any(Number),
+      [pngImage],
+    );
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "Describe these images." },
+        { type: "image", image: pngImage },
+      ],
+    }]);
+  });
+
   it("does not reload older history after the window hides", async () => {
     const session = getChatSession("a");
     const unsubscribe = session.subscribe(() => {});
     store.set("a", Array.from({ length: 50 }, (_, i) => ({
-      id: `m${i}`, chat_id: "a", role: "user" as const, content: `m${i}`, created_at: i,
+      id: `m${i}`, chat_id: "a", role: "user" as const, content: `m${i}`, images: [], created_at: i,
     })));
     await session.loadRecent();
     let release!: (rows: Message[]) => void;
     listOlderMessages.mockImplementationOnce(() => new Promise<Message[]>((resolve) => { release = resolve; }));
     const loading = session.loadOlder();
     session.trim();
-    release([{ id: "old", chat_id: "a", role: "user", content: "old", created_at: -1 }]);
+    release([{ id: "old", chat_id: "a", role: "user", content: "old", images: [], created_at: -1 }]);
     await loading;
     expect(session.getSnapshot().messages).toHaveLength(50);
     unsubscribe();
@@ -98,7 +232,7 @@ describe("ChatSession", () => {
   });
 
   it("does not discard a chat that already has messages", async () => {
-    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", created_at: 1 }]);
+    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", images: [], created_at: 1 }]);
     expect(sessionHasWork("a")).toBe(false);
     expect(await chatCanBeDiscarded("a")).toBe(false);
   });
@@ -120,12 +254,148 @@ describe("ChatSession", () => {
     let failInsert!: (error: Error) => void;
     addMessage.mockImplementationOnce(() => new Promise((_resolve, reject) => { failInsert = reject; }));
     const session = getChatSession("a");
-    session.send(chat("a"), "image", ["data:image/png;base64,AAA"], callbacks);
+    session.send(chat("a"), "image", [pngImage], callbacks);
     await waitFor(() => expect(failInsert).toBeTruthy());
     session.dropDraftImages();
     failInsert(new Error("database unavailable"));
     await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
     expect(session.getSnapshot().drafts).toEqual([{ text: "image", images: [] }]);
+  });
+
+  it("keeps sent images in optimistic, persisted, and provider messages", async () => {
+    const image = pngImage;
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    session.send(chat("a"), "describe", [image], callbacks);
+
+    expect(session.getSnapshot().messages[0]).toMatchObject({
+      content: "describe",
+      images: [image],
+    });
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(addMessage).toHaveBeenCalledWith(
+      "a",
+      "user",
+      "describe",
+      expect.any(Number),
+      [image],
+    );
+    expect(store.get("a")?.[0].images).toEqual([image]);
+    expect(session.getSnapshot().messages[0]).toMatchObject({
+      images: [],
+      image_count: 1,
+    });
+    expect(streamChat.mock.calls[0][0].messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "describe" },
+        { type: "image", image },
+      ],
+    });
+    unsubscribe();
+  });
+
+  it("rejects oversized image sets before sending", () => {
+    const images = Array.from({ length: 5 }, () => pngImage);
+    const session = getChatSession("a");
+    expect(session.send(chat("a"), "look", images, callbacks)).toBe(false);
+    expect(callbacks.onNotify).toHaveBeenCalledWith(
+      "Attach no more than 4 images per message.",
+      "err",
+    );
+    expect(session.getSnapshot().busy).toBe(false);
+    expect(addMessage).not.toHaveBeenCalled();
+  });
+
+  it("bounds historical images in later provider requests", async () => {
+    store.set("a", Array.from({ length: 21 }, (_, index) => ({
+      id: `u${index}`,
+      chat_id: "a",
+      role: "user" as const,
+      content: index === 0 ? "compare this" : "",
+      images: [pngImage],
+      created_at: index,
+    })));
+    const session = getChatSession("a");
+    session.send(chat("a"), "follow up", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    const messages = streamChat.mock.calls[0][0].messages;
+    const imageCount = messages.flatMap((message: { content: unknown }) =>
+      Array.isArray(message.content)
+        ? message.content.filter((part) => (part as { type?: string }).type === "image")
+        : [],
+    ).length;
+    expect(imageCount).toBe(20);
+    expect(messages[0]).toEqual({
+      role: "user",
+      content: "compare this\n\nEarlier image attachment omitted due to context limits.",
+    });
+  });
+
+  it("loads images only from the retained 200-message history", async () => {
+    store.set("a", [
+      {
+        id: "old-image",
+        chat_id: "a",
+        role: "user" as const,
+        content: "old",
+        images: [pngImage],
+        image_count: 1,
+        created_at: 0,
+      },
+      ...Array.from({ length: 200 }, (_, index) => ({
+        id: `text-${index}`,
+        chat_id: "a",
+        role: "user" as const,
+        content: `text ${index}`,
+        images: [],
+        image_count: 0,
+        created_at: index + 1,
+      })),
+    ]);
+    const session = getChatSession("a");
+    session.send(chat("a"), "follow up", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    expect(loadMessageImages.mock.calls[0].slice(0, 2)).toEqual(["a", "text-1"]);
+  });
+
+  it("keeps provider history as a contiguous suffix when a turn exceeds budget", async () => {
+    store.set("a", [
+      { id: "old", chat_id: "a", role: "user", content: "oldest", images: [], image_count: 0, created_at: 1 },
+      { id: "large", chat_id: "a", role: "assistant", content: "x".repeat(1_048_577), images: [], image_count: 0, created_at: 2 },
+      { id: "new", chat_id: "a", role: "user", content: "newest", images: [], image_count: 0, created_at: 3 },
+    ]);
+    const session = getChatSession("a");
+    session.send(chat("a"), "follow up", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(streamChat.mock.calls[0][0].messages).toEqual([
+      { role: "user", content: "newest" },
+      { role: "user", content: "follow up" },
+    ]);
+  });
+
+  it("includes persisted images when regenerating a response", async () => {
+    const image = pngImage;
+    store.set("a", [{
+      id: "u1",
+      chat_id: "a",
+      role: "user",
+      content: "",
+      images: [image],
+      created_at: 1,
+    }]);
+    const session = getChatSession("a");
+    expect(session.regenerate(chat("a"), "u1", callbacks)).toBe(true);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "Describe these images." },
+        { type: "image", image },
+      ],
+    }]);
   });
 
   it("keeps an App-owned session canonical across view unmounts", () => {
@@ -256,7 +526,7 @@ describe("ChatSession", () => {
     });
     const session = getChatSession("a");
     const unsubscribe = session.subscribe(() => {});
-    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", created_at: 1 }]);
+    store.set("a", [{ id: "m", chat_id: "a", role: "user", content: "hi", images: [], created_at: 1 }]);
     const clearing = session.clear();
     await waitFor(() => expect(session.getSnapshot().phase).toBe("clearing"));
     const deleting = session.delete();
@@ -273,7 +543,7 @@ describe("ChatSession", () => {
     let finishInsert!: () => void;
     addMessage.mockImplementationOnce(async (id: string, role: Message["role"], content: string) => {
       await new Promise<void>((resolve) => { finishInsert = resolve; });
-      const message: Message = { id: "u1", chat_id: id, role, content, created_at: ++clock };
+      const message: Message = { id: "u1", chat_id: id, role, content, images: [], created_at: ++clock };
       store.set(id, [...(store.get(id) ?? []), message]);
       return message;
     });

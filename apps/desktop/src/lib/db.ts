@@ -16,8 +16,29 @@ export type Message = {
   chat_id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  images: string[];
+  image_count?: number;
   created_at: number;
 };
+
+type MessageImageRow = { id: string; images: unknown };
+type MessageImageResult = { id: string; image: string | null };
+
+const MESSAGE_COLUMNS = `id, chat_id, role, content, image_count, created_at`;
+
+function parseImages(value: unknown): string[] {
+  let images: unknown = value;
+  if (typeof images === "string") {
+    try {
+      images = JSON.parse(images);
+    } catch {
+      images = [];
+    }
+  }
+  return Array.isArray(images)
+    ? images.filter((image): image is string => typeof image === "string")
+    : [];
+}
 
 export type AppSettings = {
   resume_minutes: number;
@@ -274,7 +295,11 @@ export async function refreshChatPreview(id: string): Promise<void> {
   const db = await getDb();
   await db.execute(
     `UPDATE chats SET updated_at = $2, preview = COALESCE(
-       (SELECT substr(content, 1, 120) FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
+       (SELECT CASE
+          WHEN content = '' AND image_count > 0 THEN 'Image'
+          ELSE substr(content, 1, 120)
+        END
+        FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
        'Ask AI anything…'
      ) WHERE id = $1`,
     [id, Date.now()],
@@ -309,10 +334,12 @@ export async function deleteChatsOlderThan(days: number) {
 
 export async function listMessages(chatId: string): Promise<Message[]> {
   const db = await getDb();
-  return db.select<Message[]>(
-    "SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at ASC, rowid ASC",
+  const rows = await db.select<Message[]>(
+    `SELECT ${MESSAGE_COLUMNS} FROM messages
+     WHERE chat_id = $1 ORDER BY created_at ASC, rowid ASC`,
     [chatId],
   );
+  return rows.map((message) => ({ ...message, images: [] }));
 }
 
 /** Latest page (oldest→newest within page). */
@@ -322,10 +349,11 @@ export async function listRecentMessages(
 ): Promise<Message[]> {
   const db = await getDb();
   const rows = await db.select<Message[]>(
-    `SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT $2`,
+    `SELECT ${MESSAGE_COLUMNS} FROM messages
+     WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT $2`,
     [chatId, limit],
   );
-  return rows.reverse();
+  return rows.reverse().map((message) => ({ ...message, images: [] }));
 }
 
 /** Older page before a message in (created_at, rowid) order. */
@@ -336,13 +364,58 @@ export async function listOlderMessages(
 ): Promise<Message[]> {
   const db = await getDb();
   const rows = await db.select<Message[]>(
-    `SELECT * FROM messages
+    `SELECT ${MESSAGE_COLUMNS} FROM messages
      WHERE chat_id = $1 AND (created_at, rowid) <
        (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)
      ORDER BY created_at DESC, rowid DESC LIMIT $3`,
     [chatId, beforeMessageId, limit],
   );
-  return rows.reverse();
+  return rows.reverse().map((message) => ({ ...message, images: [] }));
+}
+
+export async function loadMessageImage(
+  chatId: string,
+  messageId: string,
+  index: number,
+): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<MessageImageResult[]>(
+    `SELECT json_extract(images, '$[' || $3 || ']') AS image
+     FROM messages WHERE chat_id = $1 AND id = $2 LIMIT 1`,
+    [chatId, messageId, index],
+  );
+  return rows[0]?.image ?? null;
+}
+
+export async function loadMessageImages(
+  chatId: string,
+  fromMessageId: string,
+  throughMessageId: string,
+  maxChars: number,
+  maxImages: number,
+): Promise<Map<string, string[]>> {
+  const db = await getDb();
+  const rows = await db.select<MessageImageRow[]>(
+    `SELECT id, images FROM (
+       SELECT id, images, created_at, rowid,
+         SUM(length(images)) OVER (
+           ORDER BY created_at DESC, rowid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+         ) AS total_chars,
+         SUM(image_count) OVER (
+           ORDER BY created_at DESC, rowid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+         ) AS total_images
+       FROM messages
+       WHERE chat_id = $1 AND image_count > 0
+         AND (created_at, rowid) >=
+           (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)
+         AND (created_at, rowid) <=
+           (SELECT created_at, rowid FROM messages WHERE id = $3 AND chat_id = $1)
+     )
+     WHERE total_chars <= $4 AND total_images <= $5
+     ORDER BY created_at DESC, rowid DESC`,
+    [chatId, fromMessageId, throughMessageId, maxChars, maxImages],
+  );
+  return new Map(rows.map((row) => [row.id, parseImages(row.images)]));
 }
 
 export async function addMessage(
@@ -350,6 +423,7 @@ export async function addMessage(
   role: Message["role"],
   content: string,
   createdAt = Date.now(),
+  images: string[] = [],
 ): Promise<Message> {
   const db = await getDb();
   const msg: Message = {
@@ -357,11 +431,22 @@ export async function addMessage(
     chat_id: chatId,
     role,
     content,
+    images,
+    image_count: images.length,
     created_at: createdAt,
   };
   await db.execute(
-    `INSERT INTO messages (id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)`,
-    [msg.id, msg.chat_id, msg.role, msg.content, msg.created_at],
+    `INSERT INTO messages (id, chat_id, role, content, images, image_count, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      msg.id,
+      msg.chat_id,
+      msg.role,
+      msg.content,
+      JSON.stringify(msg.images),
+      msg.images.length,
+      msg.created_at,
+    ],
   );
   return msg;
 }
@@ -377,19 +462,41 @@ export async function branchChat(
   const idx = all.findIndex((m) => m.id === throughMessageId);
   if (idx < 0) throw new Error("Message not found");
   const keep = all.slice(0, idx + 1);
-
-  const branched = await createChat(source.provider, source.model_id);
   const base =
     source.title && source.title !== "New Chat" ? source.title : "Chat";
   const title = `Branch · ${base}`.slice(0, 60);
   const last = keep[keep.length - 1];
-  const preview = last?.content.slice(0, 120) || "Ask AI anything…";
-  await updateChat(branched.id, { title, preview });
-
-  for (const m of keep) {
-    await addMessage(branched.id, m.role, m.content, m.created_at);
+  const preview = last?.content
+    ? last.content.slice(0, 120)
+    : last?.image_count
+      ? "Image"
+      : "Ask AI anything…";
+  const branched = await createChat(source.provider, source.model_id);
+  try {
+    await updateChat(branched.id, { title, preview });
+    const db = await getDb();
+    const copied = await db.execute(
+      `INSERT INTO messages (id, chat_id, role, content, images, image_count, created_at)
+       SELECT lower(hex(randomblob(16))), $1, role, content, images, image_count, created_at
+       FROM messages
+       WHERE chat_id = $2 AND (created_at, rowid) <=
+         (SELECT created_at, rowid FROM messages WHERE id = $3 AND chat_id = $2)
+       ORDER BY created_at, rowid`,
+      [branched.id, sourceChatId, throughMessageId],
+    );
+    if (copied.rowsAffected === 0) throw new Error("Message not found");
+    return { ...branched, title, preview };
+  } catch (error) {
+    try {
+      const db = await getDb();
+      await db.execute("DELETE FROM chats WHERE id = $1", [branched.id]);
+    } catch (cleanupError) {
+      throw new Error(
+        `Failed to create branch and clean up the incomplete chat: ${String(cleanupError)}`,
+      );
+    }
+    throw error;
   }
-  return (await getChat(branched.id)) ?? branched;
 }
 
 /** Delete every message after `afterMessageId` in that chat (keeps the message itself). */

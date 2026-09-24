@@ -11,6 +11,8 @@ import {
   addMessage,
   listOlderMessages,
   listMessages,
+  loadMessageImage,
+  loadMessageImages,
   setSetting,
   setDefaultModel,
   getSettings,
@@ -103,7 +105,8 @@ describe("db (memory sql integration)", () => {
     const source = await createChat("google", "gemini-3.8-flash");
     await updateChat(source.id, { title: "Parent", preview: "c" });
     vi.spyOn(Date, "now").mockReturnValue(10);
-    const a = await addMessage(source.id, "user", "one", 10);
+    const image = "data:image/png;base64,AAA";
+    const a = await addMessage(source.id, "user", "one", 10, [image]);
     vi.spyOn(Date, "now").mockReturnValue(20);
     const b = await addMessage(source.id, "assistant", "two", 20);
     vi.spyOn(Date, "now").mockReturnValue(30);
@@ -115,10 +118,57 @@ describe("db (memory sql integration)", () => {
     expect(branched.title).toMatch(/^Branch · Parent/);
     const msgs = await listMessages(branched.id);
     expect(msgs.map((m) => m.content)).toEqual(["one", "two"]);
+    expect(msgs[0]).toMatchObject({ images: [], image_count: 1 });
+    expect((await loadMessageImages(branched.id, msgs[0].id, msgs[1].id, 5_000_000, 4)).get(msgs[0].id)).toEqual([image]);
+    expect(await loadMessageImage(branched.id, msgs[0].id, 0)).toBe(image);
     expect(msgs.map((m) => m.created_at)).toEqual([10, 20]);
     // source unchanged
     const orig = await listMessages(source.id);
     expect(orig).toHaveLength(3);
+  });
+
+  it("keeps image-only and literal attachment previews distinct when branching", async () => {
+    const source = await createChat("google", "gemini-3.8-flash");
+    const image = "data:image/png;base64,AAA";
+    const imageOnly = await addMessage(source.id, "user", "", 10, [image]);
+    const literal = await addMessage(
+      source.id,
+      "user",
+      "[Image attachment]",
+      20,
+      [image],
+    );
+
+    const imageBranch = await branchChat(source.id, imageOnly.id);
+    const literalBranch = await branchChat(source.id, literal.id);
+    expect(imageBranch.preview).toBe("Image");
+    expect(literalBranch.preview).toBe("[Image attachment]");
+  });
+
+  it("rolls back a branch when copying an image message fails", async () => {
+    const source = await createChat("google", "gemini-3.8-flash");
+    const message = await addMessage(
+      source.id,
+      "user",
+      "look",
+      10,
+      ["data:image/png;base64,AAA"],
+    );
+    const { default: Database } = await import("../test/memory-sql");
+    const db = await Database.load();
+    const realExecute = db.execute.bind(db);
+    let failed = false;
+    db.execute = async (query: string, bindValues: unknown[] = []) => {
+      if (query.includes("INSERT INTO messages") && !failed) {
+        failed = true;
+        throw new Error("copy failed");
+      }
+      return realExecute(query, bindValues);
+    };
+
+    await expect(branchChat(source.id, message.id)).rejects.toThrow("copy failed");
+    db.execute = realExecute;
+    expect((await listChats()).map((chat) => chat.id)).toEqual([source.id]);
   });
 
   it("deleteMessagesAfter keeps the anchor and drops the rest", async () => {
@@ -145,6 +195,92 @@ describe("db (memory sql integration)", () => {
     await refreshChatPreview(chat.id);
     vi.spyOn(Date, "now").mockRestore();
     expect(await getChat(chat.id)).toMatchObject({ preview: "later message", updated_at: 500 });
+  });
+
+  it("previews image-only messages without relabeling literal text", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    const image = "data:image/png;base64,BBB";
+    const message = await addMessage(chat.id, "user", "", 200, [image]);
+    vi.spyOn(Date, "now").mockReturnValue(500);
+    await refreshChatPreview(chat.id);
+    vi.spyOn(Date, "now").mockRestore();
+
+    const [stored] = await listMessages(chat.id);
+    expect(stored).toMatchObject({
+      id: message.id,
+      images: [],
+      image_count: 1,
+    });
+    expect(await loadMessageImage(chat.id, message.id, 0)).toBe(image);
+    expect(await getChat(chat.id)).toMatchObject({ preview: "Image", updated_at: 500 });
+    await addMessage(chat.id, "user", "[Image attachment]", 210, [image]);
+    await refreshChatPreview(chat.id);
+    expect(await getChat(chat.id)).toMatchObject({ preview: "[Image attachment]" });
+  });
+
+  it("loads only the newest images within provider budgets", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    const first = await addMessage(
+      chat.id,
+      "user",
+      "first",
+      10,
+      ["data:image/png;base64,AAA"],
+    );
+    const second = await addMessage(
+      chat.id,
+      "user",
+      "second",
+      20,
+      ["data:image/png;base64,BBB"],
+    );
+    const third = await addMessage(
+      chat.id,
+      "user",
+      "third",
+      30,
+      ["data:image/png;base64,CCC"],
+    );
+    const loaded = await loadMessageImages(chat.id, second.id, third.id, 5_000_000, 2);
+    expect(new Set(loaded.keys())).toEqual(new Set([second.id, third.id]));
+    expect(loaded.has(first.id)).toBe(false);
+  });
+
+  it("does not load images before the retained history boundary", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    const old = await addMessage(
+      chat.id,
+      "user",
+      "old image",
+      10,
+      ["data:image/png;base64,OLD"],
+    );
+    const boundary = await addMessage(chat.id, "assistant", "boundary", 20);
+    const recent = await addMessage(
+      chat.id,
+      "user",
+      "recent image",
+      30,
+      ["data:image/png;base64,NEW"],
+    );
+    const anchor = await addMessage(chat.id, "assistant", "anchor", 40);
+
+    const loaded = await loadMessageImages(
+      chat.id,
+      boundary.id,
+      anchor.id,
+      5_000_000,
+      4,
+    );
+    expect([...loaded.keys()]).toEqual([recent.id]);
+    expect(loaded.has(old.id)).toBe(false);
+  });
+
+  it("does not label an empty text response as an image", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    await addMessage(chat.id, "assistant", "", 200);
+    await refreshChatPreview(chat.id);
+    expect(await getChat(chat.id)).toMatchObject({ preview: "" });
   });
 
   it("setDefaultModel CAS skips when live defaults already moved", async () => {

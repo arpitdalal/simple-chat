@@ -25,7 +25,13 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
-import { ChatSession, chatCanBeDiscarded, getChatSession, sessionHasWork } from "./lib/chat-runtime";
+import {
+  ChatSession,
+  chatCanBeDiscarded,
+  getChatSession,
+  messageCopyText,
+  sessionHasWork,
+} from "./lib/chat-runtime";
 import {
   checkForAppUpdate,
   isRestartRequiredError,
@@ -618,7 +624,7 @@ function App() {
 
   async function handleCopy(id: string) {
     const msgs = await listMessages(id);
-    const text = msgs.map((m) => `${m.role}:\n${m.content}`).join("\n\n");
+    const text = msgs.map((m) => `${m.role}:\n${messageCopyText(m)}`).join("\n\n");
     await navigator.clipboard.writeText(text);
   }
 

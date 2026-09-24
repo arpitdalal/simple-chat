@@ -1,7 +1,7 @@
 import type { MouseEvent, AnchorHTMLAttributes } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Props = {
@@ -11,11 +11,22 @@ type Props = {
 };
 
 const OPEN_FAILED = "Could not open the system browser.";
-const OPENABLE = new Set(["http:", "https:", "mailto:"]);
+const OPENABLE = new Set(["http:", "https:", "mailto:", "tel:"]);
+const schema = {
+  ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    href: [...(defaultSchema.protocols?.href ?? []), "tel"],
+  },
+};
+
+function urlTransform(value: string) {
+  return /^tel:/i.test(value) ? value : defaultUrlTransform(value);
+}
 
 function externalHref(href: string): string | null {
   try {
-    const url = new URL(href, window.location.href);
+    const url = new URL(href.startsWith("//") ? `https:${href}` : href, window.location.href);
     if (!OPENABLE.has(url.protocol)) return null;
     if (url.origin === window.location.origin) return null;
     return url.href;
@@ -32,7 +43,8 @@ function MarkdownLink({
 }: AnchorHTMLAttributes<HTMLAnchorElement> & Pick<Props, "onLinkError">) {
   function activate(event: MouseEvent<HTMLAnchorElement>) {
     event.preventDefault();
-    const url = externalHref(event.currentTarget.href);
+    const raw = href ?? event.currentTarget.getAttribute("href");
+    const url = raw ? externalHref(raw) : null;
     if (!url) return;
     void openUrl(url).catch((err) => {
       onLinkError?.((err as Error).message || OPEN_FAILED);
@@ -56,7 +68,8 @@ export function Markdown({ content, className, onLinkError }: Props) {
     <div className={className ?? "md"}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
+        rehypePlugins={[[rehypeSanitize, schema]]}
+        urlTransform={urlTransform}
         components={{
           a: (props) => <MarkdownLink {...props} onLinkError={onLinkError} />,
         }}

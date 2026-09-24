@@ -60,6 +60,20 @@ describe("Markdown", () => {
     expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
   });
 
+  it("opens tel links in the system handler", () => {
+    render(<Markdown content={"call [me](tel:+15551234)"} />);
+    const event = click(screen.getByRole("link", { name: "me" }));
+    expect(event.defaultPrevented).toBe(true);
+    expect(openUrl).toHaveBeenCalledWith("tel:+15551234");
+  });
+
+  it("opens scheme-relative links as https", () => {
+    render(<Markdown content={"see [docs](//example.com/a)"} />);
+    const event = click(screen.getByRole("link", { name: "docs" }));
+    expect(event.defaultPrevented).toBe(true);
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
+  });
+
   it("opens mailto links in the system handler", () => {
     render(<Markdown content={"email [me](mailto:hi@example.com)"} />);
     const event = click(screen.getByRole("link", { name: "me" }));

@@ -14,7 +14,6 @@ import {
   refreshChatPreview,
   replaceChatTitle,
   setInitialChatTitle,
-  IMAGE_ATTACHMENT_PLACEHOLDER,
   type Chat,
   type Message,
 } from "./db";
@@ -196,9 +195,7 @@ function userContent(
   message: Pick<Message, "content" | "images" | "image_count">,
 ): UserContent {
   const hasImages = message.images.length > 0 || (message.image_count ?? 0) > 0;
-  const text = hasImages && message.content === IMAGE_ATTACHMENT_PLACEHOLDER
-    ? ""
-    : message.content;
+  const text = message.content;
   if (message.images.length) {
     return [
       { type: "text" as const, text: text || "Describe these images." },
@@ -431,8 +428,7 @@ export class ChatSession {
       const live = await getChat(this.id);
       if (!live) throw new Error("Chat was deleted.");
       this.abortIfNeeded(turn.ac);
-      const storedText = turn.text || (turn.images?.length ? IMAGE_ATTACHMENT_PLACEHOLDER : "");
-      const user = await addMessage(this.id, "user", storedText, Date.now(), turn.images);
+      const user = await addMessage(this.id, "user", turn.text ?? "", Date.now(), turn.images ?? []);
       persisted = true;
       const userMetadata = persistedMessageMetadata(user);
       this.publish({ messages: this.snapshot.messages.filter((m) => m.id !== user.id).map((m) => m.id === turn.tempId ? userMetadata : m) });

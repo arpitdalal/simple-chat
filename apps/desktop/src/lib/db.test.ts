@@ -5,7 +5,6 @@ vi.mock("@tauri-apps/plugin-sql", () => import("../test/memory-sql"));
 import {
   createChat,
   deleteChat,
-  IMAGE_ATTACHMENT_PLACEHOLDER,
   getChat,
   listChats,
   listRecentMessages,
@@ -128,6 +127,24 @@ describe("db (memory sql integration)", () => {
     expect(orig).toHaveLength(3);
   });
 
+  it("keeps image-only and literal attachment previews distinct when branching", async () => {
+    const source = await createChat("google", "gemini-3.8-flash");
+    const image = "data:image/png;base64,AAA";
+    const imageOnly = await addMessage(source.id, "user", "", 10, [image]);
+    const literal = await addMessage(
+      source.id,
+      "user",
+      "[Image attachment]",
+      20,
+      [image],
+    );
+
+    const imageBranch = await branchChat(source.id, imageOnly.id);
+    const literalBranch = await branchChat(source.id, literal.id);
+    expect(imageBranch.preview).toBe("Image");
+    expect(literalBranch.preview).toBe("[Image attachment]");
+  });
+
   it("rolls back a branch when copying an image message fails", async () => {
     const source = await createChat("google", "gemini-3.8-flash");
     const message = await addMessage(
@@ -180,7 +197,7 @@ describe("db (memory sql integration)", () => {
     expect(await getChat(chat.id)).toMatchObject({ preview: "later message", updated_at: 500 });
   });
 
-  it("persists image-only messages with a useful preview", async () => {
+  it("previews image-only messages without relabeling literal text", async () => {
     const chat = await createChat("google", "gemini-3.8-flash");
     const image = "data:image/png;base64,BBB";
     const message = await addMessage(chat.id, "user", "", 200, [image]);
@@ -196,9 +213,9 @@ describe("db (memory sql integration)", () => {
     });
     expect(await loadMessageImage(chat.id, message.id, 0)).toBe(image);
     expect(await getChat(chat.id)).toMatchObject({ preview: "Image", updated_at: 500 });
-    await addMessage(chat.id, "user", IMAGE_ATTACHMENT_PLACEHOLDER, 210, [image]);
+    await addMessage(chat.id, "user", "[Image attachment]", 210, [image]);
     await refreshChatPreview(chat.id);
-    expect(await getChat(chat.id)).toMatchObject({ preview: "Image" });
+    expect(await getChat(chat.id)).toMatchObject({ preview: "[Image attachment]" });
   });
 
   it("loads only the newest images within provider budgets", async () => {

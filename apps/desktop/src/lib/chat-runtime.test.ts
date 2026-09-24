@@ -22,7 +22,6 @@ vi.mock("./chat", () => ({
   generateChatTitle: vi.fn(async () => "Title"),
 }));
 vi.mock("./db", () => ({
-  IMAGE_ATTACHMENT_PLACEHOLDER: "[Image attachment]",
   addMessage: (...args: unknown[]) => addMessage(...args),
   getChat: (...args: unknown[]) => getChat(...args),
   listRecentMessages: (...args: unknown[]) => listRecentMessages(...args),
@@ -136,13 +135,61 @@ describe("ChatSession", () => {
     expect(normalizeImageDataUrl(data)).toMatchObject({ width: 4096, height: 4093 });
   });
 
-  it("preserves literal attachment sentinel text without images", async () => {
+  it("preserves literal attachment text without images", async () => {
     const session = getChatSession("a");
     session.send(chat("a"), "[Image attachment]", [], callbacks);
     await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
     expect(streamChat.mock.calls[0][0].messages).toEqual([{
       role: "user",
       content: "[Image attachment]",
+    }]);
+  });
+
+  it("preserves literal attachment text alongside images", async () => {
+    const session = getChatSession("a");
+    const unsubscribe = session.subscribe(() => {});
+    session.send(chat("a"), "[Image attachment]", [pngImage], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    expect(addMessage).toHaveBeenCalledWith(
+      "a",
+      "user",
+      "[Image attachment]",
+      expect.any(Number),
+      [pngImage],
+    );
+    expect(session.getSnapshot().messages[0]).toMatchObject({
+      content: "[Image attachment]",
+      image_count: 1,
+    });
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "[Image attachment]" },
+        { type: "image", image: pngImage },
+      ],
+    }]);
+    unsubscribe();
+  });
+
+  it("stores image-only sends with empty content", async () => {
+    const session = getChatSession("a");
+    session.send(chat("a"), "", [pngImage], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    expect(addMessage).toHaveBeenCalledWith(
+      "a",
+      "user",
+      "",
+      expect.any(Number),
+      [pngImage],
+    );
+    expect(streamChat.mock.calls[0][0].messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "Describe these images." },
+        { type: "image", image: pngImage },
+      ],
     }]);
   });
 

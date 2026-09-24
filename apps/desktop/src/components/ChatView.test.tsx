@@ -50,7 +50,6 @@ vi.mock("../lib/keys", () => ({
 }));
 
 vi.mock("../lib/db", () => ({
-  IMAGE_ATTACHMENT_PLACEHOLDER: "[Image attachment]",
   addMessage: (...a: unknown[]) => addMessage(...a),
   listRecentMessages: (...a: unknown[]) => listRecentMessages(...a),
   listOlderMessages: (...a: unknown[]) => listOlderMessages(...a),
@@ -738,7 +737,7 @@ describe("ChatView", () => {
     expect(addMessage).toHaveBeenCalledWith(
       "c1",
       "user",
-      "[Image attachment]",
+      "",
       expect.any(Number),
       [
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABQUFB",
@@ -894,7 +893,7 @@ describe("ChatView", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders an attached image in the sent user message", async () => {
+  it("renders literal attachment text alongside a sent image", async () => {
     const user = userEvent.setup();
     const image = pngImage;
     vi.stubGlobal(
@@ -932,7 +931,10 @@ describe("ChatView", () => {
         focusNonce={1}
       />,
     );
-    await user.type(await screen.findByPlaceholderText("Ask AI anything…"), "look");
+    await user.type(
+      await screen.findByPlaceholderText("Ask AI anything…"),
+      "[[Image attachment]",
+    );
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(["x"], "photo.png", { type: "image/png" });
     await act(async () => {
@@ -944,10 +946,11 @@ describe("ChatView", () => {
 
     const sentImage = await screen.findByAltText("Attached image 1");
     expect(sentImage).toHaveAttribute("src", image);
+    expect(screen.getByText("[Image attachment]")).toBeInTheDocument();
     expect(addMessage).toHaveBeenCalledWith(
       "c1",
       "user",
-      "look",
+      "[Image attachment]",
       expect.any(Number),
       [image],
     );

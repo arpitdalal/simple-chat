@@ -3,7 +3,6 @@ import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  IMAGE_ATTACHMENT_PLACEHOLDER,
   loadMessageImage,
   updateChat,
   type Chat,
@@ -401,10 +400,7 @@ export function ChatView({
                           <Markdown content={m!.content} />
                         ) : (
                           <>
-                            {m!.content &&
-                              (m!.content !== IMAGE_ATTACHMENT_PLACEHOLDER || !messageHasImages(m!)) && (
-                                <div className="msg-user">{m!.content}</div>
-                              )}
+                            {m!.content && <div className="msg-user">{m!.content}</div>}
                             {messageHasImages(m!) && (
                               <div className="sent-images">
                                 {Array.from({

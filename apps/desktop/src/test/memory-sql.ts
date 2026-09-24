@@ -145,9 +145,9 @@ class MemoryDatabase {
         .sort((a, b) => b.created_at - a.created_at || messages.indexOf(b) - messages.indexOf(a))[0];
       if (i >= 0) {
         const preview = latest
-          ? latest.content && latest.content !== "[Image attachment]"
+          ? latest.content
             ? Array.from(latest.content).slice(0, 120).join("")
-            : latest.images.length
+            : (latest.image_count ?? latest.images.length)
               ? "Image"
               : ""
           : "Ask AI anything…";

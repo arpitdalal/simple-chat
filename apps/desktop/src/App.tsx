@@ -712,10 +712,13 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    void onMainWindowHidden(() => {
+    void onMainWindowHidden((hiddenAt) => {
       showResumeGenRef.current += 1;
       pendingShowRef.current = false;
-      const write = setSetting("last_opened_at", Date.now());
+      const write = setSetting(
+        "last_opened_at",
+        typeof hiddenAt === "number" ? hiddenAt : Date.now(),
+      );
       lastHiddenWriteRef.current = write;
       void write.catch((err) => {
         console.error("resume timestamp failed", err);
@@ -761,7 +764,11 @@ function App() {
                   }
                 }
               }
-              await settingsFlushRef.current?.();
+              try {
+                await settingsFlushRef.current?.();
+              } catch (err) {
+                console.error("settings flush failed", err);
+              }
               if (isStale()) return;
               const settingsSnapshot = await getSettings();
               if (isStale()) return;

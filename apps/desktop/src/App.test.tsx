@@ -282,9 +282,9 @@ describe("App UX", () => {
     expect(document.querySelector(".title-pill")).toHaveTextContent("Previous chat");
     await waitFor(() => expect(mainWindowShownListenerCountForTests()).toBeGreaterThan(0));
     vi.mocked(setSetting).mockClear();
-    emitMainWindowHiddenForTests();
+    emitMainWindowHiddenForTests(123456);
     await waitFor(() =>
-      expect(setSetting).toHaveBeenCalledWith("last_opened_at", expect.any(Number)),
+      expect(setSetting).toHaveBeenCalledWith("last_opened_at", 123456),
     );
 
     vi.mocked(getSettings).mockImplementation(async () => ({

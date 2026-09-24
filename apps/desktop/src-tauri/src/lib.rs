@@ -2,6 +2,7 @@ mod db;
 mod focus;
 mod keys;
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -17,7 +18,11 @@ fn hide_main_window(app: &AppHandle) {
     focus::restore_previous_app();
     if let Some(window) = app.get_webview_window("main") {
         if window.hide().is_ok() {
-            let _ = window.emit("main-window-hidden", ());
+            let hidden_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or_default();
+            let _ = window.emit("main-window-hidden", hidden_at);
         }
     }
     focus::end_restore();

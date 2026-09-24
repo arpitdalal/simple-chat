@@ -9,7 +9,7 @@ export const MESSAGE_PAGE = 50;
  */
 export const MAX_CACHED_MESSAGES = 200;
 
-/** Emitted by Rust immediately before the main window hides. */
+/** Emitted by Rust after the main window hides. */
 export const MAIN_WINDOW_HIDDEN_EVENT = "main-window-hidden";
 export const MAIN_WINDOW_SHOWN_EVENT = "main-window-shown";
 
@@ -21,7 +21,7 @@ export function trimRecentMessages<T>(messages: T[], limit: number): T[] {
 
 /** Subscribe to tray/hide; no-op outside a live Tauri webview. */
 export async function onMainWindowHidden(
-  handler: () => void,
+  handler: (hiddenAt?: unknown) => void,
 ): Promise<() => void> {
   return onMainWindowEvent(MAIN_WINDOW_HIDDEN_EVENT, handler);
 }
@@ -34,11 +34,11 @@ export async function onMainWindowShown(
 
 async function onMainWindowEvent(
   event: string,
-  handler: () => void,
+  handler: (payload?: unknown) => void,
 ): Promise<() => void> {
   try {
-    return await listen(event, () => {
-      handler();
+    return await listen(event, (event) => {
+      handler(event.payload);
     });
   } catch (error) {
     console.error("window lifecycle listener failed", error);

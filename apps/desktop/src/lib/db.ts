@@ -127,13 +127,23 @@ export async function prepareDb(db: Database) {
     "SELECT id, title, preview FROM chats WHERE search_normalized = 0",
   );
   for (let offset = 0; offset < searchRows.length; offset += 50) {
-    await Promise.all(
-      searchRows.slice(offset, offset + 50).map((row) =>
-        db.execute(
-          "UPDATE chats SET title_search = $1, preview_search = $2, search_normalized = 1 WHERE id = $3",
-          [row.title.toLowerCase(), row.preview.toLowerCase(), row.id],
-        ),
-      ),
+    const values: string[] = [];
+    const params: unknown[] = [];
+    for (const row of searchRows.slice(offset, offset + 50)) {
+      const base = params.length;
+      params.push(row.id, row.title.toLowerCase(), row.preview.toLowerCase());
+      values.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+    }
+    await db.execute(
+      `WITH search_input(id, title_search, preview_search) AS (
+         VALUES ${values.join(", ")}
+       )
+       UPDATE chats SET
+         title_search = (SELECT title_search FROM search_input WHERE search_input.id = chats.id),
+         preview_search = (SELECT preview_search FROM search_input WHERE search_input.id = chats.id),
+         search_normalized = 1
+       WHERE id IN (SELECT id FROM search_input)`,
+      params,
     );
   }
 }
@@ -401,7 +411,7 @@ export async function refreshChatPreview(id: string): Promise<void> {
   const db = await getDb();
   const updatedAt = Date.now();
   const result = await db.execute(
-    `UPDATE chats SET updated_at = $2, preview = COALESCE(
+    `UPDATE chats SET updated_at = $2, search_normalized = 0, preview = COALESCE(
        (SELECT CASE
           WHEN content = '' AND image_count > 0 THEN 'Image'
           ELSE substr(content, 1, 120)

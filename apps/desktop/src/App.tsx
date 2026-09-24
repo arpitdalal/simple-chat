@@ -433,15 +433,10 @@ function App() {
       ) {
         return chat;
       }
-      await updateChat(chat.id, {
+      return updateChat(chat.id, {
         provider: picked.provider,
         model_id: picked.modelId,
       });
-      return {
-        ...chat,
-        provider: picked.provider,
-        model_id: picked.modelId,
-      };
     },
     [],
   );

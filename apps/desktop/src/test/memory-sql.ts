@@ -139,7 +139,7 @@ class MemoryDatabase {
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
-    if (q.includes("UPDATE chats SET updated_at = $2, preview = COALESCE")) {
+    if (q.includes("UPDATE chats SET updated_at = $2, search_normalized = 0, preview = COALESCE")) {
       const id = String(args[0]);
       const i = chats.findIndex((c) => c.id === id);
       const latest = messages.filter((m) => m.chat_id === id)

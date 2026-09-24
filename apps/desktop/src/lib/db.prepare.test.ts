@@ -37,8 +37,8 @@ describe("prepareDb", () => {
       .mockResolvedValueOnce([{ id: "1", title: "École", preview: "Café" }]);
     await prepareDb({ execute, select } as never);
     expect(execute).toHaveBeenCalledWith(
-      expect.stringContaining("title_search"),
-      ["école", "café", "1"],
+      expect.stringContaining("WITH search_input"),
+      expect.arrayContaining(["école", "café", "1"]),
     );
   });
 

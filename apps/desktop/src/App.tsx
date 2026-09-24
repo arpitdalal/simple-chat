@@ -212,6 +212,8 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
   const readyRef = useRef(false);
+  const showResumeGenRef = useRef(0);
+  const lastHiddenWriteRef = useRef<Promise<unknown> | null>(null);
   const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -314,6 +316,7 @@ function App() {
    */
   const cancelNav = useCallback(() => {
     navGenRef.current += 1;
+    showResumeGenRef.current += 1;
     if (keySyncWantedRef.current) scheduleKeySyncRef.current();
   }, []);
 
@@ -488,6 +491,7 @@ function App() {
 
   const newChat = useCallback(async () => {
     if (!settings) return;
+    showResumeGenRef.current += 1;
     try {
       await runNav(async (isCancelled) => {
         // Drain Settings debounce so a just-picked default is visible.
@@ -690,7 +694,8 @@ function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void onMainWindowHidden(() => {
-      void setSetting("last_opened_at", Date.now()).catch((err) => {
+      showResumeGenRef.current += 1;
+      lastHiddenWriteRef.current = setSetting("last_opened_at", Date.now()).catch((err) => {
         console.error("resume timestamp failed", err);
       });
     }).then((fn) => {
@@ -708,24 +713,27 @@ function App() {
     let cancelled = false;
     const onShown = () => {
       if (!readyRef.current) return;
+      const gen = showResumeGenRef.current;
       showResumeChain.current = showResumeChain.current
         .catch(() => undefined)
         .then(async () => {
-          if (cancelled) return;
+          if (cancelled || gen !== showResumeGenRef.current) return;
           try {
+            await lastHiddenWriteRef.current;
+            if (cancelled || gen !== showResumeGenRef.current) return;
             const s = await getSettings();
-            if (cancelled) return;
+            if (cancelled || gen !== showResumeGenRef.current) return;
             setSettings(s);
             const chat = await openOrCreateChat(s);
-            if (cancelled) return;
+            if (cancelled || gen !== showResumeGenRef.current) return;
             await setSetting("last_opened_at", Date.now());
             await setSetting("last_chat_id", chat.id);
-            if (cancelled) return;
+            if (cancelled || gen !== showResumeGenRef.current) return;
             setActiveIdNow(chat.id);
             setActiveChat(chat);
             await refreshChats();
+            if (cancelled || gen !== showResumeGenRef.current) return;
             upsertChat(chat);
-            if (cancelled) return;
             focusComposer();
           } catch (err) {
             console.error("resume on show failed", err);

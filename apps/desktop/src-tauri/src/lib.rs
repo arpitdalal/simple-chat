@@ -28,9 +28,12 @@ fn hide_main_window(app: &AppHandle) {
 fn show_main_window(app: &AppHandle) {
     focus::capture_previous_app();
     if let Some(window) = app.get_webview_window("main") {
+        let was_visible = window.is_visible().unwrap_or(false);
         let _ = window.show();
         let _ = window.set_focus();
-        let _ = window.emit("main-window-shown", ());
+        if !was_visible {
+            let _ = window.emit("main-window-shown", ());
+        }
     }
 }
 

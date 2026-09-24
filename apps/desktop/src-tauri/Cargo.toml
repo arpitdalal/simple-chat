@@ -1,6 +1,6 @@
 [package]
 name = "simple-chat"
-version = "0.1.0"
+version = "1.0.0"
 description = "Simple Chat — local BYOK AI chat"
 authors = ["arpitdalal"]
 edition = "2021"

@@ -221,6 +221,7 @@ function App() {
   const resumeShowRef = useRef<((hiddenAt?: unknown) => void) | null>(null);
   const lastShownHiddenAtRef = useRef(0);
   const hiddenWriteFailedRef = useRef(false);
+  const resumePersistenceFailedRef = useRef(false);
   const lastHiddenWriteRef = useRef<Promise<unknown> | null>(null);
   const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const [composerFocus, setComposerFocus] = useState(0);
@@ -645,12 +646,16 @@ function App() {
       const chat = await openOrCreateChat(s);
       if (cancelled) return;
       const visibleAtBoot = await getCurrentWindow().isVisible().catch(() => false);
-      if (visibleAtBoot) {
-        await setResumeState(Date.now(), chat.id);
-      } else {
-        suppressResumeTimestampRef.current = true;
-        bootWasHiddenRef.current = true;
-        await setSetting("last_chat_id", chat.id);
+      try {
+        if (visibleAtBoot) {
+          await setResumeState(Date.now(), chat.id);
+        } else {
+          suppressResumeTimestampRef.current = true;
+          bootWasHiddenRef.current = true;
+          await setSetting("last_chat_id", chat.id);
+        }
+      } catch (err) {
+        console.error("initial resume persistence failed", err);
       }
       setActiveIdNow(chat.id);
       setActiveChat(chat);
@@ -807,7 +812,7 @@ function App() {
               if (isStale()) return;
               setSettings(settingsSnapshot);
               priorChatId = settingsSnapshot.last_chat_id;
-              const resumeSettings = hiddenWriteFailed
+              const resumeSettings = hiddenWriteFailed || resumePersistenceFailedRef.current
                 ? { ...settingsSnapshot, last_opened_at: 0 }
                 : settingsSnapshot;
               const resumedChat = await openOrCreateChat(resumeSettings);
@@ -828,7 +833,9 @@ function App() {
               suppressResumeTimestampRef.current = false;
               try {
                 await setResumeState(Date.now(), resumedChat.id);
+                resumePersistenceFailedRef.current = false;
               } catch (err) {
+                resumePersistenceFailedRef.current = true;
                 console.error("resume state persistence failed", err);
                 notify((err as Error).message || String(err), "err");
               }

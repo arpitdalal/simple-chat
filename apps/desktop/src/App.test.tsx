@@ -201,7 +201,7 @@ describe("App UX", () => {
       ready: ["google"],
       ok: true,
     });
-    const { listChatPage, messageCount, setSetting } = await import("./lib/db");
+    const { getSettings, listChatPage, messageCount, setSetting } = await import("./lib/db");
     vi.mocked(listChatPage).mockReset();
     vi.mocked(listChatPage).mockImplementation(async ({ query = "" } = {}) => {
       const normalized = query.trim().toLowerCase();
@@ -219,6 +219,19 @@ describe("App UX", () => {
     vi.mocked(messageCount).mockResolvedValue(0);
     vi.mocked(setSetting).mockReset();
     vi.mocked(setSetting).mockResolvedValue(undefined);
+    vi.mocked(getSettings).mockReset();
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: true,
+    });
     isAutostartEnabled.mockReset().mockResolvedValue(false);
     setAutostartEnabled.mockReset().mockResolvedValue(undefined);
     openOrCreateChat.mockClear();

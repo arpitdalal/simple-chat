@@ -43,15 +43,14 @@ fn show_main_window(app: &AppHandle) -> Result<(), String> {
         window.unminimize().map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
         let focus_result = window.set_focus();
+        WINDOW_MINIMIZED.store(false, Ordering::Relaxed);
         if !was_visible {
             let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
             window
                 .emit("main-window-shown", hidden_at)
                 .map_err(|error| error.to_string())?;
         }
-        WINDOW_MINIMIZED.store(false, Ordering::Relaxed);
         focus_result.map_err(|error| error.to_string())?;
-
     }
     Ok(())
 }
@@ -238,7 +237,6 @@ pub fn run() {
                             .map(|duration| duration.as_millis() as u64)
                             .unwrap_or_default();
                         LAST_HIDDEN_AT.store(hidden_at, Ordering::Relaxed);
-                        let _ = window.emit("main-window-hidden", hidden_at);
                     } else if !minimized && was_minimized {
                         let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
                         let _ = window.emit("main-window-shown", hidden_at);

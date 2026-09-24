@@ -42,6 +42,10 @@ Inspired by Raycast v2 charging for AI chat even with BYOK. Not everyone needs p
 
 ## FAQ
 
+### What does it cost?
+
+Nothing. Simple Chat itself is free. You pay only your model provider, on your own keys.
+
 ### Why not Siri, MS Copilot, ChatGPT, Claude Code, etc — and why BYOK?
 
 Not every piece of information can be sent everywhere. If your business requires strict privacy or your employer mandates using a specific, sanctioned API key—BYOK ensures your prompts go directly to that endpoint and nowhere else.

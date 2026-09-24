@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, waitFor } from "@testing-library/react";
 import { Markdown } from "./Markdown";
 
 const openUrl = vi.fn(async () => undefined);
@@ -9,9 +8,16 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrl(...args),
 }));
 
+function click(link: Element, init?: MouseEventInit) {
+  const event = new MouseEvent("click", { bubbles: true, cancelable: true, ...init });
+  link.dispatchEvent(event);
+  return event;
+}
+
 describe("Markdown", () => {
   beforeEach(() => {
     openUrl.mockReset();
+    openUrl.mockResolvedValue(undefined);
   });
 
   it("renders headings and lists", () => {
@@ -46,31 +52,50 @@ describe("Markdown", () => {
     expect(link!.hasAttribute("href")).toBe(false);
   });
 
-  it("opens https links in the system browser and keeps the webview put", async () => {
-    const user = userEvent.setup();
+  it("opens https links in the system browser and keeps the webview put", () => {
     render(<Markdown content={"see [docs](https://example.com/a)"} />);
-    const link = screen.getByRole("link", { name: "docs" });
-
-    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
-    link.dispatchEvent(click);
-    expect(click.defaultPrevented).toBe(true);
-
-    await user.click(link);
+    const event = click(screen.getByRole("link", { name: "docs" }));
+    expect(event.defaultPrevented).toBe(true);
+    expect(openUrl).toHaveBeenCalledTimes(1);
     expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
   });
 
-  it("opens mailto links in the system handler", async () => {
-    const user = userEvent.setup();
+  it("opens mailto links in the system handler", () => {
     render(<Markdown content={"email [me](mailto:hi@example.com)"} />);
-    await user.click(screen.getByRole("link", { name: "me" }));
+    const event = click(screen.getByRole("link", { name: "me" }));
+    expect(event.defaultPrevented).toBe(true);
     expect(openUrl).toHaveBeenCalledWith("mailto:hi@example.com");
   });
 
-  it("does not open same-origin or relative links", async () => {
-    const user = userEvent.setup();
+  it("opens middle-clicked https links without navigating the webview", () => {
+    render(<Markdown content={"see [docs](https://example.com/a)"} />);
+    const event = new MouseEvent("auxclick", {
+      bubbles: true,
+      cancelable: true,
+      button: 1,
+    });
+    screen.getByRole("link", { name: "docs" }).dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
+  });
+
+  it("blocks same-origin and relative links from navigating the webview", () => {
     render(<Markdown content={"go [home](/chat) or [rel](./local)"} />);
-    await user.click(screen.getByRole("link", { name: "home" }));
-    await user.click(screen.getByRole("link", { name: "rel" }));
+    for (const name of ["home", "rel"]) {
+      const event = click(screen.getByRole("link", { name }));
+      expect(event.defaultPrevented).toBe(true);
+    }
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("keeps the webview put and reports when the system browser fails", async () => {
+    openUrl.mockRejectedValueOnce(new Error("boom"));
+    const onLinkError = vi.fn();
+    render(
+      <Markdown content={"see [docs](https://example.com/a)"} onLinkError={onLinkError} />,
+    );
+    const event = click(screen.getByRole("link", { name: "docs" }));
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(onLinkError).toHaveBeenCalledWith("boom"));
   });
 });

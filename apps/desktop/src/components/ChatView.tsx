@@ -383,12 +383,14 @@ export function ChatView({
                     {isStream ? (
                       <>
                         <div className="thinking-pill">Thinking…</div>
-                        {streaming && <Markdown content={streaming} />}
+                        {streaming && (
+                          <Markdown content={streaming} onLinkError={(text) => onNotify(text, "err")} />
+                        )}
                       </>
                     ) : (
                       <>
                         {m!.role === "assistant" ? (
-                          <Markdown content={m!.content} />
+                          <Markdown content={m!.content} onLinkError={(text) => onNotify(text, "err")} />
                         ) : (
                           <>
                             {m!.content && <div className="msg-user">{m!.content}</div>}

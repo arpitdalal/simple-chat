@@ -4,9 +4,14 @@ import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-type Props = { content: string; className?: string };
+type Props = {
+  content: string;
+  className?: string;
+  onLinkError?: (message: string) => void;
+};
 
-const OPENABLE = new Set(["http:", "https:", "mailto:", "tel:"]);
+const OPEN_FAILED = "Could not open the system browser.";
+const OPENABLE = new Set(["http:", "https:", "mailto:"]);
 
 function externalHref(href: string): string | null {
   try {
@@ -19,27 +24,37 @@ function externalHref(href: string): string | null {
   }
 }
 
-function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
-  function onClick(event: MouseEvent<HTMLAnchorElement>) {
+function MarkdownLink({
+  href,
+  children,
+  onLinkError,
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & Pick<Props, "onLinkError">) {
+  function activate(event: MouseEvent<HTMLAnchorElement>) {
     event.preventDefault();
     const url = externalHref(event.currentTarget.href);
-    if (url) void openUrl(url).catch(() => {});
+    if (!url) return;
+    void openUrl(url).catch((err) => {
+      onLinkError?.((err as Error).message || OPEN_FAILED);
+    });
   }
 
   return (
-    <a {...props} href={href} onClick={onClick}>
+    <a {...props} href={href} onClick={activate} onAuxClick={activate}>
       {children}
     </a>
   );
 }
 
-export function Markdown({ content, className }: Props) {
+export function Markdown({ content, className, onLinkError }: Props) {
   return (
     <div className={className ?? "md"}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
-        components={{ a: MarkdownLink }}
+        components={{
+          a: (props) => <MarkdownLink {...props} onLinkError={onLinkError} />,
+        }}
       >
         {content}
       </ReactMarkdown>

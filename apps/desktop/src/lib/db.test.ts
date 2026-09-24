@@ -96,9 +96,16 @@ describe("db (memory sql integration)", () => {
     });
     db.select = realSelect;
     expect(captured).toContain(
-      "(pinned, updated_at, id) < ($2, $3, $4) AND (instr(lower(title)",
+      "(pinned, updated_at, id) < ($2, $3, $4) AND (instr(title_search",
     );
-    expect(captured).toContain("OR instr(lower(preview), lower($5)) > 0)");
+    expect(captured).toContain("OR instr(preview_search, $5) > 0)");
+  });
+
+  it("searches non-ASCII text with the same normalization as retained rows", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    await updateChat(chat.id, { title: "École" });
+    const page = await listChatPage({ query: "école" });
+    expect(page.chats.map((item) => item.id)).toEqual([chat.id]);
   });
 
   it("finds an empty chat beyond the first 200 rows", async () => {

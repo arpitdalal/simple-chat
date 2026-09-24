@@ -151,7 +151,7 @@ function useChatList(ready: boolean, retainedChat: Chat | null) {
   }, [refresh]);
 
   const upsert = useCallback((chat: Chat) => {
-    removedIdsRef.current.delete(chat.id);
+    if (removedIdsRef.current.has(chat.id)) return;
     setChats((current) => {
       const remaining = current.filter((item) => item.id !== chat.id);
       return chatMatchesQuery(chat, queryRef.current)
@@ -190,6 +190,7 @@ function useChatList(ready: boolean, retainedChat: Chat | null) {
   return {
     chats,
     query,
+    queryRef,
     hasMore,
     loading: pendingGeneration !== null,
     loadError,
@@ -232,6 +233,7 @@ function App() {
   const {
     chats,
     query,
+    queryRef: currentQueryRef,
     hasMore: hasMoreChats,
     loading: chatsLoading,
     loadError: chatLoadError,
@@ -782,9 +784,22 @@ function App() {
       return;
     }
     removeChat(id);
-    if (activeId === id) {
-      try {
-        const next = (await listChatPage({ limit: 1, query })).chats[0];
+    const deletedWasActive = activeIdRef.current === id;
+    let searchQuery = currentQueryRef.current;
+    const hadQuery = Boolean(searchQuery.trim());
+    if (!deletedWasActive && !hadQuery) return;
+    try {
+      let next = (await listChatPage({ limit: 1, query: searchQuery })).chats[0];
+      if (currentQueryRef.current !== searchQuery) {
+        searchQuery = currentQueryRef.current;
+        next = (await listChatPage({ limit: 1, query: searchQuery })).chats[0];
+      }
+      const keptQuery = Boolean(next);
+      if (!next && searchQuery.trim() && currentQueryRef.current === searchQuery) {
+        changeQuery("");
+        next = (await listChatPage({ limit: 1 })).chats[0];
+      }
+      if (deletedWasActive && activeIdRef.current === id) {
         if (next) {
           setActiveIdNow(next.id);
           setActiveChat(next);
@@ -794,11 +809,15 @@ function App() {
           setActiveChat(null);
           if (settings) await newChat();
         }
-      } catch (error) {
+      } else if (!deletedWasActive && !keptQuery && next) {
+        upsertChat(next);
+      }
+    } catch (error) {
+      if (deletedWasActive && activeIdRef.current === id) {
         setActiveIdNow(null);
         setActiveChat(null);
-        notify((error as Error).message || String(error), "err");
       }
+      notify((error as Error).message || String(error), "err");
     }
   }
 

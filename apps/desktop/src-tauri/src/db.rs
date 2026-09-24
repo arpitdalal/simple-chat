@@ -65,6 +65,16 @@ ON chats(pinned DESC, updated_at DESC, id DESC);
 "#,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "normalize_chat_search",
+            sql: r#"
+ALTER TABLE chats ADD COLUMN title_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN preview_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN search_normalized INTEGER NOT NULL DEFAULT 0;
+"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -109,5 +119,16 @@ mod tests {
         assert!(m
             .sql
             .contains("ON chats(pinned DESC, updated_at DESC, id DESC)"));
+    }
+
+    #[test]
+    fn search_migration_adds_normalized_fields() {
+        let m = &migrations()[4];
+        assert_eq!(m.version, 5);
+        assert!(m.sql.contains("title_search TEXT NOT NULL DEFAULT ''"));
+        assert!(m.sql.contains("preview_search TEXT NOT NULL DEFAULT ''"));
+        assert!(m
+            .sql
+            .contains("search_normalized INTEGER NOT NULL DEFAULT 0"));
     }
 }

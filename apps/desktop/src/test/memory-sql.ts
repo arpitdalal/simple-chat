@@ -132,10 +132,10 @@ class MemoryDatabase {
       return { rowsAffected: 1 };
     }
 
-    if (q.includes("UPDATE chats SET title = $1, updated_at = $2")) {
-      const id = String(args[2]);
+    if (q.includes("title_search = $2, updated_at = $3")) {
+      const id = String(args[3]);
       const i = chats.findIndex((c) => c.id === id && c.title === NEW_CHAT_TITLE);
-      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[1]) };
+      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[2]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
@@ -157,14 +157,14 @@ class MemoryDatabase {
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
-    if (q.includes("UPDATE chats SET title = $1 WHERE id = $2 AND title = $3")) {
-      const i = chats.findIndex((c) => c.id === String(args[1]) && c.title === String(args[2]));
+    if (q.includes("title_search = $2, search_normalized = 1")) {
+      const i = chats.findIndex((c) => c.id === String(args[2]) && c.title === String(args[3]));
       if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
     if (q.includes("UPDATE chats SET")) {
-      const id = String(args[6]);
+      const id = String(args[8]);
       const i = chats.findIndex((c) => c.id === id);
       if (i >= 0) {
         chats[i] = {
@@ -283,7 +283,7 @@ class MemoryDatabase {
       const cursorPinned = hasCursor ? Number(args[1]) : 1;
       const cursorUpdatedAt = hasCursor ? Number(args[2]) : Infinity;
       const cursorId = hasCursor ? String(args[3]) : "";
-      const query = q.includes("instr(lower(title)") ? String(args[args.length - 1]) : "";
+      const query = q.includes("instr(title_search") ? String(args[args.length - 1]) : "";
       return [...chats]
         .filter((chat) => {
           if (

@@ -366,6 +366,73 @@ describe("App UX", () => {
     expect(document.querySelector(".chat-item")?.textContent).toContain("Second");
   });
 
+  it("clears a filter when deleting its final matching chat", async () => {
+    const user = userEvent.setup();
+    const matching: Chat = {
+      id: "matching",
+      title: "Needle",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "matching",
+      pinned: 0,
+    };
+    const remaining: Chat = {
+      ...matching,
+      id: "remaining",
+      title: "Other",
+      created_at: 1,
+      updated_at: 1,
+      preview: "remaining",
+    };
+    chatsStore.set([matching, remaining]);
+    openOrCreateChat.mockResolvedValueOnce(matching);
+
+    render(<App />);
+    const search = await screen.findByPlaceholderText("Search Chats…");
+    await user.type(search, "needle");
+    await waitFor(() => expect(screen.queryByText("Other")).toBeNull());
+    await user.click(await screen.findByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(document.querySelector(".chat-item")?.textContent).toContain("Other");
+  });
+
+  it("clears a filter after deleting the final inactive match", async () => {
+    const user = userEvent.setup();
+    const matching: Chat = {
+      id: "matching",
+      title: "Needle",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "matching",
+      pinned: 0,
+    };
+    const remaining: Chat = {
+      ...matching,
+      id: "remaining",
+      title: "Other",
+      created_at: 1,
+      updated_at: 1,
+      preview: "remaining",
+    };
+    chatsStore.set([matching, remaining]);
+    openOrCreateChat.mockResolvedValueOnce(remaining);
+
+    render(<App />);
+    const search = await screen.findByPlaceholderText("Search Chats…");
+    await user.type(search, "needle");
+    await user.click(await screen.findByTitle("Actions"));
+    await user.click(screen.getByText("Delete Chat"));
+
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(document.querySelector(".chat-item")?.textContent).toContain("Other");
+  });
+
   it("disables composer when no API keys are present", async () => {
     const { listReadyProviders } = await import("./lib/keys");
     vi.mocked(listReadyProviders).mockResolvedValue({ ready: [], ok: true });

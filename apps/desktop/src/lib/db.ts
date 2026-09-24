@@ -17,17 +17,11 @@ export type Chat = {
   pinned: number;
 };
 
-function asciiLower(value: string): string {
-  return value.replace(/[A-Z]/g, (character) =>
-    String.fromCharCode(character.charCodeAt(0) + 32),
-  );
-}
-
 export function chatMatchesQuery(chat: Pick<Chat, "title" | "preview">, query: string): boolean {
-  const normalized = asciiLower(query.trim());
+  const normalized = query.trim().toLowerCase();
   return !normalized ||
-    asciiLower(chat.title).includes(normalized) ||
-    asciiLower(chat.preview).includes(normalized);
+    chat.title.toLowerCase().includes(normalized) ||
+    chat.preview.toLowerCase().includes(normalized);
 }
 
 export type Message = {
@@ -126,6 +120,20 @@ export async function prepareDb(db: Database) {
   if (!cols.some((c) => c.name === "pinned")) {
     await db.execute(
       `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+
+  const searchRows = await db.select<{ id: string; title: string; preview: string }[]>(
+    "SELECT id, title, preview FROM chats WHERE search_normalized = 0",
+  );
+  for (let offset = 0; offset < searchRows.length; offset += 50) {
+    await Promise.all(
+      searchRows.slice(offset, offset + 50).map((row) =>
+        db.execute(
+          "UPDATE chats SET title_search = $1, preview_search = $2, search_normalized = 1 WHERE id = $3",
+          [row.title.toLowerCase(), row.preview.toLowerCase(), row.id],
+        ),
+      ),
     );
   }
 }
@@ -248,10 +256,10 @@ export async function listChatPage(
     conditions.push("(pinned, updated_at, id) < ($2, $3, $4)");
   }
   if (query) {
-    args.push(query);
+    args.push(query.toLowerCase());
     const queryParameter = `$${args.length}`;
     conditions.push(
-      `(instr(lower(title), lower(${queryParameter})) > 0 OR instr(lower(preview), lower(${queryParameter})) > 0)`,
+      `(instr(title_search, ${queryParameter}) > 0 OR instr(preview_search, ${queryParameter}) > 0)`,
     );
   }
 
@@ -323,8 +331,10 @@ export async function createChat(
     pinned: 0,
   };
   await db.execute(
-    `INSERT INTO chats (id, title, model_id, provider, created_at, updated_at, preview, pinned)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO chats (
+       id, title, model_id, provider, created_at, updated_at, preview, pinned,
+       title_search, preview_search, search_normalized
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)`,
     [
       chat.id,
       chat.title,
@@ -334,6 +344,8 @@ export async function createChat(
       chat.updated_at,
       chat.preview,
       chat.pinned,
+      chat.title.toLowerCase(),
+      chat.preview.toLowerCase(),
     ],
   );
   return chat;
@@ -351,8 +363,11 @@ export async function updateChat(
   // Only message activity (preview) reorders the sidebar — pin/rename/model keep place.
   const updated_at = "preview" in patch ? Date.now() : current.updated_at;
   const next = { ...current, ...patch, updated_at };
-  await db.execute(
-    `UPDATE chats SET title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5, pinned=$6 WHERE id=$7`,
+  const result = await db.execute(
+    `UPDATE chats SET
+       title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5,
+       pinned=$6, title_search=$7, preview_search=$8, search_normalized=1
+     WHERE id=$9`,
     [
       next.title,
       next.preview,
@@ -360,9 +375,12 @@ export async function updateChat(
       next.provider,
       next.updated_at,
       next.pinned ?? 0,
+      next.title.toLowerCase(),
+      next.preview.toLowerCase(),
       id,
     ],
   );
+  if (result.rowsAffected === 0) throw new Error("Chat no longer exists");
   return next;
 }
 
@@ -370,9 +388,10 @@ export async function updateChat(
 export async function setInitialChatTitle(id: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    `UPDATE chats SET title = $1, updated_at = $2
-     WHERE id = $3 AND title = '${NEW_CHAT_TITLE}'`,
-    [title, Date.now(), id],
+    `UPDATE chats SET
+       title = $1, title_search = $2, updated_at = $3, search_normalized = 1
+     WHERE id = $4 AND title = '${NEW_CHAT_TITLE}'`,
+    [title, title.toLowerCase(), Date.now(), id],
   );
   return result.rowsAffected > 0;
 }
@@ -380,7 +399,8 @@ export async function setInitialChatTitle(id: string, title: string): Promise<bo
 /** Recompute preview from stored messages so delayed writes cannot restore an old preview. */
 export async function refreshChatPreview(id: string): Promise<void> {
   const db = await getDb();
-  await db.execute(
+  const updatedAt = Date.now();
+  const result = await db.execute(
     `UPDATE chats SET updated_at = $2, preview = COALESCE(
        (SELECT CASE
           WHEN content = '' AND image_count > 0 THEN 'Image'
@@ -389,16 +409,29 @@ export async function refreshChatPreview(id: string): Promise<void> {
         FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
        '${EMPTY_CHAT_PREVIEW}'
      ) WHERE id = $1`,
-    [id, Date.now()],
+    [id, updatedAt],
   );
+  if (result.rowsAffected === 0) return;
+  const rows = await db.select<{ preview: string }[]>(
+    "SELECT preview FROM chats WHERE id = $1",
+    [id],
+  );
+  const preview = rows[0]?.preview;
+  if (preview !== undefined) {
+    await db.execute(
+      `UPDATE chats SET preview_search = $2, search_normalized = 1
+       WHERE id = $1 AND preview = $3 AND updated_at = $4`,
+      [id, preview.toLowerCase(), preview, updatedAt],
+    );
+  }
 }
 
 /** A generated title must not overwrite a later manual rename or Clear. */
 export async function replaceChatTitle(id: string, previous: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    "UPDATE chats SET title = $1 WHERE id = $2 AND title = $3",
-    [title, id, previous],
+    "UPDATE chats SET title = $1, title_search = $2, search_normalized = 1 WHERE id = $3 AND title = $4",
+    [title, title.toLowerCase(), id, previous],
   );
   return result.rowsAffected > 0;
 }

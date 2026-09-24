@@ -137,7 +137,7 @@ export function Sidebar({
     const anchorIndex = rows.findIndex((row) => row.key === anchor.key);
     const measurement = virtualizer.measurementsCache[anchorIndex];
     if (measurement) {
-      virtualizer.scrollToOffset(measurement.start + anchor.offset, {
+      virtualizer.scrollToOffset(measurement.start - anchor.offset, {
         align: "start",
       });
     }

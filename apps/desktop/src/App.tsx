@@ -774,7 +774,7 @@ function App() {
             let chat: Chat | null = null;
             let priorChatId: string | null = null;
             try {
-              if (typeof hiddenAt === "number") {
+              if (typeof hiddenAt === "number" && hiddenAt > 0) {
                 const write = setSetting("last_opened_at", hiddenAt);
                 lastHiddenWriteRef.current = write;
                 void write.catch((err) => {
@@ -783,17 +783,20 @@ function App() {
                 });
               }
               const hiddenWrite = lastHiddenWriteRef.current;
+              let hiddenWriteFailed = hiddenWriteFailedRef.current;
+              hiddenWriteFailedRef.current = false;
               if (hiddenWrite) {
                 try {
                   await hiddenWrite;
+                } catch (err) {
+                  hiddenWriteFailed = true;
+                  console.error("resume timestamp failed", err);
                 } finally {
                   if (lastHiddenWriteRef.current === hiddenWrite) {
                     lastHiddenWriteRef.current = null;
                   }
                 }
               }
-              const hiddenWriteFailed = hiddenWriteFailedRef.current;
-              hiddenWriteFailedRef.current = false;
               try {
                 await settingsFlushRef.current?.();
               } catch (err) {
@@ -823,7 +826,12 @@ function App() {
                 return;
               }
               suppressResumeTimestampRef.current = false;
-              await setResumeState(Date.now(), resumedChat.id);
+              try {
+                await setResumeState(Date.now(), resumedChat.id);
+              } catch (err) {
+                console.error("resume state persistence failed", err);
+                notify((err as Error).message || String(err), "err");
+              }
               if (isStale()) {
                 await discardStaleChat();
                 return;
@@ -845,10 +853,10 @@ function App() {
               }
               console.error("resume on show failed", err);
               notify((err as Error).message || String(err), "err");
-             }
-           });
-
+            }
+          });
         });
+
     };
     resumeShowRef.current = onShown;
     void onMainWindowShown(onShown).then(async (fn) => {

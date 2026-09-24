@@ -2,7 +2,7 @@ mod db;
 mod focus;
 mod keys;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -13,6 +13,7 @@ use tauri::{
 use tauri::ActivationPolicy;
 
 static LAST_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
+static WINDOW_MINIMIZED: AtomicBool = AtomicBool::new(false);
 
 fn hide_main_window(app: &AppHandle) {
     // Restore while still active (cooperative yield), then hide. Guard blur
@@ -37,24 +38,28 @@ fn hide_main_window(app: &AppHandle) {
 fn show_main_window(app: &AppHandle) -> Result<(), String> {
     focus::capture_previous_app();
     if let Some(window) = app.get_webview_window("main") {
-        let was_visible = window.is_visible().unwrap_or(false)
-            && !window.is_minimized().unwrap_or(false);
+        let was_minimized = WINDOW_MINIMIZED.load(Ordering::Relaxed);
+        let was_visible = window.is_visible().unwrap_or(false) && !was_minimized;
         window.unminimize().map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
         let focus_result = window.set_focus();
         if !was_visible {
             let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
-            window.emit("main-window-shown", hidden_at).map_err(|error| error.to_string())?;
+            window
+                .emit("main-window-shown", hidden_at)
+                .map_err(|error| error.to_string())?;
         }
+        WINDOW_MINIMIZED.store(false, Ordering::Relaxed);
         focus_result.map_err(|error| error.to_string())?;
+
     }
     Ok(())
 }
 
 fn toggle_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        match (window.is_visible(), window.is_minimized()) {
-            (Ok(true), Ok(false)) => hide_main_window(app),
+        match window.is_visible() {
+            Ok(true) if !WINDOW_MINIMIZED.load(Ordering::Relaxed) => hide_main_window(app),
             _ => {
                 let _ = show_main_window(app);
             }
@@ -219,6 +224,27 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         match event {
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Resized { .. },
+                ..
+            } if label == "main" => {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let minimized = window.is_minimized().unwrap_or(false);
+                    let was_minimized = WINDOW_MINIMIZED.swap(minimized, Ordering::Relaxed);
+                    if minimized && !was_minimized {
+                        let hidden_at = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|duration| duration.as_millis() as u64)
+                            .unwrap_or_default();
+                        LAST_HIDDEN_AT.store(hidden_at, Ordering::Relaxed);
+                        let _ = window.emit("main-window-hidden", hidden_at);
+                    } else if !minimized && was_minimized {
+                        let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
+                        let _ = window.emit("main-window-shown", hidden_at);
+                    }
+                }
+            }
             RunEvent::WindowEvent {
                 label,
                 event: WindowEvent::CloseRequested { api, .. },

@@ -45,21 +45,26 @@ test.describe("Simple Chat UX", () => {
         });
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
       };
-      return [".empty-state h1", ".sidebar-settings-tab", ".composer-bar"].map(
-        (selector) => {
-          const text = getComputedStyle(
-            element.querySelector<HTMLElement>(selector)!,
-          );
-          const foreground = luminance(parseColor(text.color).rgb);
-          const backdrop = luminance(effectiveBackground(element.querySelector(selector)!));
-          return (
-            (Math.max(foreground, backdrop) + 0.05) /
-            (Math.min(foreground, backdrop) + 0.05)
-          );
-        },
-      );
+      return [
+        ".empty-state h1",
+        ".sidebar-settings-tab",
+        ".model-trigger",
+        ".composer-bar-right span",
+      ].map((selector) => {
+        const textStyle = getComputedStyle(
+          element.querySelector<HTMLElement>(selector)!,
+        );
+        const foreground = luminance(parseColor(textStyle.color).rgb);
+        const backdrop = luminance(
+          effectiveBackground(element.querySelector(selector)!),
+        );
+        return (
+          (Math.max(foreground, backdrop) + 0.05) /
+          (Math.min(foreground, backdrop) + 0.05)
+        );
+      });
     });
-    expect(textContrasts).toHaveLength(3);
+    expect(textContrasts).toHaveLength(4);
     for (const contrast of textContrasts) expect(contrast).toBeGreaterThan(4.5);
     await expect(page.getByText("Simple Chat", { exact: true })).toBeVisible();
     await expect(page.getByText("Ask Anything")).toBeVisible();

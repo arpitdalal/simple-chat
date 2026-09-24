@@ -89,13 +89,12 @@ function useChatList(ready: boolean, retainedChat: Chat | null) {
           .filter((chat) => !removedIdsRef.current.has(chat.id))
           .map((chat) => [chat.id, chat]),
       );
-      if (
-        retained &&
-        chatMatchesQuery(retained, search) &&
-        !removedIdsRef.current.has(retained.id) &&
-        !next.has(retained.id)
-      ) {
-        next.set(retained.id, retained);
+      if (retained && !removedIdsRef.current.has(retained.id)) {
+        if (chatMatchesQuery(retained, search)) {
+          next.set(retained.id, retained);
+        } else {
+          next.delete(retained.id);
+        }
       }
       setChats([...next.values()].sort(compareChats));
       setHasMore(page.hasMore);
@@ -461,9 +460,12 @@ function App() {
         return;
       }
       setActiveIdNow(id);
+      const candidates = active && !chats.some((chat) => chat.id === active.id)
+        ? [...chats, active]
+        : chats;
       const toDelete = (
         await Promise.all(
-          chats
+          candidates
             .filter((chat) => chat.id !== id && isEmptyNewChat(chat))
             .map(async (chat) =>
               await chatCanBeDiscarded(chat.id) ? chat : null,
@@ -478,7 +480,7 @@ function App() {
       );
       focusComposer();
     },
-    [activeId, cancelNav, chats, focusComposer, removeChat, setActiveIdNow],
+    [active, activeId, cancelNav, chats, focusComposer, removeChat, setActiveIdNow],
   );
 
   const newChat = useCallback(async () => {

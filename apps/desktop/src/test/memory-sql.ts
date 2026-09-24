@@ -132,10 +132,10 @@ class MemoryDatabase {
       return { rowsAffected: 1 };
     }
 
-    if (q.includes("title_search = $2, updated_at = $3")) {
-      const id = String(args[3]);
+    if (q.includes("AND title = 'New Chat'")) {
+      const id = String(args[2]);
       const i = chats.findIndex((c) => c.id === id && c.title === NEW_CHAT_TITLE);
-      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[2]) };
+      if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
@@ -157,7 +157,7 @@ class MemoryDatabase {
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
-    if (q.includes("title_search = $2, search_normalized = 1")) {
+    if (q.includes("title_search = $2 WHERE")) {
       const i = chats.findIndex((c) => c.id === String(args[2]) && c.title === String(args[3]));
       if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };

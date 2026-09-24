@@ -12,7 +12,10 @@ describe("prepareDb", () => {
     await prepareDb({ execute, select } as never);
     expect(execute).toHaveBeenCalledWith("PRAGMA journal_mode=WAL;");
     expect(select).toHaveBeenNthCalledWith(1, "PRAGMA journal_mode;");
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("idx_chats_sidebar_order"),
+    );
   });
 
   it("adds pinned when legacy chats table lacks it", async () => {

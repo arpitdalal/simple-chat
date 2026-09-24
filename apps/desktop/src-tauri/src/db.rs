@@ -58,11 +58,8 @@ UPDATE messages SET image_count = json_array_length(images) WHERE images <> '[]'
         },
         Migration {
             version: 4,
-            description: "index_chat_sidebar_order",
-            sql: r#"
-CREATE INDEX IF NOT EXISTS idx_chats_sidebar_order
-ON chats(pinned DESC, updated_at DESC, id DESC);
-"#,
+            description: "reserve_chat_sidebar_index",
+            sql: "SELECT 1;",
             kind: MigrationKind::Up,
         },
         Migration {
@@ -112,13 +109,11 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_migration_indexes_pagination_order() {
+    fn sidebar_index_is_deferred_until_legacy_bridge_completes() {
         let m = &migrations()[3];
         assert_eq!(m.version, 4);
-        assert!(m.sql.contains("idx_chats_sidebar_order"));
-        assert!(m
-            .sql
-            .contains("ON chats(pinned DESC, updated_at DESC, id DESC)"));
+        assert_eq!(m.description, "reserve_chat_sidebar_index");
+        assert!(!m.sql.contains("pinned"));
     }
 
     #[test]

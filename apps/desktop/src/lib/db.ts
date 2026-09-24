@@ -122,6 +122,10 @@ export async function prepareDb(db: Database) {
       `ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
     );
   }
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_chats_sidebar_order
+     ON chats(pinned DESC, updated_at DESC, id DESC)`,
+  );
 
   const searchRows = await db.select<{ id: string; title: string; preview: string }[]>(
     "SELECT id, title, preview FROM chats WHERE search_normalized = 0",
@@ -399,9 +403,9 @@ export async function setInitialChatTitle(id: string, title: string): Promise<bo
   const db = await getDb();
   const result = await db.execute(
     `UPDATE chats SET
-       title = $1, title_search = $2, updated_at = $3, search_normalized = 1
-     WHERE id = $4 AND title = '${NEW_CHAT_TITLE}'`,
-    [title, title.toLowerCase(), Date.now(), id],
+       title = $1, title_search = $2
+     WHERE id = $3 AND title = '${NEW_CHAT_TITLE}'`,
+    [title, title.toLowerCase(), id],
   );
   return result.rowsAffected > 0;
 }
@@ -440,7 +444,7 @@ export async function refreshChatPreview(id: string): Promise<void> {
 export async function replaceChatTitle(id: string, previous: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    "UPDATE chats SET title = $1, title_search = $2, search_normalized = 1 WHERE id = $3 AND title = $4",
+    "UPDATE chats SET title = $1, title_search = $2 WHERE id = $3 AND title = $4",
     [title, title.toLowerCase(), id, previous],
   );
   return result.rowsAffected > 0;

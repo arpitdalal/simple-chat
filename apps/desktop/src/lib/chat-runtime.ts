@@ -110,7 +110,7 @@ function webpDimensions(bytes: Uint8Array): { width: number; height: number } | 
   if (chunk === "VP8L" && bytes.length >= 25 && bytes[20] === 0x2f) {
     return {
       width: 1 + bytes[21] + ((bytes[22] & 0x3f) << 8),
-      height: 1 + (bytes[22] >> 6) + (bytes[23] << 2) + (bytes[24] << 10),
+      height: 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 0x0f) << 10),
     };
   }
   if (
@@ -225,10 +225,6 @@ function boundProviderHistory(
     const message = history[i];
     const images = message.images.length ? message.images : (storedImages.get(message.id) ?? []);
     const omittedImages = (message.image_count ?? 0) > 0 && images.length === 0;
-    if (omittedImages) {
-      kept.unshift({ ...message, images });
-      break;
-    }
     const messageTextChars = message.content.length;
     const messageImageChars = imageDataUrlChars(images);
     const fits =
@@ -240,6 +236,7 @@ function boundProviderHistory(
     kept.unshift({ ...message, images });
     textChars += messageTextChars;
     imageChars += messageImageChars;
+    if (omittedImages) break;
   }
   return kept;
 }

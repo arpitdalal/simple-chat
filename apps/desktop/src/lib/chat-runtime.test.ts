@@ -119,6 +119,18 @@ describe("ChatSession", () => {
     )).toMatchObject({ image: pngImage, width: 1, height: 1 });
   });
 
+  it("masks VP8L metadata bits when reading height", () => {
+    const bytes = new Uint8Array(30);
+    bytes.set([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x4c]);
+    bytes[20] = 0x2f;
+    bytes[21] = 0xff;
+    bytes[22] = 0x0f;
+    bytes[23] = 0xff;
+    bytes[24] = 0x13;
+    const data = `data:image/webp;base64,${btoa(String.fromCharCode(...bytes))}`;
+    expect(normalizeImageDataUrl(data)).toMatchObject({ width: 4096, height: 4093 });
+  });
+
   it("preserves literal attachment sentinel text without images", async () => {
     const session = getChatSession("a");
     session.send(chat("a"), "[Image attachment]", [], callbacks);

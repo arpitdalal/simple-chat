@@ -58,6 +58,7 @@ export function ChatView({
   const rowCount = messages.length + (showStream ? 1 : 0);
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]);
+  const [imageReadVersion, setImageReadVersion] = useState(0);
   const [showJump, setShowJump] = useState(false);
   const parentRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -93,11 +94,11 @@ export function ChatView({
 
   useEffect(() => {
     if (!chat || state.phase !== "idle" || !state.drafts.length) return;
-    if (inputRef.current?.value || imagesRef.current.length) return;
+    if (inputRef.current?.value || imagesRef.current.length || pendingImageReadsRef.current) return;
     const drafts = session.takeDrafts();
     setInput(drafts.map((d) => d.text).join("\n"));
     setImages(drafts.flatMap((d) => d.images));
-  }, [chat?.id, session, state.drafts, state.phase, input, images.length]);
+  }, [chat?.id, session, state.drafts, state.phase, input, images.length, imageReadVersion]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -290,6 +291,7 @@ export function ChatView({
               const candidate = [...imagesRef.current, normalized.image];
               const candidateError = imageLimitError(candidate);
               if (candidateError) {
+                pendingImageValuesRef.current.delete(pendingImage);
                 onNotify(candidateError, "err");
                 continue;
               }
@@ -323,6 +325,7 @@ export function ChatView({
             0,
             pendingImageReadsRef.current - queuedCount,
           );
+          setImageReadVersion((value) => value + 1);
         }
       });
   }

@@ -473,7 +473,7 @@ export async function branchChat(
   try {
     await updateChat(branched.id, { title, preview });
     const db = await getDb();
-    await db.execute(
+    const copied = await db.execute(
       `INSERT INTO messages (id, chat_id, role, content, images, image_count, created_at)
        SELECT lower(hex(randomblob(16))), $1, role, content, images, image_count, created_at
        FROM messages
@@ -482,6 +482,7 @@ export async function branchChat(
        ORDER BY created_at, rowid`,
       [branched.id, sourceChatId, throughMessageId],
     );
+    if (copied.rowsAffected === 0) throw new Error("Message not found");
     return { ...branched, title, preview };
   } catch (error) {
     try {

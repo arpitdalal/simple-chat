@@ -782,19 +782,38 @@ function App() {
     }
     removeChat(id);
     const deletedWasActive = activeIdRef.current === id;
-    let searchQuery = currentQueryRef.current;
-    const hadQuery = Boolean(searchQuery.trim());
+    const hadQuery = Boolean(currentQueryRef.current.trim());
     if (!deletedWasActive && !hadQuery) return;
-    try {
-      let next = (await listChatPage({ limit: 1, query: searchQuery })).chats[0];
-      if (currentQueryRef.current !== searchQuery) {
-        searchQuery = currentQueryRef.current;
-        next = (await listChatPage({ limit: 1, query: searchQuery })).chats[0];
+    const readFirst = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const search = currentQueryRef.current;
+        const next = (await listChatPage({ limit: 1, query: search })).chats[0];
+        if (currentQueryRef.current === search) return { next, search };
       }
+      return null;
+    };
+    try {
+      const current = await readFirst();
+      if (!current) {
+        if (deletedWasActive && activeIdRef.current === id) {
+          setActiveIdNow(null);
+          setActiveChat(null);
+        }
+        return;
+      }
+      let { next } = current;
       const keptQuery = Boolean(next);
-      if (!next && searchQuery.trim() && currentQueryRef.current === searchQuery) {
+      if (!next && current.search.trim()) {
         changeQuery("");
-        next = (await listChatPage({ limit: 1 })).chats[0];
+        const fallback = await readFirst();
+        if (!fallback) {
+          if (deletedWasActive && activeIdRef.current === id) {
+            setActiveIdNow(null);
+            setActiveChat(null);
+          }
+          return;
+        }
+        next = fallback.next;
       }
       if (deletedWasActive && activeIdRef.current === id) {
         if (next) {

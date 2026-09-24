@@ -372,30 +372,41 @@ export async function updateChat(
   >,
 ) {
   const db = await getDb();
-  const current = await getChat(id);
-  if (!current) throw new Error("Chat not found");
-  // Only message activity (preview) reorders the sidebar — pin/rename/model keep place.
-  const updated_at = "preview" in patch ? Date.now() : current.updated_at;
-  const next = { ...current, ...patch, updated_at };
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  const add = (column: string, value: unknown) => {
+    values.push(value);
+    sets.push(`${column}=$${values.length}`);
+  };
+
+  if ("title" in patch) {
+    add("title", patch.title ?? "");
+    add("title_search", (patch.title ?? "").toLowerCase());
+  }
+  if ("preview" in patch) {
+    add("preview", patch.preview ?? "");
+    add("updated_at", Date.now());
+    add("preview_search", (patch.preview ?? "").toLowerCase());
+    sets.push("search_normalized=1");
+  }
+  if ("model_id" in patch) add("model_id", patch.model_id);
+  if ("provider" in patch) add("provider", patch.provider);
+  if ("pinned" in patch) add("pinned", patch.pinned);
+  if (!sets.length) {
+    const current = await getChat(id);
+    if (!current) throw new Error("Chat not found");
+    return current;
+  }
+
+  values.push(id);
   const result = await db.execute(
-    `UPDATE chats SET
-       title=$1, preview=$2, model_id=$3, provider=$4, updated_at=$5,
-       pinned=$6, title_search=$7, preview_search=$8, search_normalized=1
-     WHERE id=$9`,
-    [
-      next.title,
-      next.preview,
-      next.model_id,
-      next.provider,
-      next.updated_at,
-      next.pinned ?? 0,
-      next.title.toLowerCase(),
-      next.preview.toLowerCase(),
-      id,
-    ],
+    `UPDATE chats SET ${sets.join(", ")} WHERE id=$${values.length}`,
+    values,
   );
   if (result.rowsAffected === 0) throw new Error("Chat no longer exists");
-  return next;
+  const updated = await getChat(id);
+  if (!updated) throw new Error("Chat no longer exists");
+  return updated;
 }
 
 /** Set the first prompt title only while this is still an unnamed chat. */

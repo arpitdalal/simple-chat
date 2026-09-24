@@ -157,25 +157,27 @@ class MemoryDatabase {
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
-    if (q.includes("title_search = $2 WHERE")) {
+    if (q.includes("title_search = $2 WHERE id = $3 AND title = $4")) {
       const i = chats.findIndex((c) => c.id === String(args[2]) && c.title === String(args[3]));
       if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
 
     if (q.includes("UPDATE chats SET")) {
-      const id = String(args[8]);
+      const where = q.match(/WHERE id=\$(\d+)/);
+      const id = where ? String(args[Number(where[1]) - 1]) : "";
       const i = chats.findIndex((c) => c.id === id);
       if (i >= 0) {
-        chats[i] = {
-          ...chats[i],
-          title: String(args[0]),
-          preview: String(args[1]),
-          model_id: String(args[2]),
-          provider: String(args[3]),
-          updated_at: Number(args[4]),
-          pinned: Number(args[5] ?? 0),
-        };
+        const next = { ...chats[i] };
+        for (const assignment of q.matchAll(/(\w+)=\$(\d+)/g)) {
+          const value = args[Number(assignment[2]) - 1];
+          if (assignment[1] === "updated_at" || assignment[1] === "pinned") {
+            next[assignment[1] as "updated_at" | "pinned"] = Number(value);
+          } else if (assignment[1] in next) {
+            next[assignment[1] as keyof Chat] = value as never;
+          }
+        }
+        chats[i] = next;
       }
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }

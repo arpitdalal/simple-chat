@@ -16,32 +16,38 @@ fn hide_main_window(app: &AppHandle) {
     focus::begin_restore();
     focus::restore_previous_app();
     if let Some(window) = app.get_webview_window("main") {
-        // Tell the webview to drop heavy React state before we go tray-resident.
-        let _ = window.emit("main-window-hidden", ());
-        let _ = window.hide();
+        if window.hide().is_ok() {
+            let _ = window.emit("main-window-hidden", ());
+        }
     }
     focus::end_restore();
     #[cfg(all(target_os = "macos", not(feature = "webdriver")))]
     let _ = app.set_activation_policy(ActivationPolicy::Accessory);
 }
 
-fn show_main_window(app: &AppHandle) {
+fn show_main_window(app: &AppHandle) -> Result<(), String> {
     focus::capture_previous_app();
     if let Some(window) = app.get_webview_window("main") {
         let was_visible = window.is_visible().unwrap_or(false)
             && !window.is_minimized().unwrap_or(false);
-        let _ = window.unminimize();
-        if window.show().is_ok() && window.set_focus().is_ok() && !was_visible {
-            let _ = window.emit("main-window-shown", ());
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        let focus_result = window.set_focus();
+        if !was_visible {
+            window.emit("main-window-shown", ()).map_err(|error| error.to_string())?;
         }
+        focus_result.map_err(|error| error.to_string())?;
     }
+    Ok(())
 }
 
 fn toggle_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        match window.is_visible() {
-            Ok(true) => hide_main_window(app),
-            _ => show_main_window(app),
+        match (window.is_visible(), window.is_minimized()) {
+            (Ok(true), Ok(false)) => hide_main_window(app),
+            _ => {
+                let _ = show_main_window(app);
+            }
         }
     }
 }
@@ -75,7 +81,7 @@ where
     S: AsRef<str>,
 {
     if should_show_on_user_launch(args) {
-        show_main_window(app);
+        let _ = show_main_window(app);
     }
 }
 
@@ -90,8 +96,8 @@ fn hide_main_window_cmd(app: AppHandle) {
 }
 
 #[tauri::command]
-fn show_main_window_cmd(app: AppHandle) {
-    show_main_window(&app);
+fn show_main_window_cmd(app: AppHandle) -> Result<(), String> {
+    show_main_window(&app)
 }
 
 #[tauri::command]
@@ -169,7 +175,9 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .tooltip("Simple Chat")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_main_window(app),
+                    "show" => {
+                        let _ = show_main_window(app);
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -223,7 +231,7 @@ pub fn run() {
                 has_visible_windows: false,
                 ..
             } => {
-                show_main_window(app_handle);
+                let _ = show_main_window(app_handle);
             }
             _ => {}
         }

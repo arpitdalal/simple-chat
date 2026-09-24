@@ -50,6 +50,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     show,
     setFocus,
     isVisible,
+    isMinimized: vi.fn(async () => false),
     outerSize,
     outerPosition,
     setPosition,

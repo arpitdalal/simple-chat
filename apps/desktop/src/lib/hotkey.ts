@@ -436,7 +436,8 @@ export async function positionMainWindowForShow(
 export async function toggleMainWindow() {
   const run = async () => {
     const win = getCurrentWindow();
-    if (await win.isVisible()) {
+    const minimized = await win.isMinimized().catch(() => false);
+    if (await win.isVisible() && !minimized) {
       await hideMainWindow();
     } else {
       await positionMainWindowForShow(win);

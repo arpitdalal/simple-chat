@@ -213,6 +213,8 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
   const readyRef = useRef(false);
+  const suppressResumeTimestampRef = useRef(false);
+  const bootWasHiddenRef = useRef(false);
   const showResumeGenRef = useRef(0);
   const pendingShowRef = useRef(false);
   const resumeShowRef = useRef<(() => void) | null>(null);
@@ -639,10 +641,12 @@ function App() {
 
       const chat = await openOrCreateChat(s);
       if (cancelled) return;
-      const visibleAtBoot = await getCurrentWindow().isVisible().catch(() => true);
+      const visibleAtBoot = await getCurrentWindow().isVisible().catch(() => false);
       if (visibleAtBoot) {
         await setResumeState(Date.now(), chat.id);
       } else {
+        suppressResumeTimestampRef.current = true;
+        bootWasHiddenRef.current = true;
         await setSetting("last_chat_id", chat.id);
       }
       setActiveIdNow(chat.id);
@@ -697,8 +701,11 @@ function App() {
     void getChat(activeId).then((chat) => {
       if (!cancelled && activeIdRef.current === activeId) setActiveChat(chat);
     });
-    void setSetting("last_chat_id", activeId);
-    void setSetting("last_opened_at", Date.now());
+    if (suppressResumeTimestampRef.current) {
+      void setSetting("last_chat_id", activeId);
+    } else {
+      void setResumeState(Date.now(), activeId);
+    }
     return () => { cancelled = true; };
   }, [activeId]);
 
@@ -744,7 +751,16 @@ function App() {
             let chat: Chat | null = null;
             let priorChatId: string | null = null;
             try {
-              await lastHiddenWriteRef.current;
+              const hiddenWrite = lastHiddenWriteRef.current;
+              if (hiddenWrite) {
+                try {
+                  await hiddenWrite;
+                } finally {
+                  if (lastHiddenWriteRef.current === hiddenWrite) {
+                    lastHiddenWriteRef.current = null;
+                  }
+                }
+              }
               await settingsFlushRef.current?.();
               if (isStale()) return;
               const settingsSnapshot = await getSettings();
@@ -766,6 +782,7 @@ function App() {
                 await discardStaleChat();
                 return;
               }
+              suppressResumeTimestampRef.current = false;
               await setResumeState(Date.now(), resumedChat.id);
               if (isStale()) {
                 await discardStaleChat();
@@ -794,9 +811,15 @@ function App() {
         });
     };
     resumeShowRef.current = onShown;
-    void onMainWindowShown(onShown).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
+    void onMainWindowShown(onShown).then(async (fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+      if (!bootWasHiddenRef.current) return;
+      const visible = await getCurrentWindow().isVisible().catch(() => false);
+      if (!cancelled && visible) onShown();
     });
     return () => {
       cancelled = true;

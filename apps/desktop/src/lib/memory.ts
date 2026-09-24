@@ -40,7 +40,8 @@ async function onMainWindowEvent(
     return await listen(event, () => {
       handler();
     });
-  } catch {
+  } catch (error) {
+    console.error("window lifecycle listener failed", error);
     return () => {};
   }
 }

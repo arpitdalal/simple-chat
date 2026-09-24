@@ -436,14 +436,12 @@ export async function positionMainWindowForShow(
 export async function toggleMainWindow() {
   const run = async () => {
     const win = getCurrentWindow();
-    if (await win.isVisible()) {
+    const minimized = await win.isMinimized().catch(() => false);
+    if (await win.isVisible() && !minimized) {
       await hideMainWindow();
     } else {
       await positionMainWindowForShow(win);
-      // Recapture immediately before steal — frontmost may have changed while centering.
-      await invoke("capture_previous_app");
-      await win.show();
-      await win.setFocus();
+      await invoke("show_main_window_cmd");
     }
   };
   const queued = toggleChain.then(run, run);

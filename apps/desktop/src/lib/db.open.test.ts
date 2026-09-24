@@ -6,6 +6,7 @@ import {
   createChat,
   getSettings,
   openOrCreateChat,
+  setResumeState,
   setSetting,
   addMessage,
   type AppSettings,
@@ -39,7 +40,6 @@ describe("openOrCreateChat", () => {
   it("resumes last chat within window", async () => {
     const existing = await createChat("google", "gemini-3.8-flash");
     await setSetting("last_chat_id", existing.id);
-    // reopen path uses settings object, not DB last_chat for mode — pass in settings
     const chat = await openOrCreateChat({
       ...baseSettings(),
       last_chat_id: existing.id,
@@ -47,6 +47,18 @@ describe("openOrCreateChat", () => {
       resume_minutes: 5,
     });
     expect(chat.id).toBe(existing.id);
+  });
+
+  it("uses the configured one-minute window", async () => {
+    const prior = await createChat("google", "gemini-3.8-flash");
+    await addMessage(prior.id, "user", "hello");
+    const chat = await openOrCreateChat({
+      ...baseSettings(),
+      last_chat_id: prior.id,
+      last_opened_at: Date.now() - 61_000,
+      resume_minutes: 1,
+    });
+    expect(chat.id).not.toBe(prior.id);
   });
 
   it("reuses empty New Chat instead of creating another when expired", async () => {
@@ -70,6 +82,20 @@ describe("openOrCreateChat", () => {
       resume_minutes: 5,
     });
     expect(chat.id).not.toBe(prior.id);
+  });
+});
+
+describe("resume state", () => {
+  beforeEach(() => resetMemoryDb());
+
+  it("persists the timestamp and chat together", async () => {
+    await setResumeState(1234, "chat-1");
+    await expect(getSettings()).resolves.toEqual(
+      expect.objectContaining({
+        last_opened_at: 1234,
+        last_chat_id: "chat-1",
+      }),
+    );
   });
 });
 

@@ -202,6 +202,25 @@ export async function setSetting<K extends keyof AppSettings>(
   return runSettingsWrite(() => writeSetting(key, value));
 }
 
+export async function setResumeState(
+  lastOpenedAt: number,
+  lastChatId: string,
+) {
+  return runSettingsWrite(async () => {
+    const db = await getDb();
+    await db.execute(
+      `INSERT INTO settings (key, value) VALUES ($1, $2), ($3, $4)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [
+        "last_opened_at",
+        JSON.stringify(lastOpenedAt),
+        "last_chat_id",
+        JSON.stringify(lastChatId),
+      ],
+    );
+  });
+}
+
 /**
  * Write default provider+model together. If `onlyIf` is set, skip when live
  * defaults already differ (Settings won the race).

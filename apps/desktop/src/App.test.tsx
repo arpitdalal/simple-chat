@@ -36,6 +36,8 @@ const openOrCreateChat = vi.hoisted(() =>
   }),
 );
 
+vi.mock("@tauri-apps/api/event", () => import("./test/mock-event"));
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setAlwaysOnTop: vi.fn(),
@@ -102,6 +104,7 @@ vi.mock("./lib/db", () => ({
     autostart_prompted: true,
   })),
   setSetting: vi.fn(),
+  setResumeState: vi.fn(async () => {}),
   setDefaultModel: vi.fn(async (provider: string, modelId: string) => ({
     resume_minutes: 5,
     always_on_top: false,
@@ -180,6 +183,11 @@ vi.mock("./lib/db", () => ({
 
 import App from "./App";
 import { applyHotkey } from "./lib/hotkey";
+import {
+  emitMainWindowHiddenForTests,
+  emitMainWindowShownForTests,
+  mainWindowShownListenerCountForTests,
+} from "./test/mock-event";
 
 describe("App UX", () => {
   beforeEach(async () => {
@@ -193,7 +201,7 @@ describe("App UX", () => {
       ready: ["google"],
       ok: true,
     });
-    const { listChatPage, messageCount, setSetting } = await import("./lib/db");
+    const { getSettings, listChatPage, messageCount, setSetting } = await import("./lib/db");
     vi.mocked(listChatPage).mockReset();
     vi.mocked(listChatPage).mockImplementation(async ({ query = "" } = {}) => {
       const normalized = query.trim().toLowerCase();
@@ -211,6 +219,19 @@ describe("App UX", () => {
     vi.mocked(messageCount).mockResolvedValue(0);
     vi.mocked(setSetting).mockReset();
     vi.mocked(setSetting).mockResolvedValue(undefined);
+    vi.mocked(getSettings).mockReset();
+    vi.mocked(getSettings).mockResolvedValue({
+      resume_minutes: 5,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: Date.now(),
+      last_chat_id: null,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: true,
+    });
     isAutostartEnabled.mockReset().mockResolvedValue(false);
     setAutostartEnabled.mockReset().mockResolvedValue(undefined);
     openOrCreateChat.mockClear();
@@ -244,6 +265,65 @@ describe("App UX", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("starts a new chat when a hidden prior chat's resume window expires", async () => {
+    const { getSettings, openOrCreateChat, setSetting } = await import("./lib/db");
+    const prior: Chat = {
+      id: "prior",
+      title: "Previous chat",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 1,
+      updated_at: 1,
+      preview: "Previous message",
+      pinned: 0,
+    };
+    const fresh: Chat = {
+      ...prior,
+      id: "fresh",
+      title: "New Chat",
+      preview: "Ask AI anything…",
+      created_at: 2,
+      updated_at: 2,
+    };
+    chatsStore.set([prior]);
+    openOrCreateChat.mockResolvedValueOnce(prior).mockResolvedValueOnce(fresh);
+
+    render(<App />);
+    await waitFor(() => expect(openOrCreateChat).toHaveBeenCalledTimes(1));
+    expect(document.querySelector(".title-pill")).toHaveTextContent("Previous chat");
+    await waitFor(() => expect(mainWindowShownListenerCountForTests()).toBeGreaterThan(0));
+    vi.mocked(setSetting).mockClear();
+    let persistedLastOpenedAt = 0;
+    vi.mocked(setSetting).mockImplementation(async (key, value) => {
+      if (key === "last_opened_at" && typeof value === "number") {
+        persistedLastOpenedAt = value;
+      }
+    });
+    emitMainWindowHiddenForTests(123456);
+    await waitFor(() =>
+      expect(setSetting).toHaveBeenCalledWith("last_opened_at", 123456),
+    );
+
+    vi.mocked(getSettings).mockImplementation(async () => ({
+      resume_minutes: 1,
+      always_on_top: false,
+      show_tray: true,
+      default_provider: "google",
+      default_model: "gemini-3.8-flash",
+      last_opened_at: persistedLastOpenedAt,
+      last_chat_id: prior.id,
+      web_search: true,
+      hotkey: "CommandOrControl+Shift+Space",
+      autostart_prompted: true,
+    }));
+    emitMainWindowShownForTests();
+
+    await waitFor(() => expect(openOrCreateChat).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(document.querySelector(".title-pill")).toHaveTextContent("New Chat"),
+    );
   });
 
   it("boots into empty Ask Anything state with composer", async () => {

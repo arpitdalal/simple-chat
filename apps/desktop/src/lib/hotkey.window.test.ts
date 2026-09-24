@@ -50,6 +50,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     show,
     setFocus,
     isVisible,
+    isMinimized: vi.fn(async () => false),
     outerSize,
     outerPosition,
     setPosition,
@@ -160,7 +161,6 @@ describe("hotkey window actions", () => {
     setPreferLogicalMonitorFramesForTests(false);
     isVisible.mockResolvedValue(false);
     await toggleMainWindow();
-    expect(invoke).toHaveBeenCalledWith("capture_previous_app");
     expect(setPosition).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "Physical",
@@ -168,15 +168,12 @@ describe("hotkey window actions", () => {
         y: (1080 - 600) / 2,
       }),
     );
-    expect(show).toHaveBeenCalled();
-    expect(setFocus).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("show_main_window_cmd");
+    expect(show).not.toHaveBeenCalled();
+    expect(setFocus).not.toHaveBeenCalled();
     expect(setPosition.mock.invocationCallOrder[0]).toBeLessThan(
       invoke.mock.invocationCallOrder[0],
     );
-    expect(invoke.mock.invocationCallOrder[0]).toBeLessThan(
-      show.mock.invocationCallOrder[0],
-    );
-    expect(invoke).toHaveBeenCalledWith("capture_previous_app");
   });
 
   it("positionMainWindowForShow keeps place when cursor is on the same monitor", async () => {
@@ -328,8 +325,9 @@ describe("hotkey window actions", () => {
     cursorPosition.mockResolvedValue({ x: 200, y: 200 });
     await toggleMainWindow();
     expect(setPosition).not.toHaveBeenCalled();
-    expect(show).toHaveBeenCalled();
-    expect(setFocus).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("show_main_window_cmd");
+    expect(show).not.toHaveBeenCalled();
+    expect(setFocus).not.toHaveBeenCalled();
   });
 
   it("monitorForCursor picks monitor containing physical cursor", async () => {
@@ -494,8 +492,9 @@ describe("hotkey window actions", () => {
     cursorPosition.mockRejectedValue(new Error("no cursor"));
     center.mockRejectedValue(new Error("no center"));
     await toggleMainWindow();
-    expect(show).toHaveBeenCalled();
-    expect(setFocus).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("show_main_window_cmd");
+    expect(show).not.toHaveBeenCalled();
+    expect(setFocus).not.toHaveBeenCalled();
   });
 
   it("centerOnCursorMonitor still setPositions when outerSize fails", async () => {
@@ -524,11 +523,11 @@ describe("hotkey window actions", () => {
     await vi.waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("hide_main_window_cmd"),
     );
-    expect(show).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("show_main_window_cmd");
 
     releaseHide();
     await Promise.all([first, second]);
-    expect(show).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("show_main_window_cmd");
   });
 
   it("applyHotkey registers accelerator", async () => {

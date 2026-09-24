@@ -1,3 +1,5 @@
+import { listen } from "@tauri-apps/api/event";
+
 /** Recent-page size for chat load / hide release. */
 export const MESSAGE_PAGE = 50;
 
@@ -7,8 +9,9 @@ export const MESSAGE_PAGE = 50;
  */
 export const MAX_CACHED_MESSAGES = 200;
 
-/** Emitted by Rust immediately before the main window hides. */
+/** Emitted by Rust after the main window hides. */
 export const MAIN_WINDOW_HIDDEN_EVENT = "main-window-hidden";
+export const MAIN_WINDOW_SHOWN_EVENT = "main-window-shown";
 
 /** Keep the newest `limit` rows (no-op when already within limit). */
 export function trimRecentMessages<T>(messages: T[], limit: number): T[] {
@@ -18,14 +21,27 @@ export function trimRecentMessages<T>(messages: T[], limit: number): T[] {
 
 /** Subscribe to tray/hide; no-op outside a live Tauri webview. */
 export async function onMainWindowHidden(
-  handler: () => void,
+  handler: (hiddenAt: number) => void,
+): Promise<() => void> {
+  return onMainWindowEvent<number>(MAIN_WINDOW_HIDDEN_EVENT, handler);
+}
+
+export async function onMainWindowShown(
+  handler: (hiddenAt: number) => void,
+): Promise<() => void> {
+  return onMainWindowEvent<number>(MAIN_WINDOW_SHOWN_EVENT, handler);
+}
+
+async function onMainWindowEvent<T>(
+  event: string,
+  handler: (payload: T) => void,
 ): Promise<() => void> {
   try {
-    const { listen } = await import("@tauri-apps/api/event");
-    return await listen(MAIN_WINDOW_HIDDEN_EVENT, () => {
-      handler();
+    return await listen<T>(event, ({ payload }) => {
+      handler(payload);
     });
-  } catch {
+  } catch (error) {
+    console.error("window lifecycle listener failed", error);
     return () => {};
   }
 }

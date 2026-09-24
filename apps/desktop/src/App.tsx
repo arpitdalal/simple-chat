@@ -16,6 +16,7 @@ import {
   messageCount,
   openOrCreateChat,
   setDefaultModel,
+  setResumeState,
   setSetting,
   updateChat,
   type AppSettings,
@@ -28,6 +29,7 @@ import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
 import { createQueue, type Queue } from "./lib/queue";
+import { useResumeLifecycle } from "./lib/resume-lifecycle";
 import {
   ChatSession,
   chatCanBeDiscarded,
@@ -210,6 +212,11 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
+  const suppressResumeTimestampRef = useRef(false);
+  const bootWasHiddenRef = useRef(false);
+  const resumePersistenceFailedRef = useRef(false);
+  const activeWriteRef = useRef<Promise<unknown> | null>(null);
+  const showResumeGenRef = useRef(0);
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<AvailableUpdate | null>(
@@ -311,6 +318,7 @@ function App() {
    */
   const cancelNav = useCallback(() => {
     navGenRef.current += 1;
+    showResumeGenRef.current += 1;
     if (keySyncWantedRef.current) scheduleKeySyncRef.current();
   }, []);
 
@@ -388,6 +396,23 @@ function App() {
   const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
     setToast({ text, kind });
   }, []);
+  const { markReady: markResumeReady } = useResumeLifecycle({
+    navGenRef,
+    showResumeGenRef,
+    activeIdRef,
+    suppressResumeTimestampRef,
+    bootWasHiddenRef,
+    resumePersistenceFailedRef,
+    activeWriteRef,
+    settingsFlushRef,
+    navQueue,
+    setActiveIdNow,
+    setActiveChat,
+    refreshChats,
+    upsertChat,
+    focusComposer,
+    notify,
+  });
 
   const persistDefaults = useCallback(
     async (
@@ -485,6 +510,7 @@ function App() {
 
   const newChat = useCallback(async () => {
     if (!settings) return;
+    cancelNav();
     try {
       await runNav(async (isCancelled) => {
         // Drain Settings debounce so a just-picked default is visible.
@@ -582,6 +608,7 @@ function App() {
     upsertChat,
     persistDefaults,
     alignEmptyChat,
+    cancelNav,
     notify,
   ]);
 
@@ -628,13 +655,24 @@ function App() {
 
       const chat = await openOrCreateChat(s);
       if (cancelled) return;
-      await setSetting("last_opened_at", Date.now());
-      await setSetting("last_chat_id", chat.id);
+      const visibleAtBoot = await getCurrentWindow().isVisible().catch(() => false);
+      try {
+        if (visibleAtBoot) {
+          await setResumeState(Date.now(), chat.id);
+        } else {
+          suppressResumeTimestampRef.current = true;
+          bootWasHiddenRef.current = true;
+          await setSetting("last_chat_id", chat.id);
+        }
+      } catch (err) {
+        console.error("initial resume persistence failed", err);
+      }
       setActiveIdNow(chat.id);
       setActiveChat(chat);
       await refreshChats();
       upsertChat(chat);
       if (cancelled) return;
+      markResumeReady();
       setReady(true);
       focusComposer();
       scheduleKeySync();
@@ -676,8 +714,14 @@ function App() {
     void getChat(activeId).then((chat) => {
       if (!cancelled && activeIdRef.current === activeId) setActiveChat(chat);
     });
-    void setSetting("last_chat_id", activeId);
-    void setSetting("last_opened_at", Date.now());
+    const write = suppressResumeTimestampRef.current
+      ? setSetting("last_chat_id", activeId)
+      : setResumeState(Date.now(), activeId);
+    activeWriteRef.current = write;
+    void write.catch((err) => {
+      resumePersistenceFailedRef.current = true;
+      console.error("active chat persistence failed", err);
+    });
     return () => { cancelled = true; };
   }, [activeId]);
 

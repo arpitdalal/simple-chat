@@ -3,6 +3,7 @@
  * Not a full SQL engine — enough for Simple Chat's query shapes.
  */
 import type { Chat, Message, AppSettings } from "../lib/db";
+import { EMPTY_CHAT_PREVIEW, NEW_CHAT_TITLE } from "../lib/chats";
 
 type Row = Record<string, unknown>;
 type MessageImageRow = { id: string; images: unknown };
@@ -133,7 +134,7 @@ class MemoryDatabase {
 
     if (q.includes("UPDATE chats SET title = $1, updated_at = $2")) {
       const id = String(args[2]);
-      const i = chats.findIndex((c) => c.id === id && c.title === "New Chat");
+      const i = chats.findIndex((c) => c.id === id && c.title === NEW_CHAT_TITLE);
       if (i >= 0) chats[i] = { ...chats[i], title: String(args[0]), updated_at: Number(args[1]) };
       return { rowsAffected: i >= 0 ? 1 : 0 };
     }
@@ -150,7 +151,7 @@ class MemoryDatabase {
             : (latest.image_count ?? latest.images.length)
               ? "Image"
               : ""
-          : "Ask AI anything…";
+          : EMPTY_CHAT_PREVIEW;
         chats[i] = { ...chats[i], updated_at: Number(args[1]), preview };
       }
       return { rowsAffected: i >= 0 ? 1 : 0 };
@@ -264,8 +265,8 @@ class MemoryDatabase {
       );
       return [...chats]
         .filter((chat) =>
-          chat.title === "New Chat" &&
-          (!chat.preview.trim() || chat.preview === "Ask AI anything…") &&
+          chat.title === NEW_CHAT_TITLE &&
+          (!chat.preview.trim() || chat.preview === EMPTY_CHAT_PREVIEW) &&
           !chatIds.has(chat.id),
         )
         .sort((a, b) =>

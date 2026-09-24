@@ -153,7 +153,15 @@ vi.mock("./lib/db", () => ({
   deleteChat: vi.fn(async (id: string) => {
     chatsStore.set(chatsStore.get().filter((c) => c.id !== id));
   }),
-  updateChat: vi.fn(),
+  updateChat: vi.fn(async (id: string, patch: Partial<Chat>) => {
+    const current = chatsStore.get().find((chat) => chat.id === id);
+    if (!current) throw new Error("Chat not found");
+    const updated = { ...current, ...patch };
+    chatsStore.set(
+      chatsStore.get().map((chat) => chat.id === id ? updated : chat),
+    );
+    return updated;
+  }),
   setInitialChatTitle: vi.fn(async () => true),
   refreshChatPreview: vi.fn(async () => {}),
   replaceChatTitle: vi.fn(async () => true),
@@ -161,7 +169,11 @@ vi.mock("./lib/db", () => ({
   listMessages: vi.fn(async () => []),
   listRecentMessages: vi.fn(async () => []),
   listOlderMessages: vi.fn(async () => []),
-  clearChatMessages: vi.fn(),
+  clearChatMessages: vi.fn(async (id: string) => {
+    const current = chatsStore.get().find((chat) => chat.id === id);
+    if (!current) throw new Error("Chat not found");
+    return { ...current, title: "New Chat", preview: "Ask AI anything…" };
+  }),
   addMessage: vi.fn(),
   branchChat: vi.fn(),
 }));

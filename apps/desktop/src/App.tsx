@@ -92,7 +92,8 @@ function useChatList(ready: boolean, retainedChat: Chat | null) {
       if (
         retained &&
         chatMatchesQuery(retained, search) &&
-        !removedIdsRef.current.has(retained.id)
+        !removedIdsRef.current.has(retained.id) &&
+        !next.has(retained.id)
       ) {
         next.set(retained.id, retained);
       }
@@ -764,9 +765,7 @@ function App() {
     patch: Partial<Pick<Chat, "title" | "pinned" | "provider" | "model_id">>,
   ) {
     try {
-      await updateChat(id, patch);
-      const updated = await getChat(id);
-      if (!updated) throw new Error("Chat not found after update");
+      const updated = await updateChat(id, patch);
       upsertChat(updated);
       if (activeIdRef.current === id) setActiveChat(updated);
     } catch (error) {
@@ -806,26 +805,13 @@ function App() {
   async function handleClear(id: string) {
     cancelNav();
     try {
-      await getChatSession(id).clear();
-    } catch (err) {
-      notify((err as Error).message || String(err), "err");
-      return;
-    }
-    try {
-      const updated = await getChat(id);
-      if (!updated) throw new Error("Chat not found after clear");
+      const updated = await getChatSession(id).clear();
+      if (!updated) throw new Error("Chat is busy");
       upsertChat(updated);
       if (activeId === id) setActiveChat(updated);
     } catch (error) {
       notify((error as Error).message || String(error), "err");
-      try {
-        await refreshChats();
-      } catch (refreshError) {
-        notify(
-          (refreshError as Error).message || String(refreshError),
-          "err",
-        );
-      }
+      return;
     }
     focusComposer();
   }
@@ -985,7 +971,9 @@ function App() {
               if (!chatId) return;
               void getChat(chatId)
                 .then((chat) => {
-                  if (chat) upsertChat(chat);
+                  if (!chat) return;
+                  upsertChat(chat);
+                  if (activeIdRef.current === chatId) setActiveChat(chat);
                 })
                 .catch((error) => {
                   notify((error as Error).message || String(error), "err");

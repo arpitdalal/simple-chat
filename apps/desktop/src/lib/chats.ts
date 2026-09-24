@@ -1,10 +1,13 @@
 import type { Chat } from "./db";
 
+export const NEW_CHAT_TITLE = "New Chat";
+export const EMPTY_CHAT_PREVIEW = "Ask AI anything…";
+
 /** Empty placeholder thread Raycast-style: discard when leaving. */
 export function isEmptyNewChat(c: Pick<Chat, "title" | "preview">): boolean {
   return (
-    c.title === "New Chat" &&
-    (!c.preview.trim() || c.preview === "Ask AI anything…")
+    c.title === NEW_CHAT_TITLE &&
+    (!c.preview.trim() || c.preview === EMPTY_CHAT_PREVIEW)
   );
 }
 

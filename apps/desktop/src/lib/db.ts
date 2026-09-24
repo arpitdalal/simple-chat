@@ -1,4 +1,10 @@
 import Database from "@tauri-apps/plugin-sql";
+import {
+  EMPTY_CHAT_PREVIEW,
+  isEmptyNewChat,
+  NEW_CHAT_TITLE,
+  resolveStartupMode,
+} from "./chats";
 
 export type Chat = {
   id: string;
@@ -280,8 +286,8 @@ export async function listReusableChats(limit = 20): Promise<Chat[]> {
   const db = await getDb();
   const rows = await db.select<Chat[]>(
     `SELECT chats.* FROM chats
-     WHERE chats.title = 'New Chat'
-       AND (trim(chats.preview) = '' OR chats.preview = 'Ask AI anything…')
+     WHERE chats.title = '${NEW_CHAT_TITLE}'
+       AND (trim(chats.preview) = '' OR chats.preview = '${EMPTY_CHAT_PREVIEW}')
        AND NOT EXISTS (
          SELECT 1 FROM messages WHERE messages.chat_id = chats.id
        )
@@ -308,12 +314,12 @@ export async function createChat(
   const now = Date.now();
   const chat: Chat = {
     id: crypto.randomUUID(),
-    title: "New Chat",
+    title: NEW_CHAT_TITLE,
     model_id: modelId,
     provider,
     created_at: now,
     updated_at: now,
-    preview: "Ask AI anything…",
+    preview: EMPTY_CHAT_PREVIEW,
     pinned: 0,
   };
   await db.execute(
@@ -341,7 +347,7 @@ export async function updateChat(
 ) {
   const db = await getDb();
   const current = await getChat(id);
-  if (!current) return;
+  if (!current) throw new Error("Chat not found");
   // Only message activity (preview) reorders the sidebar — pin/rename/model keep place.
   const updated_at = "preview" in patch ? Date.now() : current.updated_at;
   const next = { ...current, ...patch, updated_at };
@@ -357,13 +363,15 @@ export async function updateChat(
       id,
     ],
   );
+  return next;
 }
 
 /** Set the first prompt title only while this is still an unnamed chat. */
 export async function setInitialChatTitle(id: string, title: string): Promise<boolean> {
   const db = await getDb();
   const result = await db.execute(
-    "UPDATE chats SET title = $1, updated_at = $2 WHERE id = $3 AND title = 'New Chat'",
+    `UPDATE chats SET title = $1, updated_at = $2
+     WHERE id = $3 AND title = '${NEW_CHAT_TITLE}'`,
     [title, Date.now(), id],
   );
   return result.rowsAffected > 0;
@@ -379,7 +387,7 @@ export async function refreshChatPreview(id: string): Promise<void> {
           ELSE substr(content, 1, 120)
         END
         FROM messages WHERE chat_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 1),
-       'Ask AI anything…'
+       '${EMPTY_CHAT_PREVIEW}'
      ) WHERE id = $1`,
     [id, Date.now()],
   );
@@ -542,14 +550,14 @@ export async function branchChat(
   if (idx < 0) throw new Error("Message not found");
   const keep = all.slice(0, idx + 1);
   const base =
-    source.title && source.title !== "New Chat" ? source.title : "Chat";
+    source.title && source.title !== NEW_CHAT_TITLE ? source.title : "Chat";
   const title = `Branch · ${base}`.slice(0, 60);
   const last = keep[keep.length - 1];
   const preview = last?.content
     ? last.content.slice(0, 120)
     : last?.image_count
       ? "Image"
-      : "Ask AI anything…";
+      : EMPTY_CHAT_PREVIEW;
   const branched = await createChat(source.provider, source.model_id);
   try {
     await updateChat(branched.id, { title, preview });
@@ -595,7 +603,10 @@ export async function deleteMessagesAfter(
 export async function clearChatMessages(chatId: string) {
   const db = await getDb();
   await db.execute("DELETE FROM messages WHERE chat_id = $1", [chatId]);
-  await updateChat(chatId, { preview: "Ask AI anything…", title: "New Chat" });
+  return updateChat(chatId, {
+    preview: EMPTY_CHAT_PREVIEW,
+    title: NEW_CHAT_TITLE,
+  });
 }
 
 export async function messageCount(chatId: string): Promise<number> {
@@ -606,8 +617,6 @@ export async function messageCount(chatId: string): Promise<number> {
   );
   return rows[0]?.n ?? 0;
 }
-
-import { isEmptyNewChat, resolveStartupMode } from "./chats";
 
 /** Resume last chat if opened within resume_minutes; else new chat. */
 export async function resolveStartupChat(

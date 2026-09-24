@@ -135,11 +135,11 @@ export function Sidebar({
     const anchor = anchorRef.current;
     if (!anchor) return;
     const anchorIndex = rows.findIndex((row) => row.key === anchor.key);
-    if (anchorIndex >= 0) {
-      virtualizer.scrollToIndex(anchorIndex, { align: "start" });
-      if (anchor.offset !== 0) {
-        virtualizer.scrollBy(anchor.offset, { align: "start" });
-      }
+    const measurement = virtualizer.measurementsCache[anchorIndex];
+    if (measurement) {
+      virtualizer.scrollToOffset(measurement.start + anchor.offset, {
+        align: "start",
+      });
     }
   }, [rows, virtualizer]);
 

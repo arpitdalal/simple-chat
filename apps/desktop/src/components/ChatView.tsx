@@ -28,6 +28,10 @@ const LINE_H = 22;
 const MAX_LINES = 15;
 const MIN_LINES = 1;
 
+function messageHasImages(message: Message): boolean {
+  return message.images.length > 0 || (message.image_count ?? 0) > 0;
+}
+
 type Props = {
   chat: Chat | null;
   session: ChatSession;
@@ -397,10 +401,11 @@ export function ChatView({
                           <Markdown content={m!.content} />
                         ) : (
                           <>
-                            {m!.content && m!.content !== IMAGE_ATTACHMENT_PLACEHOLDER && (
-                              <div className="msg-user">{m!.content}</div>
-                            )}
-                            {(m!.images.length > 0 || (m!.image_count ?? 0) > 0) && (
+                            {m!.content &&
+                              (m!.content !== IMAGE_ATTACHMENT_PLACEHOLDER || !messageHasImages(m!)) && (
+                                <div className="msg-user">{m!.content}</div>
+                              )}
+                            {messageHasImages(m!) && (
                               <div className="sent-images">
                                 {Array.from({
                                   length: m!.images.length || (m!.image_count ?? 0),

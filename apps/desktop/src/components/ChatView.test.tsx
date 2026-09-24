@@ -954,6 +954,26 @@ describe("ChatView", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders a literal attachment placeholder when no image exists", async () => {
+    listRecentMessages.mockResolvedValue([
+      msg({ id: "literal", role: "user", content: "[Image attachment]" }),
+    ]);
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+
+    expect(await screen.findByText("[Image attachment]")).toBeInTheDocument();
+    expect(document.querySelector(".sent-images")).toBeNull();
+  });
+
   it("loads persisted message images only when rendered", async () => {
     const image = pngImage;
     listRecentMessages.mockResolvedValue([

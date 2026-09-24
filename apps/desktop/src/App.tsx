@@ -491,7 +491,7 @@ function App() {
 
   const newChat = useCallback(async () => {
     if (!settings) return;
-    showResumeGenRef.current += 1;
+    cancelNav();
     try {
       await runNav(async (isCancelled) => {
         // Drain Settings debounce so a just-picked default is visible.
@@ -589,6 +589,7 @@ function App() {
     upsertChat,
     persistDefaults,
     alignEmptyChat,
+    cancelNav,
     notify,
   ]);
 
@@ -713,32 +714,50 @@ function App() {
     let cancelled = false;
     const onShown = () => {
       if (!readyRef.current) return;
-      const gen = showResumeGenRef.current;
+      const gen = navGenRef.current;
       showResumeChain.current = showResumeChain.current
         .catch(() => undefined)
         .then(async () => {
-          if (cancelled || gen !== showResumeGenRef.current) return;
-          try {
-            await lastHiddenWriteRef.current;
-            if (cancelled || gen !== showResumeGenRef.current) return;
-            const s = await getSettings();
-            if (cancelled || gen !== showResumeGenRef.current) return;
-            setSettings(s);
-            const chat = await openOrCreateChat(s);
-            if (cancelled || gen !== showResumeGenRef.current) return;
-            await setSetting("last_opened_at", Date.now());
-            await setSetting("last_chat_id", chat.id);
-            if (cancelled || gen !== showResumeGenRef.current) return;
-            setActiveIdNow(chat.id);
-            setActiveChat(chat);
-            await refreshChats();
-            if (cancelled || gen !== showResumeGenRef.current) return;
-            upsertChat(chat);
-            focusComposer();
-          } catch (err) {
-            console.error("resume on show failed", err);
-            notify((err as Error).message || String(err), "err");
-          }
+          if (cancelled || gen !== navGenRef.current) return;
+          await navQueue.run(async () => {
+            if (cancelled || gen !== navGenRef.current) return;
+            try {
+              await lastHiddenWriteRef.current;
+              if (cancelled || gen !== navGenRef.current) return;
+              const s = await getSettings();
+              if (cancelled || gen !== navGenRef.current) return;
+              setSettings(s);
+              const chat = await openOrCreateChat(s);
+              const discardStaleChat = async () => {
+                if (chat.id === s.last_chat_id) return;
+                try {
+                  await getChatSession(chat.id).delete();
+                } catch (err) {
+                  console.error("stale resume cleanup failed", err);
+                }
+                await setSetting("last_chat_id", activeIdRef.current);
+              };
+              if (cancelled || gen !== navGenRef.current) {
+                await discardStaleChat();
+                return;
+              }
+              await setSetting("last_opened_at", Date.now());
+              await setSetting("last_chat_id", chat.id);
+              if (cancelled || gen !== navGenRef.current) {
+                await discardStaleChat();
+                return;
+              }
+              setActiveIdNow(chat.id);
+              setActiveChat(chat);
+              await refreshChats();
+              if (cancelled || gen !== navGenRef.current) return;
+              upsertChat(chat);
+              focusComposer();
+            } catch (err) {
+              console.error("resume on show failed", err);
+              notify((err as Error).message || String(err), "err");
+            }
+          });
         });
     };
     void onMainWindowShown(onShown).then((fn) => {
@@ -749,7 +768,7 @@ function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [focusComposer, notify, refreshChats, setActiveIdNow, showResumeChain, upsertChat]);
+  }, [focusComposer, navQueue, notify, refreshChats, setActiveIdNow, showResumeChain, upsertChat]);
 
   useEffect(() => {
     if (!showSettings) focusComposer();

@@ -28,7 +28,9 @@ function externalHref(href: string): string | null {
   try {
     const url = new URL(href.startsWith("//") ? `https:${href}` : href, window.location.href);
     if (!OPENABLE.has(url.protocol)) return null;
-    if (url.origin === window.location.origin) return null;
+    if ((url.protocol === "http:" || url.protocol === "https:") && url.origin === window.location.origin) {
+      return null;
+    }
     return url.href;
   } catch {
     return null;

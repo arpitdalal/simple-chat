@@ -74,6 +74,19 @@ describe("Markdown", () => {
     expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
   });
 
+  it("opens mailto and tel when the webview origin is opaque", () => {
+    vi.stubGlobal("location", { href: "tauri://localhost/", origin: "null" });
+    try {
+      render(<Markdown content={"[mail](mailto:hi@example.com) [call](tel:+15551234)"} />);
+      expect(click(screen.getByRole("link", { name: "mail" })).defaultPrevented).toBe(true);
+      expect(click(screen.getByRole("link", { name: "call" })).defaultPrevented).toBe(true);
+      expect(openUrl).toHaveBeenCalledWith("mailto:hi@example.com");
+      expect(openUrl).toHaveBeenCalledWith("tel:+15551234");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("opens mailto links in the system handler", () => {
     render(<Markdown content={"email [me](mailto:hi@example.com)"} />);
     const event = click(screen.getByRole("link", { name: "me" }));

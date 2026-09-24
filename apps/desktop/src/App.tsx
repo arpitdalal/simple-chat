@@ -214,6 +214,8 @@ function App() {
   const [ready, setReady] = useState(false);
   const suppressResumeTimestampRef = useRef(false);
   const bootWasHiddenRef = useRef(false);
+  const resumePersistenceFailedRef = useRef(false);
+  const activeWriteRef = useRef<Promise<unknown> | null>(null);
   const showResumeGenRef = useRef(0);
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -400,6 +402,8 @@ function App() {
     activeIdRef,
     suppressResumeTimestampRef,
     bootWasHiddenRef,
+    resumePersistenceFailedRef,
+    activeWriteRef,
     settingsFlushRef,
     navQueue,
     setActiveIdNow,
@@ -710,15 +714,14 @@ function App() {
     void getChat(activeId).then((chat) => {
       if (!cancelled && activeIdRef.current === activeId) setActiveChat(chat);
     });
-    if (suppressResumeTimestampRef.current) {
-      void setSetting("last_chat_id", activeId).catch((err) => {
-        console.error("active chat persistence failed", err);
-      });
-    } else {
-      void setResumeState(Date.now(), activeId).catch((err) => {
-        console.error("active chat persistence failed", err);
-      });
-    }
+    const write = suppressResumeTimestampRef.current
+      ? setSetting("last_chat_id", activeId)
+      : setResumeState(Date.now(), activeId);
+    activeWriteRef.current = write;
+    void write.catch((err) => {
+      resumePersistenceFailedRef.current = true;
+      console.error("active chat persistence failed", err);
+    });
     return () => { cancelled = true; };
   }, [activeId]);
 

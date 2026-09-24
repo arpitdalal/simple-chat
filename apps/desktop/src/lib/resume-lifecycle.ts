@@ -17,6 +17,8 @@ type ResumeLifecycleOptions = {
   activeIdRef: RefObject<string | null>;
   suppressResumeTimestampRef: RefObject<boolean>;
   bootWasHiddenRef: RefObject<boolean>;
+  resumePersistenceFailedRef: RefObject<boolean>;
+  activeWriteRef: RefObject<Promise<unknown> | null>;
   settingsFlushRef: RefObject<(() => Promise<void>) | null>;
   navQueue: Queue;
   setActiveIdNow: (id: string) => void;
@@ -34,6 +36,8 @@ export function useResumeLifecycle(options: ResumeLifecycleOptions) {
     activeIdRef,
     suppressResumeTimestampRef,
     bootWasHiddenRef,
+    resumePersistenceFailedRef,
+    activeWriteRef,
     settingsFlushRef,
     navQueue,
     setActiveIdNow,
@@ -49,7 +53,6 @@ export function useResumeLifecycle(options: ResumeLifecycleOptions) {
   const resumeShowRef = useRef<((hiddenAt: number) => void) | null>(null);
   const lastShownHiddenAtRef = useRef(0);
   const hiddenWriteFailedRef = useRef(false);
-  const resumePersistenceFailedRef = useRef(false);
   const lastHiddenWriteRef = useRef<Promise<unknown> | null>(null);
   const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const setActiveChatRef = useRef(setActiveChat);
@@ -139,6 +142,18 @@ export function useResumeLifecycle(options: ResumeLifecycleOptions) {
                   }
                 }
               }
+              const activeWrite = activeWriteRef.current;
+              if (activeWrite) {
+                try {
+                  await activeWrite;
+                  resumePersistenceFailedRef.current = false;
+                } catch (err) {
+                  resumePersistenceFailedRef.current = true;
+                  console.error("active chat persistence failed", err);
+                } finally {
+                  if (activeWriteRef.current === activeWrite) activeWriteRef.current = null;
+                }
+              }
               try {
                 await settingsFlushRef.current?.();
               } catch (err) {
@@ -217,7 +232,7 @@ export function useResumeLifecycle(options: ResumeLifecycleOptions) {
       resumeShowRef.current = null;
       unlisten?.();
     };
-  }, [activeIdRef, bootWasHiddenRef, focusComposer, navGenRef, navQueue, notify, refreshChats, setActiveIdNow, settingsFlushRef, showResumeGenRef, suppressResumeTimestampRef, upsertChat]);
+  }, [activeIdRef, activeWriteRef, bootWasHiddenRef, focusComposer, navGenRef, navQueue, notify, refreshChats, resumePersistenceFailedRef, setActiveIdNow, settingsFlushRef, showResumeGenRef, suppressResumeTimestampRef, upsertChat]);
 
   return { markReady };
 }

@@ -6,6 +6,66 @@ test.describe("Simple Chat UX", () => {
   }) => {
     await page.goto("/");
 
+    await page.evaluate(() => {
+      document.documentElement.style.background = "white";
+      document.body.style.background = "white";
+    });
+    await expect(page.locator(".app")).toHaveCSS(
+      "background-color",
+      "rgba(10, 10, 12, 0.96)",
+    );
+    const textContrasts = await page.locator(".app").evaluate((element) => {
+      type Color = { rgb: number[]; alpha: number };
+      const parseColor = (value: string): Color => {
+        const channels = value.match(/[\d.]+/g)!.map(Number);
+        return { rgb: channels.slice(0, 3), alpha: channels[3] ?? 1 };
+      };
+      const effectiveBackground = (node: Element) => {
+        const layers: Color[] = [];
+        for (let current: Element | null = node; current; current = current.parentElement) {
+          const layer = parseColor(getComputedStyle(current).backgroundColor);
+          if (layer.alpha > 0) layers.push(layer);
+          if (layer.alpha === 1) break;
+        }
+        return layers.reduceRight(
+          (bottom, layer) =>
+            layer.rgb.map(
+              (channel, index) =>
+                channel * layer.alpha + bottom[index] * (1 - layer.alpha),
+            ),
+          [255, 255, 255],
+        );
+      };
+      const luminance = (rgb: number[]) => {
+        const linear = rgb.map((channel) => {
+          const value = channel / 255;
+          return value <= 0.03928
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+      };
+      return [
+        ".empty-state h1",
+        ".sidebar-settings-tab",
+        ".model-trigger",
+        ".composer-bar-right span",
+      ].map((selector) => {
+        const textStyle = getComputedStyle(
+          element.querySelector<HTMLElement>(selector)!,
+        );
+        const foreground = luminance(parseColor(textStyle.color).rgb);
+        const backdrop = luminance(
+          effectiveBackground(element.querySelector(selector)!),
+        );
+        return (
+          (Math.max(foreground, backdrop) + 0.05) /
+          (Math.min(foreground, backdrop) + 0.05)
+        );
+      });
+    });
+    expect(textContrasts).toHaveLength(4);
+    for (const contrast of textContrasts) expect(contrast).toBeGreaterThan(4.5);
     await expect(page.getByText("Simple Chat", { exact: true })).toBeVisible();
     await expect(page.getByText("Ask Anything")).toBeVisible();
     await expect(page.getByPlaceholder("Ask AI anything…")).toBeFocused();

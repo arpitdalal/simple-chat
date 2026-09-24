@@ -6,6 +6,7 @@
   --danger: #ff453a;
   --glass: rgba(255, 255, 255, 0.06);
   --glass-strong: rgba(28, 28, 32, 0.45);
+  --app-bg: rgba(10, 10, 12, 0.96);
   --elev: rgba(255, 255, 255, 0.09);
   --border: rgba(255, 255, 255, 0.12);
   /* light frost only — window vibrancy does the real glass */
@@ -53,7 +54,7 @@ select {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: transparent;
+  background: var(--app-bg);
 }
 
 /* Native drag bar; traffic lights y=20 centers in 52px chrome */

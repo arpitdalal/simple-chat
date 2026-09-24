@@ -621,6 +621,62 @@ describe("ChatView", () => {
     vi.unstubAllGlobals();
   });
 
+  it("inspects generic clipboard files by image signature", async () => {
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: ((ev: ProgressEvent<FileReader>) => void) | null = null;
+        readAsDataURL() {
+          this.result = `data:application/octet-stream;base64,${btoa(
+            String.fromCharCode(...pngBytes),
+          )}`;
+          queueMicrotask(() =>
+            this.onload?.(new ProgressEvent("load") as unknown as ProgressEvent<FileReader>),
+          );
+        }
+      },
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const textarea = await screen.findByPlaceholderText("Ask AI anything…");
+    const file = new File([pngBytes], "clipboard.bin", {
+      type: "application/octet-stream",
+    });
+    await act(async () => {
+      textarea.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          clipboardData: {
+            items: [{ type: file.type, getAsFile: () => file }],
+          } as unknown as DataTransfer,
+        }),
+      );
+    });
+
+    await waitFor(() => expect(document.querySelector(".thumb img")).toBeTruthy());
+    vi.unstubAllGlobals();
+  });
+
   it("preserves selected image order across asynchronous reads", async () => {
     const user = userEvent.setup();
     let readCount = 0;
@@ -732,6 +788,64 @@ describe("ChatView", () => {
     );
     expect(streamChat).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("wait");
+    vi.unstubAllGlobals();
+  });
+
+  it("stops a cleared attachment batch without reading remaining files", async () => {
+    const user = userEvent.setup();
+    const readers: Array<{
+      result: string | null;
+      onload: ((ev: ProgressEvent<FileReader>) => void) | null;
+    }> = [];
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: ((ev: ProgressEvent<FileReader>) => void) | null = null;
+        readAsDataURL() {
+          readers.push(this);
+        }
+      },
+    );
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    const textarea = await screen.findByPlaceholderText("Ask AI anything…");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        value: [
+          new File(["first"], "first.png", { type: "image/png" }),
+          new File(["second"], "second.png", { type: "image/png" }),
+        ],
+        configurable: true,
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitFor(() => expect(readers).toHaveLength(1));
+    await act(async () => {
+      for (const listener of hiddenListeners) listener();
+    });
+    await act(async () => {
+      readers[0]!.result = pngImage;
+      readers[0]!.onload?.(
+        new ProgressEvent("load") as unknown as ProgressEvent<FileReader>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(readers).toHaveLength(1);
+    await user.type(textarea, "still available");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(streamChat).toHaveBeenCalled());
     vi.unstubAllGlobals();
   });
 

@@ -501,14 +501,16 @@ export class ChatSession {
   private async reply(turn: Turn, chat: Chat, history: Message[], anchor: string, content: UserContent | undefined, callbacks: Callbacks) {
     this.streamOwner = turn;
     this.publish({ stream: { anchor, text: "" } });
+    const retainedHistory = trimRecentMessages(history, MAX_CACHED_MESSAGES);
     const storedImages = await loadMessageImages(
       chat.id,
+      retainedHistory[0]?.id ?? anchor,
       anchor,
       MAX_HISTORY_IMAGE_CHARS,
       MAX_HISTORY_IMAGES,
     );
     const messages = boundProviderHistory(
-      trimRecentMessages(history, MAX_CACHED_MESSAGES),
+      retainedHistory,
       storedImages,
       anchor,
     ).map((m): ModelMessage => {

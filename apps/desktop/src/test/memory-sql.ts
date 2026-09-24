@@ -281,18 +281,22 @@ class MemoryDatabase {
 
     if (q.includes("SELECT id, images FROM (") && q.includes("total_chars")) {
       const chatId = String(args[0]);
-      const throughId = String(args[1]);
-      const maxChars = Number(args[2]);
-      const maxImages = Number(args[3]);
+      const fromId = String(args[1]);
+      const throughId = String(args[2]);
+      const maxChars = Number(args[3]);
+      const maxImages = Number(args[4]);
       const sourceMessages = messages
         .filter((message) => message.chat_id === chatId)
         .sort((a, b) => a.created_at - b.created_at || messages.indexOf(a) - messages.indexOf(b));
+      const fromIndex = sourceMessages.findIndex(
+        (message) => message.id === fromId,
+      );
       const throughIndex = sourceMessages.findIndex(
         (message) => message.id === throughId,
       );
-      if (throughIndex < 0) return [] as unknown as T;
+      if (fromIndex < 0 || throughIndex < fromIndex) return [] as unknown as T;
       const source = sourceMessages
-        .slice(0, throughIndex + 1)
+        .slice(fromIndex, throughIndex + 1)
         .reverse()
         .filter((message) => message.images.length);
       const selected: MessageImageRow[] = [];

@@ -391,6 +391,7 @@ export async function loadMessageImage(
 
 export async function loadMessageImages(
   chatId: string,
+  fromMessageId: string,
   throughMessageId: string,
   maxChars: number,
   maxImages: number,
@@ -406,12 +407,15 @@ export async function loadMessageImages(
            ORDER BY created_at DESC, rowid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
          ) AS total_images
        FROM messages
-       WHERE chat_id = $1 AND image_count > 0 AND (created_at, rowid) <=
-         (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)
+       WHERE chat_id = $1 AND image_count > 0
+         AND (created_at, rowid) >=
+           (SELECT created_at, rowid FROM messages WHERE id = $2 AND chat_id = $1)
+         AND (created_at, rowid) <=
+           (SELECT created_at, rowid FROM messages WHERE id = $3 AND chat_id = $1)
      )
-     WHERE total_chars <= $3 AND total_images <= $4
+     WHERE total_chars <= $4 AND total_images <= $5
      ORDER BY created_at DESC, rowid DESC`,
-    [chatId, throughMessageId, maxChars, maxImages],
+    [chatId, fromMessageId, throughMessageId, maxChars, maxImages],
   );
   return new Map(rows.map((row) => [row.id, parseImages(row.images)]));
 }

@@ -221,7 +221,11 @@ export function ChatView({
     if (!items) return;
     const files: File[] = [];
     for (const item of items) {
-      if (item.type && !item.type.startsWith("image/")) continue;
+      if (
+        item.type &&
+        item.type !== "application/octet-stream" &&
+        !item.type.startsWith("image/")
+      ) continue;
       const file = item.getAsFile();
       if (file) files.push(file);
     }
@@ -272,7 +276,7 @@ export function ChatView({
                 reader.onerror = () => reject(new Error("The attached image could not be read."));
                 reader.readAsDataURL(file);
               });
-              if (releaseGeneration !== releaseGenRef.current) continue;
+              if (releaseGeneration !== releaseGenRef.current) break;
               const normalized = normalizeImageDataUrl(dataUrl);
               if (!normalized) {
                 onNotify("Attach a PNG, JPEG, or WebP image.", "err");
@@ -301,7 +305,7 @@ export function ChatView({
                 preview.onerror = () => reject(new Error("The attached image could not be decoded."));
                 preview.src = normalized.image;
               });
-              if (releaseGeneration !== releaseGenRef.current) continue;
+              if (releaseGeneration !== releaseGenRef.current) break;
               if (!pendingImage || !pendingImageValuesRef.current.has(pendingImage)) continue;
               const next = [...imagesRef.current, normalized.image];
               const nextError = imageLimitError(next);

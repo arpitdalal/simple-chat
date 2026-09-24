@@ -120,7 +120,7 @@ describe("db (memory sql integration)", () => {
     const msgs = await listMessages(branched.id);
     expect(msgs.map((m) => m.content)).toEqual(["one", "two"]);
     expect(msgs[0]).toMatchObject({ images: [], image_count: 1 });
-    expect((await loadMessageImages(branched.id, msgs[1].id, 5_000_000, 4)).get(msgs[0].id)).toEqual([image]);
+    expect((await loadMessageImages(branched.id, msgs[0].id, msgs[1].id, 5_000_000, 4)).get(msgs[0].id)).toEqual([image]);
     expect(await loadMessageImage(branched.id, msgs[0].id, 0)).toBe(image);
     expect(msgs.map((m) => m.created_at)).toEqual([10, 20]);
     // source unchanged
@@ -224,9 +224,39 @@ describe("db (memory sql integration)", () => {
       30,
       ["data:image/png;base64,CCC"],
     );
-    const loaded = await loadMessageImages(chat.id, third.id, 5_000_000, 2);
+    const loaded = await loadMessageImages(chat.id, second.id, third.id, 5_000_000, 2);
     expect(new Set(loaded.keys())).toEqual(new Set([second.id, third.id]));
     expect(loaded.has(first.id)).toBe(false);
+  });
+
+  it("does not load images before the retained history boundary", async () => {
+    const chat = await createChat("google", "gemini-3.8-flash");
+    const old = await addMessage(
+      chat.id,
+      "user",
+      "old image",
+      10,
+      ["data:image/png;base64,OLD"],
+    );
+    const boundary = await addMessage(chat.id, "assistant", "boundary", 20);
+    const recent = await addMessage(
+      chat.id,
+      "user",
+      "recent image",
+      30,
+      ["data:image/png;base64,NEW"],
+    );
+    const anchor = await addMessage(chat.id, "assistant", "anchor", 40);
+
+    const loaded = await loadMessageImages(
+      chat.id,
+      boundary.id,
+      anchor.id,
+      5_000_000,
+      4,
+    );
+    expect([...loaded.keys()]).toEqual([recent.id]);
+    expect(loaded.has(old.id)).toBe(false);
   });
 
   it("does not label an empty text response as an image", async () => {

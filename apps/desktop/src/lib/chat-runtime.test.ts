@@ -79,14 +79,19 @@ beforeEach(() => {
   );
   loadMessageImages.mockImplementation(async (
     id: string,
-    _throughMessageId: string,
+    fromMessageId: string,
+    throughMessageId: string,
     maxChars: number,
     maxImages: number,
   ) => {
+    const messages = store.get(id) ?? [];
+    const fromIndex = messages.findIndex((message) => message.id === fromMessageId);
+    const throughIndex = messages.findIndex((message) => message.id === throughMessageId);
+    if (fromIndex < 0 || throughIndex < fromIndex) return new Map<string, string[]>();
     const selected = new Map<string, string[]>();
     let chars = 0;
     let images = 0;
-    for (const message of [...(store.get(id) ?? [])].reverse()) {
+    for (const message of messages.slice(fromIndex, throughIndex + 1).reverse()) {
       if (!message.images.length) continue;
       const nextChars = chars + JSON.stringify(message.images).length;
       const nextImages = images + message.images.length;
@@ -267,6 +272,34 @@ describe("ChatSession", () => {
       role: "user",
       content: "compare this\n\nEarlier image attachment omitted due to context limits.",
     });
+  });
+
+  it("loads images only from the retained 200-message history", async () => {
+    store.set("a", [
+      {
+        id: "old-image",
+        chat_id: "a",
+        role: "user" as const,
+        content: "old",
+        images: [pngImage],
+        image_count: 1,
+        created_at: 0,
+      },
+      ...Array.from({ length: 200 }, (_, index) => ({
+        id: `text-${index}`,
+        chat_id: "a",
+        role: "user" as const,
+        content: `text ${index}`,
+        images: [],
+        image_count: 0,
+        created_at: index + 1,
+      })),
+    ]);
+    const session = getChatSession("a");
+    session.send(chat("a"), "follow up", [], callbacks);
+    await waitFor(() => expect(session.getSnapshot().busy).toBe(false));
+
+    expect(loadMessageImages.mock.calls[0].slice(0, 2)).toEqual(["a", "text-1"]);
   });
 
   it("keeps provider history as a contiguous suffix when a turn exceeds budget", async () => {

@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Markdown } from "./Markdown";
 
+const openUrl = vi.fn(async () => undefined);
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => openUrl(...args),
+}));
+
 describe("Markdown", () => {
+  beforeEach(() => {
+    openUrl.mockReset();
+  });
+
   it("renders headings and lists", () => {
     render(<Markdown content={"## Hello\n\n- one\n- two"} />);
     expect(screen.getByRole("heading", { name: "Hello" })).toBeInTheDocument();
@@ -33,5 +44,33 @@ describe("Markdown", () => {
     expect(link).not.toBeNull();
     // sanitize omits href; defaultUrlTransform alone leaves href=""
     expect(link!.hasAttribute("href")).toBe(false);
+  });
+
+  it("opens https links in the system browser and keeps the webview put", async () => {
+    const user = userEvent.setup();
+    render(<Markdown content={"see [docs](https://example.com/a)"} />);
+    const link = screen.getByRole("link", { name: "docs" });
+
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+
+    await user.click(link);
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
+  });
+
+  it("opens mailto links in the system handler", async () => {
+    const user = userEvent.setup();
+    render(<Markdown content={"email [me](mailto:hi@example.com)"} />);
+    await user.click(screen.getByRole("link", { name: "me" }));
+    expect(openUrl).toHaveBeenCalledWith("mailto:hi@example.com");
+  });
+
+  it("does not open same-origin or relative links", async () => {
+    const user = userEvent.setup();
+    render(<Markdown content={"go [home](/chat) or [rel](./local)"} />);
+    await user.click(screen.getByRole("link", { name: "home" }));
+    await user.click(screen.getByRole("link", { name: "rel" }));
+    expect(openUrl).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,10 @@ test.describe("Simple Chat UX", () => {
   }) => {
     await page.goto("/");
 
+    await expect(page.locator(".app")).toHaveCSS(
+      "background-color",
+      "rgba(28, 28, 30, 0.9)",
+    );
     await expect(page.getByText("Simple Chat", { exact: true })).toBeVisible();
     await expect(page.getByText("Ask Anything")).toBeVisible();
     await expect(page.getByPlaceholder("Ask AI anything…")).toBeFocused();

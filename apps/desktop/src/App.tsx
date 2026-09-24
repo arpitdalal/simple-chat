@@ -217,7 +217,10 @@ function App() {
   const bootWasHiddenRef = useRef(false);
   const showResumeGenRef = useRef(0);
   const pendingShowRef = useRef(false);
-  const resumeShowRef = useRef<(() => void) | null>(null);
+  const pendingShowAtRef = useRef<number | undefined>(undefined);
+  const resumeShowRef = useRef<((hiddenAt?: unknown) => void) | null>(null);
+  const lastShownHiddenAtRef = useRef(0);
+  const hiddenWriteFailedRef = useRef(false);
   const lastHiddenWriteRef = useRef<Promise<unknown> | null>(null);
   const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const [composerFocus, setComposerFocus] = useState(0);
@@ -658,7 +661,9 @@ function App() {
       setReady(true);
       if (pendingShowRef.current) {
         pendingShowRef.current = false;
-        resumeShowRef.current?.();
+        const pendingHiddenAt = pendingShowAtRef.current;
+        pendingShowAtRef.current = undefined;
+        resumeShowRef.current?.(pendingHiddenAt);
       }
       focusComposer();
       scheduleKeySync();
@@ -702,9 +707,13 @@ function App() {
       if (!cancelled && activeIdRef.current === activeId) setActiveChat(chat);
     });
     if (suppressResumeTimestampRef.current) {
-      void setSetting("last_chat_id", activeId);
+      void setSetting("last_chat_id", activeId).catch((err) => {
+        console.error("active chat persistence failed", err);
+      });
     } else {
-      void setResumeState(Date.now(), activeId);
+      void setResumeState(Date.now(), activeId).catch((err) => {
+        console.error("active chat persistence failed", err);
+      });
     }
     return () => { cancelled = true; };
   }, [activeId]);
@@ -713,14 +722,21 @@ function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void onMainWindowHidden((hiddenAt) => {
+      if (
+        typeof hiddenAt === "number" &&
+        hiddenAt <= lastShownHiddenAtRef.current
+      ) return;
       showResumeGenRef.current += 1;
       pendingShowRef.current = false;
+      pendingShowAtRef.current = undefined;
+      hiddenWriteFailedRef.current = false;
       const write = setSetting(
         "last_opened_at",
         typeof hiddenAt === "number" ? hiddenAt : Date.now(),
       );
       lastHiddenWriteRef.current = write;
       void write.catch((err) => {
+        hiddenWriteFailedRef.current = true;
         console.error("resume timestamp failed", err);
       });
     }).then((fn) => {
@@ -736,10 +752,14 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    const onShown = () => {
+    const onShown = (hiddenAt?: unknown) => {
       if (!readyRef.current) {
         pendingShowRef.current = true;
+        pendingShowAtRef.current = typeof hiddenAt === "number" ? hiddenAt : undefined;
         return;
+      }
+      if (typeof hiddenAt === "number") {
+        lastShownHiddenAtRef.current = hiddenAt;
       }
       const gen = navGenRef.current;
       const resumeGen = showResumeGenRef.current;
@@ -754,6 +774,14 @@ function App() {
             let chat: Chat | null = null;
             let priorChatId: string | null = null;
             try {
+              if (typeof hiddenAt === "number") {
+                const write = setSetting("last_opened_at", hiddenAt);
+                lastHiddenWriteRef.current = write;
+                void write.catch((err) => {
+                  hiddenWriteFailedRef.current = true;
+                  console.error("resume timestamp failed", err);
+                });
+              }
               const hiddenWrite = lastHiddenWriteRef.current;
               if (hiddenWrite) {
                 try {
@@ -764,6 +792,8 @@ function App() {
                   }
                 }
               }
+              const hiddenWriteFailed = hiddenWriteFailedRef.current;
+              hiddenWriteFailedRef.current = false;
               try {
                 await settingsFlushRef.current?.();
               } catch (err) {
@@ -774,7 +804,10 @@ function App() {
               if (isStale()) return;
               setSettings(settingsSnapshot);
               priorChatId = settingsSnapshot.last_chat_id;
-              const resumedChat = await openOrCreateChat(settingsSnapshot);
+              const resumeSettings = hiddenWriteFailed
+                ? { ...settingsSnapshot, last_opened_at: 0 }
+                : settingsSnapshot;
+              const resumedChat = await openOrCreateChat(resumeSettings);
               chat = resumedChat;
               const discardStaleChat = async () => {
                 if (resumedChat.id === priorChatId) return;

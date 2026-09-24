@@ -27,7 +27,7 @@ export async function onMainWindowHidden(
 }
 
 export async function onMainWindowShown(
-  handler: () => void,
+  handler: (hiddenAt?: unknown) => void,
 ): Promise<() => void> {
   return onMainWindowEvent(MAIN_WINDOW_SHOWN_EVENT, handler);
 }

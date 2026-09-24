@@ -2,6 +2,7 @@ mod db;
 mod focus;
 mod keys;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -10,6 +11,8 @@ use tauri::{
 };
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
+
+static LAST_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
 
 fn hide_main_window(app: &AppHandle) {
     // Restore while still active (cooperative yield), then hide. Guard blur
@@ -22,6 +25,7 @@ fn hide_main_window(app: &AppHandle) {
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as u64)
                 .unwrap_or_default();
+            LAST_HIDDEN_AT.store(hidden_at, Ordering::Relaxed);
             let _ = window.emit("main-window-hidden", hidden_at);
         }
     }
@@ -39,7 +43,8 @@ fn show_main_window(app: &AppHandle) -> Result<(), String> {
         window.show().map_err(|error| error.to_string())?;
         let focus_result = window.set_focus();
         if !was_visible {
-            window.emit("main-window-shown", ()).map_err(|error| error.to_string())?;
+            let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
+            window.emit("main-window-shown", hidden_at).map_err(|error| error.to_string())?;
         }
         focus_result.map_err(|error| error.to_string())?;
     }

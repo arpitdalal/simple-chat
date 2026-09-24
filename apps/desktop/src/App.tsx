@@ -28,8 +28,8 @@ import { pickDefaultModel } from "./lib/models";
 import { isKeyOpBusy, listReadyProviders, subscribeKeyBusy } from "./lib/keys";
 import { applyHotkey, formatHotkey, hideMainWindow } from "./lib/hotkey";
 import { emptyChatNeedsRetarget, isEmptyNewChat } from "./lib/chats";
-import { onMainWindowHidden, onMainWindowShown } from "./lib/memory";
 import { createQueue, type Queue } from "./lib/queue";
+import { useResumeLifecycle } from "./lib/resume-lifecycle";
 import {
   ChatSession,
   chatCanBeDiscarded,
@@ -212,18 +212,9 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [ready, setReady] = useState(false);
-  const readyRef = useRef(false);
   const suppressResumeTimestampRef = useRef(false);
   const bootWasHiddenRef = useRef(false);
   const showResumeGenRef = useRef(0);
-  const pendingShowRef = useRef(false);
-  const pendingShowAtRef = useRef<number | undefined>(undefined);
-  const resumeShowRef = useRef<((hiddenAt?: unknown) => void) | null>(null);
-  const lastShownHiddenAtRef = useRef(0);
-  const hiddenWriteFailedRef = useRef(false);
-  const resumePersistenceFailedRef = useRef(false);
-  const lastHiddenWriteRef = useRef<Promise<unknown> | null>(null);
-  const [showResumeChain] = useState(() => ({ current: Promise.resolve() }));
   const [composerFocus, setComposerFocus] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<AvailableUpdate | null>(
@@ -403,6 +394,21 @@ function App() {
   const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
     setToast({ text, kind });
   }, []);
+  const { markReady: markResumeReady } = useResumeLifecycle({
+    navGenRef,
+    showResumeGenRef,
+    activeIdRef,
+    suppressResumeTimestampRef,
+    bootWasHiddenRef,
+    settingsFlushRef,
+    navQueue,
+    setActiveIdNow,
+    setActiveChat,
+    refreshChats,
+    upsertChat,
+    focusComposer,
+    notify,
+  });
 
   const persistDefaults = useCallback(
     async (
@@ -662,14 +668,8 @@ function App() {
       await refreshChats();
       upsertChat(chat);
       if (cancelled) return;
-      readyRef.current = true;
+      markResumeReady();
       setReady(true);
-      if (pendingShowRef.current) {
-        pendingShowRef.current = false;
-        const pendingHiddenAt = pendingShowAtRef.current;
-        pendingShowAtRef.current = undefined;
-        resumeShowRef.current?.(pendingHiddenAt);
-      }
       focusComposer();
       scheduleKeySync();
       const promptGen = ++autostartPromptGenRef.current;
@@ -695,7 +695,6 @@ function App() {
     })();
     return () => {
       cancelled = true;
-      readyRef.current = false;
       navGenRef.current += 1;
       updateCheckGenRef.current += 1;
       autostartPromptGenRef.current += 1;
@@ -722,168 +721,6 @@ function App() {
     }
     return () => { cancelled = true; };
   }, [activeId]);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void onMainWindowHidden((hiddenAt) => {
-      if (
-        typeof hiddenAt === "number" &&
-        hiddenAt <= lastShownHiddenAtRef.current
-      ) return;
-      showResumeGenRef.current += 1;
-      pendingShowRef.current = false;
-      pendingShowAtRef.current = undefined;
-      hiddenWriteFailedRef.current = false;
-      const write = setSetting(
-        "last_opened_at",
-        typeof hiddenAt === "number" ? hiddenAt : Date.now(),
-      );
-      lastHiddenWriteRef.current = write;
-      void write.catch((err) => {
-        hiddenWriteFailedRef.current = true;
-        console.error("resume timestamp failed", err);
-      });
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    const onShown = (hiddenAt?: unknown) => {
-      if (!readyRef.current) {
-        pendingShowRef.current = true;
-        pendingShowAtRef.current = typeof hiddenAt === "number" ? hiddenAt : undefined;
-        return;
-      }
-      if (typeof hiddenAt === "number") {
-        lastShownHiddenAtRef.current = hiddenAt;
-      }
-      const gen = navGenRef.current;
-      const resumeGen = showResumeGenRef.current;
-      const isStale = () =>
-        cancelled || gen !== navGenRef.current || resumeGen !== showResumeGenRef.current;
-      showResumeChain.current = showResumeChain.current
-        .catch(() => undefined)
-        .then(async () => {
-          if (isStale()) return;
-          await navQueue.run(async () => {
-            if (isStale()) return;
-            let chat: Chat | null = null;
-            let priorChatId: string | null = null;
-            let settingsFlushFailed = false;
-            try {
-              if (typeof hiddenAt === "number" && hiddenAt > 0) {
-                const write = setSetting("last_opened_at", hiddenAt);
-                lastHiddenWriteRef.current = write;
-                void write.catch((err) => {
-                  hiddenWriteFailedRef.current = true;
-                  console.error("resume timestamp failed", err);
-                });
-              }
-              const hiddenWrite = lastHiddenWriteRef.current;
-              let hiddenWriteFailed = hiddenWriteFailedRef.current;
-              hiddenWriteFailedRef.current = false;
-              if (hiddenWrite) {
-                try {
-                  await hiddenWrite;
-                } catch (err) {
-                  hiddenWriteFailed = true;
-                  console.error("resume timestamp failed", err);
-                } finally {
-                  if (lastHiddenWriteRef.current === hiddenWrite) {
-                    lastHiddenWriteRef.current = null;
-                  }
-                }
-              }
-              try {
-                await settingsFlushRef.current?.();
-              } catch (err) {
-                settingsFlushFailed = true;
-                console.error("settings flush failed", err);
-              }
-              if (isStale()) return;
-              const settingsSnapshot = await getSettings();
-              if (isStale()) return;
-              setSettings(settingsSnapshot);
-              priorChatId = settingsSnapshot.last_chat_id;
-              const resumeSettings = settingsFlushFailed || hiddenWriteFailed || resumePersistenceFailedRef.current
-                ? { ...settingsSnapshot, last_opened_at: 0 }
-                : settingsSnapshot;
-              const resumedChat = await openOrCreateChat(resumeSettings);
-              chat = resumedChat;
-              const discardStaleChat = async () => {
-                if (resumedChat.id === priorChatId) return;
-                try {
-                  await getChatSession(resumedChat.id).delete();
-                } catch (err) {
-                  console.error("stale resume cleanup failed", err);
-                }
-                await setSetting("last_chat_id", activeIdRef.current);
-              };
-              if (isStale()) {
-                await discardStaleChat();
-                return;
-              }
-              suppressResumeTimestampRef.current = false;
-              try {
-                await setResumeState(Date.now(), resumedChat.id);
-                resumePersistenceFailedRef.current = false;
-              } catch (err) {
-                resumePersistenceFailedRef.current = true;
-                console.error("resume state persistence failed", err);
-                notify((err as Error).message || String(err), "err");
-              }
-              if (isStale()) {
-                await discardStaleChat();
-                return;
-              }
-              setActiveIdNow(resumedChat.id);
-              setActiveChat(resumedChat);
-              await refreshChats();
-              if (isStale()) return;
-              upsertChat(resumedChat);
-              focusComposer();
-            } catch (err) {
-              if (chat && chat.id !== priorChatId && activeIdRef.current !== chat.id) {
-                try {
-                  await getChatSession(chat.id).delete();
-                } catch (cleanupError) {
-                  console.error("stale resume cleanup failed", cleanupError);
-                }
-                await setSetting("last_chat_id", activeIdRef.current).catch(() => undefined);
-              }
-              console.error("resume on show failed", err);
-              notify((err as Error).message || String(err), "err");
-            }
-          });
-        });
-
-    };
-    resumeShowRef.current = onShown;
-    void onMainWindowShown(onShown).then(async (fn) => {
-      if (cancelled) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-      if (!bootWasHiddenRef.current) return;
-      const visible = await getCurrentWindow().isVisible().catch(() => false);
-      if (!cancelled && visible) onShown();
-    });
-    return () => {
-      cancelled = true;
-      resumeShowRef.current = null;
-      unlisten?.();
-    };
-  }, [focusComposer, navQueue, notify, refreshChats, setActiveIdNow, showResumeChain, upsertChat]);
 
   useEffect(() => {
     if (!showSettings) focusComposer();

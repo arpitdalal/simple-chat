@@ -21,24 +21,24 @@ export function trimRecentMessages<T>(messages: T[], limit: number): T[] {
 
 /** Subscribe to tray/hide; no-op outside a live Tauri webview. */
 export async function onMainWindowHidden(
-  handler: (hiddenAt?: unknown) => void,
+  handler: (hiddenAt: number) => void,
 ): Promise<() => void> {
-  return onMainWindowEvent(MAIN_WINDOW_HIDDEN_EVENT, handler);
+  return onMainWindowEvent<number>(MAIN_WINDOW_HIDDEN_EVENT, handler);
 }
 
 export async function onMainWindowShown(
-  handler: (hiddenAt?: unknown) => void,
+  handler: (hiddenAt: number) => void,
 ): Promise<() => void> {
-  return onMainWindowEvent(MAIN_WINDOW_SHOWN_EVENT, handler);
+  return onMainWindowEvent<number>(MAIN_WINDOW_SHOWN_EVENT, handler);
 }
 
-async function onMainWindowEvent(
+async function onMainWindowEvent<T>(
   event: string,
-  handler: (payload?: unknown) => void,
+  handler: (payload: T) => void,
 ): Promise<() => void> {
   try {
-    return await listen(event, (event) => {
-      handler(event.payload);
+    return await listen<T>(event, ({ payload }) => {
+      handler(payload);
     });
   } catch (error) {
     console.error("window lifecycle listener failed", error);

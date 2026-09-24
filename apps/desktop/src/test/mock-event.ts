@@ -15,7 +15,7 @@ export function emitMainWindowHiddenForTests(hiddenAt = Date.now()) {
 }
 
 export function emitMainWindowShownForTests() {
-  for (const fn of listeners.get("main-window-shown") ?? []) fn({ payload: undefined });
+  for (const fn of listeners.get("main-window-shown") ?? []) fn({ payload: 0 });
 }
 
 export function mainWindowShownListenerCountForTests() {

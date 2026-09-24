@@ -259,7 +259,7 @@ class MemoryDatabase {
     }
 
     if (q.includes("FROM chats") && q.includes("ORDER BY pinned")) {
-      const limit = Number(args[0] ?? 100);
+      const fetchLimit = Number(args[0] ?? 101);
       const hasCursor = q.includes("(pinned, updated_at, id) <");
       const cursorPinned = hasCursor ? Number(args[1]) : 1;
       const cursorUpdatedAt = hasCursor ? Number(args[2]) : Infinity;
@@ -289,7 +289,7 @@ class MemoryDatabase {
           b.updated_at - a.updated_at ||
           b.id.localeCompare(a.id),
         )
-        .slice(0, limit + 1) as unknown as T;
+        .slice(0, fetchLimit) as unknown as T;
     }
 
     if (q.includes("COUNT(*)") && q.includes("FROM messages")) {

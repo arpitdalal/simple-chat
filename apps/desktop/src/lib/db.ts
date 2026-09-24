@@ -217,7 +217,7 @@ export async function listChatPage(
 ): Promise<ChatPage> {
   const limit = Math.max(1, Math.min(options.limit ?? 100, 250));
   const query = options.query?.trim() ?? "";
-  const args: unknown[] = [limit];
+  const args: unknown[] = [limit + 1];
   const conditions: string[] = [];
 
   if (options.cursor) {
@@ -230,8 +230,9 @@ export async function listChatPage(
   }
   if (query) {
     args.push(query);
+    const queryParameter = `$${args.length}`;
     conditions.push(
-      "instr(lower(title), lower($5)) > 0 OR instr(lower(preview), lower($5)) > 0",
+      `instr(lower(title), lower(${queryParameter})) > 0 OR instr(lower(preview), lower(${queryParameter})) > 0`,
     );
   }
 

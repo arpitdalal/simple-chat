@@ -142,7 +142,8 @@ function useChatList(ready: boolean) {
   const changeQuery = useCallback((value: string) => {
     queryRef.current = value;
     setQuery(value);
-    generationRef.current += 1;
+    const generation = ++generationRef.current;
+    setPendingGeneration(generation);
     loadingRef.current = true;
     cursorRef.current = null;
     hasMoreRef.current = false;

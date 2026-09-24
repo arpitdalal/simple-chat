@@ -295,6 +295,12 @@ describe("App UX", () => {
     expect(document.querySelector(".title-pill")).toHaveTextContent("Previous chat");
     await waitFor(() => expect(mainWindowShownListenerCountForTests()).toBeGreaterThan(0));
     vi.mocked(setSetting).mockClear();
+    let persistedLastOpenedAt = 0;
+    vi.mocked(setSetting).mockImplementation(async (key, value) => {
+      if (key === "last_opened_at" && typeof value === "number") {
+        persistedLastOpenedAt = value;
+      }
+    });
     emitMainWindowHiddenForTests(123456);
     await waitFor(() =>
       expect(setSetting).toHaveBeenCalledWith("last_opened_at", 123456),
@@ -306,7 +312,7 @@ describe("App UX", () => {
       show_tray: true,
       default_provider: "google",
       default_model: "gemini-3.8-flash",
-      last_opened_at: Date.now() - 61_000,
+      last_opened_at: persistedLastOpenedAt,
       last_chat_id: prior.id,
       web_search: true,
       hotkey: "CommandOrControl+Shift+Space",

@@ -45,7 +45,7 @@ fn show_main_window(app: &AppHandle) -> Result<(), String> {
         let focus_result = window.set_focus();
         WINDOW_MINIMIZED.store(false, Ordering::Relaxed);
         if !was_visible {
-            let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
+            let hidden_at = LAST_HIDDEN_AT.swap(0, Ordering::Relaxed);
             window
                 .emit("main-window-shown", hidden_at)
                 .map_err(|error| error.to_string())?;
@@ -238,7 +238,7 @@ pub fn run() {
                             .unwrap_or_default();
                         LAST_HIDDEN_AT.store(hidden_at, Ordering::Relaxed);
                     } else if !minimized && was_minimized {
-                        let hidden_at = LAST_HIDDEN_AT.load(Ordering::Relaxed);
+                        let hidden_at = LAST_HIDDEN_AT.swap(0, Ordering::Relaxed);
                         let _ = window.emit("main-window-shown", hidden_at);
                     }
                 }

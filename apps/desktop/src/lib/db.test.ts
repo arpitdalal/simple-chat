@@ -8,6 +8,7 @@ import {
   getChat,
   listChats,
   listChatPage,
+  listReusableChats,
   listRecentMessages,
   addMessage,
   listOlderMessages,
@@ -67,6 +68,50 @@ describe("db (memory sql integration)", () => {
     } finally {
       vi.spyOn(Date, "now").mockRestore();
     }
+  });
+
+  it("groups search matching inside the cursor predicate", async () => {
+    const anchor = await createChat("google", "gemini-3.8-flash");
+    const { default: Database } = await import("../test/memory-sql");
+    const db = await Database.load();
+    const realSelect = db.select.bind(db);
+    let captured = "";
+    db.select = async (query: string, values: unknown[] = []) => {
+      captured = query;
+      expect(values).toEqual([
+        101,
+        0,
+        anchor.updated_at,
+        anchor.id,
+        "needle",
+      ]);
+      return realSelect(query, values);
+    };
+    await listChatPage({
+      query: "needle",
+      cursor: {
+        id: anchor.id,
+        updated_at: anchor.updated_at,
+        pinned: 0,
+      },
+    });
+    db.select = realSelect;
+    expect(captured).toContain(
+      "(pinned, updated_at, id) < ($2, $3, $4) AND (instr(lower(title)",
+    );
+    expect(captured).toContain("OR instr(lower(preview), lower($5)) > 0)");
+  });
+
+  it("finds an empty chat beyond the first 200 rows", async () => {
+    const created: Awaited<ReturnType<typeof createChat>>[] = [];
+    for (let i = 0; i < 205; i++) {
+      created.push(await createChat("google", "gemini-3.8-flash"));
+    }
+    for (const chat of created.slice(1)) {
+      await addMessage(chat.id, "user", "started", 1);
+    }
+    const reusable = await listReusableChats();
+    expect(reusable.map((chat) => chat.id)).toContain(created[0].id);
   });
 
   it("searches chat metadata beyond the first page", async () => {

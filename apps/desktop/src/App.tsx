@@ -6,12 +6,13 @@ import { Settings } from "./components/Settings";
 import { Toast, type ToastState } from "./components/Toast";
 import {
   branchChat,
+  chatMatchesQuery,
   createChat,
   getChat,
   getSettings,
   listChatPage,
-  listChats,
   listMessages,
+  listReusableChats,
   messageCount,
   openOrCreateChat,
   setDefaultModel,
@@ -49,14 +50,7 @@ import "./App.css";
 function compareChats(a: Chat, b: Chat): number {
   return b.pinned - a.pinned ||
     b.updated_at - a.updated_at ||
-    b.id.localeCompare(a.id);
-}
-
-function matchesQuery(chat: Chat, query: string): boolean {
-  const normalized = query.trim().toLowerCase();
-  return !normalized ||
-    chat.title.toLowerCase().includes(normalized) ||
-    chat.preview.toLowerCase().includes(normalized);
+    (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 }
 
 function useChatList(ready: boolean) {
@@ -133,10 +127,16 @@ function useChatList(ready: boolean) {
   }, [refresh]);
 
   const upsert = useCallback((chat: Chat) => {
-    if (!matchesQuery(chat, queryRef.current)) return;
-    setChats((current) =>
-      [chat, ...current.filter((item) => item.id !== chat.id)].sort(compareChats),
-    );
+    setChats((current) => {
+      const remaining = current.filter((item) => item.id !== chat.id);
+      return chatMatchesQuery(chat, queryRef.current)
+        ? [chat, ...remaining].sort(compareChats)
+        : remaining;
+    });
+  }, []);
+
+  const remove = useCallback((id: string) => {
+    setChats((current) => current.filter((chat) => chat.id !== id));
   }, []);
 
   const changeQuery = useCallback((value: string) => {
@@ -170,6 +170,7 @@ function useChatList(ready: boolean) {
     refresh,
     loadMore,
     upsert,
+    remove,
     changeQuery,
   };
 }
@@ -211,6 +212,7 @@ function App() {
     refresh: refreshChats,
     loadMore: loadMoreChats,
     upsert: upsertChat,
+    remove: removeChat,
     changeQuery,
   } = useChatList(ready);
 
@@ -229,10 +231,10 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
   /** Sync ref before setState so queued key-sync sees the id without waiting a render. */
-  function setActiveIdNow(id: string | null) {
+  const setActiveIdNow = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveId(id);
-  }
+  }, []);
   /** Cancel generation for nav tasks (newChat / key sync). */
   const navGenRef = useRef(0);
   /** Claims the latest readiness probe so a stale one cannot clobber UI. */
@@ -243,6 +245,7 @@ function App() {
   const keySyncWantedRef = useRef(false);
   /** Latest Settings debounce flush — drain target while Settings is open. */
   const settingsFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const scheduleKeySyncRef = useRef<() => void>(() => {});
 
   // One FIFO for all nav work. busy ⇔ pending > 0 (queued or running).
   const navQueueRef = useRef<Queue | null>(null);
@@ -279,10 +282,10 @@ function App() {
    * Invalidate in-flight newChat/key-sync. If a key sync was wanted,
    * re-enqueue it under the fresh gen so defaults/align still finish.
    */
-  function cancelNav() {
+  const cancelNav = useCallback(() => {
     navGenRef.current += 1;
-    if (keySyncWantedRef.current) scheduleKeySync();
-  }
+    if (keySyncWantedRef.current) scheduleKeySyncRef.current();
+  }, []);
 
   /** Apply a probe result only when it is still the latest claim. */
   function claimReady(list: ProviderId[] | null) {
@@ -334,7 +337,7 @@ function App() {
         if (isCancelled()) return;
         if (activeIdRef.current === aligned.id) {
           setActiveChat(aligned);
-          if (aligned !== chat) await refreshChats();
+          if (aligned !== chat) upsertChat(aligned);
         }
       } catch (err) {
         console.error("key sync failed", err);
@@ -346,6 +349,10 @@ function App() {
       }
     });
   }
+
+  useEffect(() => {
+    scheduleKeySyncRef.current = scheduleKeySync;
+  });
 
   const focusComposer = useCallback(() => {
     setComposerFocus((n) => n + 1);
@@ -431,19 +438,24 @@ function App() {
         return;
       }
       setActiveIdNow(id);
-      const toDelete: typeof chats = [];
-      for (const c of chats) {
-        if (c.id === id || !isEmptyNewChat(c)) continue;
-        if (await chatCanBeDiscarded(c.id)) toDelete.push(c);
-      }
-      if (toDelete.length) {
-        for (const c of toDelete) await getChatSession(c.id).delete();
-        await refreshChats();
-      }
+      const toDelete = (
+        await Promise.all(
+          chats
+            .filter((chat) => chat.id !== id && isEmptyNewChat(chat))
+            .map(async (chat) =>
+              await chatCanBeDiscarded(chat.id) ? chat : null,
+            ),
+        )
+      ).filter((chat): chat is Chat => chat !== null);
+      await Promise.all(
+        toDelete.map(async (chat) => {
+          await getChatSession(chat.id).delete();
+          removeChat(chat.id);
+        }),
+      );
       focusComposer();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [activeId, chats, focusComposer, refreshChats],
+    [activeId, cancelNav, chats, focusComposer, removeChat, setActiveIdNow],
   );
 
   const newChat = useCallback(async () => {
@@ -483,10 +495,10 @@ function App() {
           modelId: nextSettings.default_model,
         });
 
-        const liveChats = await listChats();
+        const reusableChats = await listReusableChats();
         if (isCancelled()) return;
-        let existing: (typeof liveChats)[number] | undefined;
-        for (const c of liveChats) {
+        let existing: (typeof reusableChats)[number] | undefined;
+        for (const c of reusableChats) {
           if (isEmptyNewChat(c) && await chatCanBeDiscarded(c.id)) {
             existing = c;
             break;
@@ -498,8 +510,7 @@ function App() {
           setActiveIdNow(aligned.id);
           setActiveChat(aligned);
           setShowSettings(false);
-          if (aligned !== existing) await refreshChats();
-          else upsertChat(aligned);
+          upsertChat(aligned);
           focusComposer();
           return;
         }
@@ -515,8 +526,7 @@ function App() {
             if (isCancelled()) return;
             setActiveChat(aligned);
             setShowSettings(false);
-            if (aligned !== freshActive) await refreshChats();
-            else upsertChat(aligned);
+            upsertChat(aligned);
             focusComposer();
             return;
           }
@@ -544,7 +554,6 @@ function App() {
     settings,
     active,
     focusComposer,
-    refreshChats,
     upsertChat,
     persistDefaults,
     alignEmptyChat,
@@ -733,17 +742,17 @@ function App() {
       notify((err as Error).message || String(err), "err");
       return;
     }
+    removeChat(id);
     if (activeId === id) {
       const next = (await listChatPage({ limit: 1, query })).chats[0];
       if (next) {
         setActiveIdNow(next.id);
         setActiveChat(next);
+        upsertChat(next);
       } else if (settings) {
         await newChat();
-        return;
       }
     }
-    await refreshChats();
   }
 
   async function handleClear(id: string) {
@@ -754,8 +763,9 @@ function App() {
       notify((err as Error).message || String(err), "err");
       return;
     }
-    if (activeId === id) setActiveChat(await getChat(id));
-    await refreshChats();
+    const updated = await getChat(id);
+    if (updated) upsertChat(updated);
+    if (activeId === id) setActiveChat(updated);
     focusComposer();
   }
 
@@ -773,7 +783,7 @@ function App() {
       setShowSettings(false);
       setActiveIdNow(branched.id);
       setActiveChat(branched);
-      await refreshChats();
+      upsertChat(branched);
       focusComposer();
       notify("Branched chat", "ok");
     } catch (e) {
@@ -870,13 +880,19 @@ function App() {
             onOpenSettings={openSettings}
             settingsActive={showSettings}
             onRename={(id, title) => {
-              void updateChat(id, { title }).then(() => refreshChats());
+              void updateChat(id, { title }).then(async () => {
+                const updated = await getChat(id);
+                if (updated) upsertChat(updated);
+              });
               if (activeId === id) {
-                setActive((c) => (c ? { ...c, title } : c));
+                setActive((chat) => (chat ? { ...chat, title } : chat));
               }
             }}
             onPin={(id, pinned) => {
-              void updateChat(id, { pinned: pinned ? 1 : 0 }).then(() => refreshChats());
+              void updateChat(id, { pinned: pinned ? 1 : 0 }).then(async () => {
+                const updated = await getChat(id);
+                if (updated) upsertChat(updated);
+              });
             }}
             onClear={(id) => void handleClear(id)}
             onDelete={(id) => void handleDelete(id)}
@@ -898,7 +914,6 @@ function App() {
               onSaved={(s) => {
                 settingsGenRef.current += 1;
                 setSettings(s);
-                void refreshChats();
               }}
               onKeysChanged={scheduleKeySync}
               flushRef={settingsFlushRef}
@@ -917,7 +932,7 @@ function App() {
               const id = activeIdRef.current;
               if (!id) return;
               void getChat(id).then((chat) => {
-                if (chat && activeIdRef.current === id) upsertChat(chat);
+                if (chat) upsertChat(chat);
               });
             }}
             onChatMeta={(updated) => {

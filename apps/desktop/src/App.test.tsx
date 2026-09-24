@@ -114,7 +114,15 @@ vi.mock("./lib/db", () => ({
     hotkey: "CommandOrControl+Shift+Space",
     autostart_prompted: true,
   })),
-  listChats: vi.fn(async () => chatsStore.get()),
+  chatMatchesQuery: (chat: Chat, query: string) => {
+    const normalized = query.trim().toLowerCase();
+    return !normalized ||
+      chat.title.toLowerCase().includes(normalized) ||
+      chat.preview.toLowerCase().includes(normalized);
+  },
+  listReusableChats: vi.fn(async () =>
+    chatsStore.get().filter((chat) => chat.title === "New Chat"),
+  ),
   listChatPage: vi.fn(async ({ query = "" } = {}) => {
     const normalized = query.trim().toLowerCase();
     const chats = chatsStore.get().filter((chat) =>
@@ -173,7 +181,20 @@ describe("App UX", () => {
       ready: ["google"],
       ok: true,
     });
-    const { messageCount, setSetting } = await import("./lib/db");
+    const { listChatPage, messageCount, setSetting } = await import("./lib/db");
+    vi.mocked(listChatPage).mockReset();
+    vi.mocked(listChatPage).mockImplementation(async ({ query = "" } = {}) => {
+      const normalized = query.trim().toLowerCase();
+      return {
+        chats: chatsStore.get().filter((chat) =>
+          !normalized ||
+          chat.title.toLowerCase().includes(normalized) ||
+          chat.preview.toLowerCase().includes(normalized),
+        ),
+        cursor: null,
+        hasMore: false,
+      };
+    });
     vi.mocked(messageCount).mockReset();
     vi.mocked(messageCount).mockResolvedValue(0);
     vi.mocked(setSetting).mockReset();
@@ -221,6 +242,55 @@ describe("App UX", () => {
     expect(screen.getByPlaceholderText("Ask AI anything…")).toBeInTheDocument();
     expect(screen.getByText("Simple Chat")).toBeInTheDocument();
     expect(screen.queryByText(/^Web$/)).toBeNull();
+  });
+
+  it("loads the next chat page with the previous cursor", async () => {
+    const { listChatPage } = await import("./lib/db");
+    const first: Chat = {
+      id: "first",
+      title: "First",
+      model_id: "gemini-3.8-flash",
+      provider: "google",
+      created_at: 2,
+      updated_at: 2,
+      preview: "first",
+      pinned: 0,
+    };
+    const second: Chat = {
+      ...first,
+      id: "second",
+      title: "Second",
+      created_at: 1,
+      updated_at: 1,
+      preview: "second",
+    };
+    chatsStore.set([first, second]);
+    openOrCreateChat.mockResolvedValueOnce(first);
+    vi.mocked(listChatPage)
+      .mockResolvedValueOnce({
+        chats: [first],
+        cursor: {
+          id: first.id,
+          updated_at: first.updated_at,
+          pinned: first.pinned,
+        },
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({ chats: [second], cursor: null, hasMore: false });
+
+    render(<App />);
+
+    await waitFor(() => expect(listChatPage).toHaveBeenCalledTimes(2));
+    expect(listChatPage.mock.calls[1][0]).toEqual({
+      limit: 100,
+      cursor: {
+        id: first.id,
+        updated_at: first.updated_at,
+        pinned: first.pinned,
+      },
+      query: "",
+    });
+    expect(screen.getByText("Second")).toBeInTheDocument();
   });
 
   it("disables composer when no API keys are present", async () => {

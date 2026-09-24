@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Chat } from "../lib/db";
+import { chatMatchesQuery, type Chat } from "../lib/db";
 
 function dayBucket(ts: number): string {
   const now = new Date();
@@ -82,15 +82,12 @@ export function Sidebar({
   const [renameValue, setRenameValue] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const anchorKeyRef = useRef<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return chats;
-    return chats.filter(
-      (chat) =>
-        chat.title.toLowerCase().includes(q) ||
-        chat.preview.toLowerCase().includes(q),
-    );
+    return chats.filter((chat) => chatMatchesQuery(chat, q));
   }, [chats, query]);
 
   const rows = useMemo<ListRow[]>(() => {
@@ -108,21 +105,50 @@ export function Sidebar({
   }, [filtered]);
 
   const rowCount = rows.length + (hasMore || loadingMore || loadError ? 1 : 0);
+  const getScrollElement = useCallback(() => scrollRef.current, []);
+  const estimateSize = useCallback(
+    (index: number) => rows[index]?.kind === "header" ? 30 : 56,
+    [rows],
+  );
+  const getItemKey = useCallback(
+    (index: number) => rows[index]?.key ?? "chat-list-footer",
+    [rows],
+  );
   const virtualizer = useVirtualizer({
     count: rowCount,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => rows[index]?.kind === "header" ? 30 : 56,
+    getScrollElement,
+    estimateSize,
     overscan: 8,
-    getItemKey: (index) => rows[index]?.key ?? "chat-list-footer",
+    getItemKey,
+    useFlushSync: false,
+    onChange: (instance) => {
+      const anchor = instance.getVirtualItems()[0];
+      anchorKeyRef.current = anchor ? String(anchor.key) : null;
+    },
   });
+
+  useLayoutEffect(() => {
+    const anchorKey = anchorKeyRef.current;
+    if (!anchorKey) return;
+    const anchorIndex = rows.findIndex((row) => row.key === anchorKey);
+    if (anchorIndex >= 0) {
+      virtualizer.scrollToIndex(anchorIndex, { align: "start" });
+    }
+  }, [rows, virtualizer]);
+
   const virtualRows = virtualizer.getVirtualItems();
   const lastVirtualIndex = virtualRows[virtualRows.length - 1]?.index ?? 0;
 
   useEffect(() => {
-    if (hasMore && !loadingMore && lastVirtualIndex >= rows.length - 20) {
+    if (
+      hasMore &&
+      !loadingMore &&
+      !loadError &&
+      lastVirtualIndex >= rows.length - 20
+    ) {
       onLoadMore();
     }
-  }, [hasMore, lastVirtualIndex, loadingMore, onLoadMore, rows.length]);
+  }, [hasMore, lastVirtualIndex, loadError, loadingMore, onLoadMore, rows.length]);
 
   useEffect(() => {
     function close(e: MouseEvent) {

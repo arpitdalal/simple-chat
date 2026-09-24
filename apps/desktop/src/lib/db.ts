@@ -11,6 +11,13 @@ export type Chat = {
   pinned: number;
 };
 
+export function chatMatchesQuery(chat: Pick<Chat, "title" | "preview">, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  return !normalized ||
+    chat.title.toLowerCase().includes(normalized) ||
+    chat.preview.toLowerCase().includes(normalized);
+}
+
 export type Message = {
   id: string;
   chat_id: string;
@@ -232,7 +239,7 @@ export async function listChatPage(
     args.push(query);
     const queryParameter = `$${args.length}`;
     conditions.push(
-      `instr(lower(title), lower(${queryParameter})) > 0 OR instr(lower(preview), lower(${queryParameter})) > 0`,
+      `(instr(lower(title), lower(${queryParameter})) > 0 OR instr(lower(preview), lower(${queryParameter})) > 0)`,
     );
   }
 
@@ -261,6 +268,21 @@ export async function listChatPage(
 
 export async function listChats(): Promise<Chat[]> {
   return (await listChatPage({ limit: 200 })).chats;
+}
+
+export async function listReusableChats(limit = 20): Promise<Chat[]> {
+  const db = await getDb();
+  const rows = await db.select<Chat[]>(
+    `SELECT chats.* FROM chats
+     WHERE chats.title = 'New Chat'
+       AND NOT EXISTS (
+         SELECT 1 FROM messages WHERE messages.chat_id = chats.id
+       )
+     ORDER BY chats.pinned DESC, chats.updated_at DESC, chats.id DESC
+     LIMIT $1`,
+    [Math.max(1, Math.min(limit, 100))],
+  );
+  return rows.map((chat) => ({ ...chat, pinned: chat.pinned ? 1 : 0 }));
 }
 
 export async function getChat(id: string): Promise<Chat | null> {

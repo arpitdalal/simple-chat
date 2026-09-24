@@ -258,6 +258,20 @@ class MemoryDatabase {
       return chats.filter((c) => c.id === id) as unknown as T;
     }
 
+    if (q.includes("SELECT chats.* FROM chats") && q.includes("NOT EXISTS")) {
+      const chatIds = new Set(
+        messages.map((message) => message.chat_id),
+      );
+      return [...chats]
+        .filter((chat) => chat.title === "New Chat" && !chatIds.has(chat.id))
+        .sort((a, b) =>
+          b.pinned - a.pinned ||
+          b.updated_at - a.updated_at ||
+          (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+        )
+        .slice(0, Number(args[0] ?? 20)) as unknown as T;
+    }
+
     if (q.includes("FROM chats") && q.includes("ORDER BY pinned")) {
       const fetchLimit = Number(args[0] ?? 101);
       const hasCursor = q.includes("(pinned, updated_at, id) <");
@@ -287,7 +301,7 @@ class MemoryDatabase {
         .sort((a, b) =>
           b.pinned - a.pinned ||
           b.updated_at - a.updated_at ||
-          b.id.localeCompare(a.id),
+          (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
         )
         .slice(0, fetchLimit) as unknown as T;
     }

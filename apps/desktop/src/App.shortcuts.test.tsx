@@ -124,7 +124,15 @@ vi.mock("./lib/db", () => ({
     hotkey: "CommandOrControl+Shift+Space",
     autostart_prompted: true,
   })),
-  listChats: vi.fn(async () => chatsStore.get()),
+  chatMatchesQuery: (chat: Chat, query: string) => {
+    const normalized = query.trim().toLowerCase();
+    return !normalized ||
+      chat.title.toLowerCase().includes(normalized) ||
+      chat.preview.toLowerCase().includes(normalized);
+  },
+  listReusableChats: vi.fn(async () =>
+    chatsStore.get().filter((chat) => chat.title === "New Chat"),
+  ),
   listChatPage: vi.fn(async ({ query = "" } = {}) => {
     const normalized = query.trim().toLowerCase();
     const chats = chatsStore.get().filter((chat) =>

@@ -96,7 +96,9 @@ describe("Sidebar", () => {
     }));
     render(<Sidebar {...baseProps} chats={chats} />);
 
-    expect(document.querySelectorAll(".chat-item").length).toBeLessThan(100);
+    const rendered = document.querySelectorAll(".chat-item").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThan(100);
   });
 
   it("requests the next page when the loaded rows approach the viewport end", async () => {
@@ -111,6 +113,24 @@ describe("Sidebar", () => {
     );
 
     await waitFor(() => expect(onLoadMore).toHaveBeenCalled());
+  });
+
+  it("waits for explicit retry after a load error", async () => {
+    const onLoadMore = vi.fn();
+    render(
+      <Sidebar
+        {...baseProps}
+        chats={[chat({ id: "1", title: "One" })]}
+        hasMore
+        loadError="offline"
+        onLoadMore={onLoadMore}
+      />,
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(onLoadMore).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Retry loading chats" }));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
   });
 
   it("toggles sidebar from search row", async () => {

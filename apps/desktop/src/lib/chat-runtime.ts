@@ -181,6 +181,17 @@ export function imageDimensionLimitError(width: number, height: number): string 
     : null;
 }
 
+export function messageCopyText(
+  message: Pick<Message, "content" | "images" | "image_count">,
+): string {
+  const imageCount = Math.max(message.images.length, message.image_count ?? 0);
+  if (!imageCount) return message.content;
+  const attachments = imageCount === 1
+    ? "[Image attachment]"
+    : `[${imageCount} image attachments]`;
+  return message.content ? `${message.content}\n${attachments}` : attachments;
+}
+
 export function imageLimitError(images: string[]): string | null {
   return imageCountLimitError(images.length) ??
     (images.some((image) => !normalizeImageDataUrl(image))

@@ -747,6 +747,77 @@ describe("ChatView", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps a pending duplicate independent from a removed copy", async () => {
+    const user = userEvent.setup();
+    const pendingReaders: Array<{
+      result: string | null;
+      onload: (() => void) | null;
+    }> = [];
+    let readCount = 0;
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        result: string | null = null;
+        onload: (() => void) | null = null;
+        readAsDataURL() {
+          readCount += 1;
+          if (readCount === 1) {
+            this.result = pngImage;
+            queueMicrotask(() => this.onload?.());
+          } else {
+            pendingReaders.push(this);
+          }
+        }
+      },
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
+    render(
+      <TestChatView
+        chat={chat}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+    await screen.findByPlaceholderText("Ask AI anything…");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        value: [
+          new File(["same"], "same.png", { type: "image/png" }),
+          new File(["same"], "same.png", { type: "image/png" }),
+        ],
+        configurable: true,
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await waitFor(() => expect(document.querySelectorAll(".thumb")).toHaveLength(1));
+    await waitFor(() => expect(pendingReaders).toHaveLength(1));
+
+    await user.click(document.querySelector(".thumb")!);
+    expect(document.querySelectorAll(".thumb")).toHaveLength(0);
+    await act(async () => {
+      pendingReaders[0]!.result = pngImage;
+      pendingReaders[0]!.onload?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(document.querySelectorAll(".thumb")).toHaveLength(1));
+    vi.unstubAllGlobals();
+  });
+
   it("does not send text while selected images are still loading", async () => {
     const user = userEvent.setup();
     const onNotify = vi.fn();
@@ -1134,6 +1205,32 @@ describe("ChatView", () => {
       expect.objectContaining({ provider: "openai", model_id: "gpt-4o" }),
     );
     expect(onChatUpdated).toHaveBeenCalled();
+  });
+
+  it("copies an image-only message with attachment context", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    listRecentMessages.mockResolvedValue([
+      msg({ id: "image-only", role: "user", content: "", image_count: 1 }),
+    ]);
+    render(
+      <TestChatView
+        chat={{ ...chat, title: "Thread" }}
+        onChatUpdated={vi.fn()}
+        onChatMeta={vi.fn()}
+        onNew={vi.fn()}
+        onBranch={vi.fn(async () => {})}
+        onNotify={vi.fn()}
+        focusNonce={1}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledWith("[Image attachment]");
   });
 
   it("user messages have icon Copy and Branch with feedback", async () => {

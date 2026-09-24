@@ -41,6 +41,7 @@ vi.mock("./db", () => ({
 import {
   chatCanBeDiscarded,
   getChatSession,
+  messageCopyText,
   normalizeImageDataUrl,
   resetChatSessions,
   sessionHasWork,
@@ -133,6 +134,17 @@ describe("ChatSession", () => {
     bytes[24] = 0x13;
     const data = `data:image/webp;base64,${btoa(String.fromCharCode(...bytes))}`;
     expect(normalizeImageDataUrl(data)).toMatchObject({ width: 4096, height: 4093 });
+  });
+
+  it("formats image attachments for copied text", () => {
+    expect(messageCopyText({ content: "plain", images: [], image_count: 0 }))
+      .toBe("plain");
+    expect(messageCopyText({ content: "", images: [], image_count: 1 }))
+      .toBe("[Image attachment]");
+    expect(messageCopyText({ content: "look", images: [pngImage] }))
+      .toBe("look\n[Image attachment]");
+    expect(messageCopyText({ content: "", images: [], image_count: 2 }))
+      .toBe("[2 image attachments]");
   });
 
   it("preserves literal attachment text without images", async () => {

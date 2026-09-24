@@ -15,6 +15,7 @@ import {
   imageDimensionLimitError,
   imageLimitError,
   MAX_IMAGE_FILE_BYTES,
+  messageCopyText,
   normalizeImageDataUrl,
   type ChatSession,
 } from "../lib/chat-runtime";
@@ -69,7 +70,6 @@ export function ChatView({
   const stickBottom = useRef(true);
   const imagesRef = useRef<string[]>([]);
   const pendingImageReadsRef = useRef(0);
-  const pendingImageValuesRef = useRef(new Set<string>());
   const imageReadTailRef = useRef<Promise<void>>(Promise.resolve());
   const releaseGenRef = useRef(0);
   const focusAfterStopRef = useRef(false);
@@ -109,7 +109,6 @@ export function ChatView({
     void onMainWindowHidden(() => {
       releaseGenRef.current += 1;
       setImages([]);
-      pendingImageValuesRef.current.clear();
       if (fileRef.current) fileRef.current.value = "";
       session.trim();
       session.dropDraftImages();
@@ -268,7 +267,6 @@ export function ChatView({
               );
               continue;
             }
-            let pendingImage: string | undefined;
             try {
               const dataUrl = await new Promise<string>((resolve, reject) => {
                 const reader = new FileReader();
@@ -293,12 +291,9 @@ export function ChatView({
                 onNotify(dimensionError, "err");
                 continue;
               }
-              pendingImage = normalized.image;
-              pendingImageValuesRef.current.add(pendingImage);
               const candidate = [...imagesRef.current, normalized.image];
               const candidateError = imageLimitError(candidate);
               if (candidateError) {
-                pendingImageValuesRef.current.delete(pendingImage);
                 onNotify(candidateError, "err");
                 continue;
               }
@@ -309,19 +304,15 @@ export function ChatView({
                 preview.src = normalized.image;
               });
               if (releaseGeneration !== releaseGenRef.current) break;
-              if (!pendingImage || !pendingImageValuesRef.current.has(pendingImage)) continue;
               const next = [...imagesRef.current, normalized.image];
               const nextError = imageLimitError(next);
               if (nextError) {
-                pendingImageValuesRef.current.delete(pendingImage);
                 onNotify(nextError, "err");
                 continue;
               }
-              pendingImageValuesRef.current.delete(pendingImage);
               imagesRef.current = next;
               setImages(next);
             } catch (error) {
-              if (pendingImage) pendingImageValuesRef.current.delete(pendingImage);
               if (releaseGeneration === releaseGenRef.current) {
                 onNotify((error as Error).message || String(error), "err");
               }
@@ -419,7 +410,7 @@ export function ChatView({
                           </>
                         )}
                         <MsgActions
-                          content={m!.content}
+                          copyText={messageCopyText(m!)}
                           messageId={m!.id}
                           role={m!.role}
                           canRegenerate={!busy && !blocked}
@@ -488,7 +479,6 @@ export function ChatView({
                 type="button"
                 className="thumb"
                 onClick={() => {
-                  pendingImageValuesRef.current.delete(images[i]);
                   const next = images.filter((_, j) => j !== i);
                   imagesRef.current = next;
                   setImages(next);
@@ -675,7 +665,7 @@ function SentImage({
 }
 
 function MsgActions({
-  content,
+  copyText,
   messageId,
   role,
   canRegenerate,
@@ -683,7 +673,7 @@ function MsgActions({
   onRegenerate,
   onNotify,
 }: {
-  content: string;
+  copyText: string;
   messageId: string;
   role: Message["role"];
   canRegenerate: boolean;
@@ -706,10 +696,13 @@ function MsgActions({
         className={`icon-action${flash === "copy" ? " done" : ""}`}
         title={flash === "copy" ? "Copied" : "Copy"}
         aria-label={flash === "copy" ? "Copied" : "Copy"}
-        onClick={() => {
-          void navigator.clipboard.writeText(content).then(() => {
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(copyText);
             setFlash("copy");
-          });
+          } catch (e) {
+            onNotify((e as Error).message || String(e), "err");
+          }
         }}
       >
         {flash === "copy" ? <CheckIcon /> : <CopyIcon />}

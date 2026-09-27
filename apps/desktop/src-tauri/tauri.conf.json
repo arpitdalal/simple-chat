@@ -21,6 +21,7 @@
         "minWidth": 900,
         "minHeight": 600,
         "visible": false,
+        "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
         "decorations": true,
         "resizable": true,

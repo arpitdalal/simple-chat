@@ -108,6 +108,22 @@ fn activate_previous(prev: &objc2_app_kit::NSRunningApplication) -> bool {
 #[cfg(not(target_os = "macos"))]
 pub fn restore_previous_app() {}
 
+/// Reverse the app-level hide from [`restore_previous_app`]. tao / Tauri expose
+/// no `unhide` binding, so the show path has to undo it explicitly — otherwise a
+/// window ordered back in on a hidden app never surfaces.
+#[cfg(target_os = "macos")]
+pub fn unhide_app() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).unhide(None);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn unhide_app() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

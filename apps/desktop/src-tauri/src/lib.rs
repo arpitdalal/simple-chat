@@ -37,6 +37,8 @@ fn hide_main_window(app: &AppHandle) {
 
 fn show_main_window(app: &AppHandle) -> Result<(), String> {
     focus::capture_previous_app();
+    // Must precede show: ordering a window in on a hidden app does not surface it.
+    focus::unhide_app();
     if let Some(window) = app.get_webview_window("main") {
         let was_minimized = WINDOW_MINIMIZED.load(Ordering::Relaxed);
         let was_visible = window.is_visible().unwrap_or(false) && !was_minimized;

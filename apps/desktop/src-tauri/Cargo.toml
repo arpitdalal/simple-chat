@@ -4,6 +4,10 @@ version = "1.0.0"
 description = "Simple Chat — local BYOK AI chat"
 authors = ["arpitdalal"]
 edition = "2021"
+# 1.98 is the first release whose LLVM 22.1.x Mach-O strip 8-byte-aligns
+# LC_SYMTAB.stroff. Older toolchains emit proc-macro dylibs that macOS 27's dyld
+# rejects with "mis-aligned LINKEDIT string pool", breaking the build at sqlx.
+rust-version = "1.98"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

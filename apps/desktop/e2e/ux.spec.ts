@@ -74,7 +74,7 @@ test.describe("Simple Chat UX", () => {
     await page.getByTitle("Select model").click();
     await expect(page.getByRole("listbox")).toBeVisible();
     await expect(
-      page.getByRole("option").filter({ hasText: "GPT-4o" }).first(),
+      page.getByRole("option").filter({ hasText: "GPT-6 Sol" }).first(),
     ).toBeVisible();
     await expect(
       page.getByRole("option").filter({ hasText: "Gemini" }).first(),
@@ -126,7 +126,7 @@ test.describe("Simple Chat UX", () => {
     await expect(page.getByRole("listbox")).toBeVisible();
     await page.getByPlaceholder("Search…").fill("flash");
     await expect(page.getByRole("option").filter({ hasText: "Flash" }).first()).toBeVisible();
-    await expect(page.getByRole("option").filter({ hasText: "GPT-4o" })).toHaveCount(0);
+    await expect(page.getByRole("option").filter({ hasText: "GPT-6 Sol" })).toHaveCount(0);
   });
 
   test("⌘N reuses empty New Chat", async ({ page }) => {

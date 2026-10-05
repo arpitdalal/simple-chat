@@ -50,9 +50,9 @@ describe("models catalog", () => {
     expect(
       pickDefaultModel(["openai", "google"], {
         provider: "openai",
-        modelId: "gpt-4o",
+        modelId: "gpt-6-luna",
       }),
-    ).toEqual({ provider: "openai", modelId: "gpt-4o" });
+    ).toEqual({ provider: "openai", modelId: "gpt-6-luna" });
   });
 
   it("pickDefaultModel shifts to first ready provider when current is not", () => {

@@ -170,7 +170,7 @@ describe("db (memory sql integration)", () => {
   });
 
   it("deletes chat and persists settings", async () => {
-    const chat = await createChat("openai", "gpt-4o");
+    const chat = await createChat("openai", "gpt-6-luna");
     await deleteChat(chat.id);
     expect(await getChat(chat.id)).toBeNull();
     await setSetting("resume_minutes", 9);

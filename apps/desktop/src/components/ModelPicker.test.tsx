@@ -87,10 +87,10 @@ describe("ModelPicker", () => {
     await user.click(screen.getByRole("button", { name: /gemini 3.8 flash/i }));
     await waitFor(() => expect(screen.getByRole("listbox")).toBeInTheDocument());
     const filter = screen.getByPlaceholderText("Search…");
-    await user.type(filter, "gpt-4o");
+    await user.type(filter, "gpt-6-sol");
     const list = screen.getByRole("listbox");
     await waitFor(() => {
-      expect(within(list).getByText("GPT-4o")).toBeInTheDocument();
+      expect(within(list).getByText("GPT-6 Sol")).toBeInTheDocument();
     });
     expect(within(list).queryByText("Gemini 3.8 Flash")).toBeNull();
   });

@@ -1189,20 +1189,19 @@ describe("ChatView", () => {
     await user.click(await screen.findByTitle("Select model"));
     await waitFor(() => expect(screen.getByRole("listbox")).toBeInTheDocument());
     await user.clear(screen.getByPlaceholderText("Search…"));
-    await user.type(screen.getByPlaceholderText("Search…"), "gpt-4o");
-    // Prefer exact GPT-4o over mini: click the option whose accessible name is exactly GPT-4o
+    await user.type(screen.getByPlaceholderText("Search…"), "gpt-6-sol");
     const opts = await screen.findAllByRole("option");
-    const gpt4o = opts.find((o) => o.textContent?.includes("GPT-4o") && !o.textContent?.includes("mini"));
-    expect(gpt4o).toBeTruthy();
-    await user.click(gpt4o!);
+    const gpt6sol = opts.find((o) => o.textContent?.includes("GPT-6 Sol"));
+    expect(gpt6sol).toBeTruthy();
+    await user.click(gpt6sol!);
     await waitFor(() =>
       expect(updateChat).toHaveBeenCalledWith(
         "c1",
-        expect.objectContaining({ provider: "openai", model_id: "gpt-4o" }),
+        expect.objectContaining({ provider: "openai", model_id: "gpt-6-sol" }),
       ),
     );
     expect(onChatMeta).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "openai", model_id: "gpt-4o" }),
+      expect.objectContaining({ provider: "openai", model_id: "gpt-6-sol" }),
     );
     expect(onChatUpdated).toHaveBeenCalled();
   });

@@ -464,14 +464,12 @@ describe("Settings behaviors", () => {
     );
     await user.click(screen.getByTitle("Select model"));
     await waitFor(() => expect(screen.getByRole("listbox")).toBeInTheDocument());
-    await user.type(screen.getByPlaceholderText("Search…"), "gpt-4o");
+    await user.type(screen.getByPlaceholderText("Search…"), "gpt-6-sol");
     const opts = await screen.findAllByRole("option");
-    const gpt4o = opts.find(
-      (o) => o.textContent?.includes("GPT-4o") && !o.textContent?.includes("mini"),
-    );
-    await user.click(gpt4o!);
+    const gpt6sol = opts.find((o) => o.textContent?.includes("GPT-6 Sol"));
+    await user.click(gpt6sol!);
     await waitFor(() =>
-      expect(setDefaultModel).toHaveBeenCalledWith("openai", "gpt-4o"),
+      expect(setDefaultModel).toHaveBeenCalledWith("openai", "gpt-6-sol"),
     );
   });
 });

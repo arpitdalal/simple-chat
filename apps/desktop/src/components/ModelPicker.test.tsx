@@ -33,7 +33,7 @@ describe("ModelPicker", () => {
     });
     const list = screen.getByRole("listbox");
     expect(within(list).getByText("Gemini 3.8 Flash")).toBeInTheDocument();
-    expect(within(list).queryByText("GPT-4o")).toBeNull();
+    expect(within(list).queryByText("GPT-6 Astra")).toBeNull();
     expect(within(list).queryByText("Claude Haiku 4.5")).toBeNull();
     expect(within(list).getAllByRole("option").length).toBeGreaterThan(1);
   });

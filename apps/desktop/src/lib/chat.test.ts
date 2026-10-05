@@ -218,7 +218,7 @@ describe("streamChat", () => {
     });
     await streamChat({
       provider: "openai",
-      modelId: "gpt-4o",
+      modelId: "gpt-6-luna",
       messages: [],
       webSearch: false,
       onToken: vi.fn(),
@@ -248,7 +248,7 @@ describe("streamChat", () => {
     const onToken = vi.fn();
     const done = streamChat({
       provider: "openai",
-      modelId: "gpt-4o",
+      modelId: "gpt-6-luna",
       messages: [],
       webSearch: false,
       onToken,
@@ -292,7 +292,7 @@ describe("streamChat", () => {
     await expect(
       streamChat({
         provider: "openai",
-        modelId: "gpt-4o",
+        modelId: "gpt-6-luna",
         messages: [],
         webSearch: false,
         onToken,
